@@ -1,0 +1,5 @@
+﻿E:\SC17\dhara-master\ecc\bch.h(1,1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符。请将该文件保存为 Unicode 格式以防止数据丢失
+E:\SC17\dhara-master\ecc\crc32.h(1,1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符。请将该文件保存为 Unicode 格式以防止数据丢失
+E:\SC17\dhara-master\tests\sim.c(238,19): warning C4477: “fprintf”: 格式字符串“%ld”需要类型“long”的参数，但可变参数 1 拥有了类型“size_t”
+E:\SC17\dhara-master\tests\sim.c(238,19): warning C4477: “fprintf”: 格式字符串“%ld”需要类型“long”的参数，但可变参数 2 拥有了类型“size_t”
+E:\SC17\dhara-master\tests\util.c(41,20): warning C4477: “fprintf”: 格式字符串“%ld”需要类型“long”的参数，但可变参数 1 拥有了类型“size_t”

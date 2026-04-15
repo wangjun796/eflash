@@ -1,0 +1,6 @@
+E:\SC17\dhara-master\tools\gftool.c;E:\SC17\dhara-master\build_vs2022\gftool.dir\Debug\gftool.obj
+E:\SC17\dhara-master\ecc\bch.c;E:\SC17\dhara-master\build_vs2022\gftool.dir\Debug\bch.obj
+E:\SC17\dhara-master\ecc\gf13.c;E:\SC17\dhara-master\build_vs2022\gftool.dir\Debug\gf13.obj
+E:\SC17\dhara-master\ecc\hamming.c;E:\SC17\dhara-master\build_vs2022\gftool.dir\Debug\hamming.obj
+E:\SC17\dhara-master\ecc\crc32.c;E:\SC17\dhara-master\build_vs2022\gftool.dir\Debug\crc32.obj
+E:\SC17\dhara-master\windows_compat.c;E:\SC17\dhara-master\build_vs2022\gftool.dir\Debug\windows_compat.obj

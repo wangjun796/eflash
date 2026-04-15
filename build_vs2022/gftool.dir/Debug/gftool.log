@@ -1,0 +1,4 @@
+﻿E:\SC17\dhara-master\tools\gftool.c(75,9): warning C4477: “printf”: 格式字符串“%lx”需要类型“unsigned long”的参数，但可变参数 1 拥有了类型“poly_t”
+E:\SC17\dhara-master\tools\gftool.c(75,9): warning C4477: “printf”: 格式字符串“%lx”需要类型“unsigned long”的参数，但可变参数 2 拥有了类型“poly_t”
+E:\SC17\dhara-master\ecc\bch.h(1,1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符。请将该文件保存为 Unicode 格式以防止数据丢失
+E:\SC17\dhara-master\ecc\crc32.h(1,1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符。请将该文件保存为 Unicode 格式以防止数据丢失

@@ -1,0 +1,9 @@
+E:\SC17\dhara-master\examples\flash_with_dhara.c;E:\SC17\dhara-master\build_vs2022\flash_with_dhara.dir\Release\flash_with_dhara.obj
+E:\SC17\dhara-master\sim_flash.c;E:\SC17\dhara-master\build_vs2022\flash_with_dhara.dir\Release\sim_flash.obj
+E:\SC17\dhara-master\dhara\error.c;E:\SC17\dhara-master\build_vs2022\flash_with_dhara.dir\Release\error.obj
+E:\SC17\dhara-master\dhara\journal.c;E:\SC17\dhara-master\build_vs2022\flash_with_dhara.dir\Release\journal.obj
+E:\SC17\dhara-master\dhara\map.c;E:\SC17\dhara-master\build_vs2022\flash_with_dhara.dir\Release\map.obj
+E:\SC17\dhara-master\ecc\bch.c;E:\SC17\dhara-master\build_vs2022\flash_with_dhara.dir\Release\bch.obj
+E:\SC17\dhara-master\ecc\gf13.c;E:\SC17\dhara-master\build_vs2022\flash_with_dhara.dir\Release\gf13.obj
+E:\SC17\dhara-master\ecc\hamming.c;E:\SC17\dhara-master\build_vs2022\flash_with_dhara.dir\Release\hamming.obj
+E:\SC17\dhara-master\ecc\crc32.c;E:\SC17\dhara-master\build_vs2022\flash_with_dhara.dir\Release\crc32.obj

@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="E:\SC17\dhara-master\build_vs2022\CMakeFiles\b98b30a9dff6dbc1962e3c225a0315f3\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{E460D5A7-8DAA-36B1-87E1-4BF8A50CD538}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

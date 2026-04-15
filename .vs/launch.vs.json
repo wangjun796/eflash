@@ -1,0 +1,32 @@
+{
+  "version": "0.2.1",
+  "configurations": [
+    {
+      "name": "all_tests",
+      "type": "default",
+      "executable": "${debugInfo.defaultWorkingDirectory}\\all_tests.exe",
+      "project": "CMakeLists.txt",
+      "args": [],
+      "cwd": "${debugInfo.defaultWorkingDirectory}",
+      "debuggerConfiguration": "Default"
+    },
+    {
+      "name": "gftool",
+      "type": "default",
+      "executable": "${debugInfo.defaultWorkingDirectory}\\gftool.exe",
+      "project": "CMakeLists.txt",
+      "args": [],
+      "cwd": "${debugInfo.defaultWorkingDirectory}",
+      "debuggerConfiguration": "Default"
+    },
+    {
+      "name": "gentab",
+      "type": "default",
+      "executable": "${debugInfo.defaultWorkingDirectory}\\gentab.exe",
+      "project": "CMakeLists.txt",
+      "args": [],
+      "cwd": "${debugInfo.defaultWorkingDirectory}",
+      "debuggerConfiguration": "Default"
+    }
+  ]
+}

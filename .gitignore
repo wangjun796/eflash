@@ -1,0 +1,39 @@
+.*.swp
+*~
+*.test
+*.o
+tools/gftool
+tools/gentab
+
+# Build directories
+build_vs2022/
+build/
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.tlog
+*.recipe
+*.lastbuildstate
+*.FileListAbsolute.txt
+*.Build.CppClean.log
+*.log
+
+# Temporary files
+*.txt
+*.bin
+debug*.txt
+*_output.txt
+stress_debug*.txt
+test_*_output.txt
+multi_test_section.txt
+
+# VS Code
+.vscode/
+.vs/
+
+# IDE files
+*.sln
+*.suo
+*.user
+*.vcxproj.user

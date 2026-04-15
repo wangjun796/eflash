@@ -1,0 +1,203 @@
+
+>   [TEST] test_radix_tree_multiple_sectors...
+  [FTL_DEBUG] [INIT] Starting mini_ftl_init
+  [FTL_DEBUG] [INIT] Scanning 8192 pages for valid root...
+  [FTL_DEBUG] [INIT] Scanned 1000/8192 pages...
+  [FTL_DEBUG] [INIT] Scanned 2000/8192 pages...
+  [FTL_DEBUG] [INIT] Scanned 3000/8192 pages...
+  [FTL_DEBUG] [INIT] Scanned 4000/8192 pages...
+  [FTL_DEBUG] [INIT] Scanned 5000/8192 pages...
+  [FTL_DEBUG] [INIT] Scanned 6000/8192 pages...
+  [FTL_DEBUG] [INIT] Scanned 7000/8192 pages...
+  [FTL_DEBUG] [INIT] Scanned 8000/8192 pages...
+  [FTL_DEBUG] [INIT] Scan complete. Root page: 65535, next_count: 1
+    Testing interleaved writes to 16 sectors...
+  [FTL_DEBUG] [WRITE] logical_page=0
+  [FTL_DEBUG] [WRITE] Allocated physical page=12
+  [FTL_DEBUG] [TRACE] sector=0, base_root=65535, new_phys=12
+  [FTL_DEBUG] [TRACE] Empty tree, set alt[0]=12
+  [FTL_DEBUG] [WRITE] Success: root_page=13, next_count=2
+  [FTL_DEBUG] [WRITE] logical_page=1
+  [FTL_DEBUG] [WRITE] Allocated physical page=14
+  [FTL_DEBUG] [TRACE] sector=1, base_root=13, new_phys=14
+  [FTL_DEBUG] [TRACE] Root sector=0
+  [FTL_DEBUG] [TRACE] depth=0, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[0]=12
+  [FTL_DEBUG] [TRACE] depth=1, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[1]=65535
+  [FTL_DEBUG] [TRACE] depth=2, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[2]=65535
+  [FTL_DEBUG] [TRACE] depth=3, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[3]=65535
+  [FTL_DEBUG] [TRACE] depth=4, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[4]=65535
+  [FTL_DEBUG] [TRACE] depth=5, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[5]=65535
+  [FTL_DEBUG] [TRACE] depth=6, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[6]=65535
+  [FTL_DEBUG] [TRACE] depth=7, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[7]=65535
+  [FTL_DEBUG] [TRACE] depth=8, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[8]=65535
+  [FTL_DEBUG] [TRACE] depth=9, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[9]=65535
+  [FTL_DEBUG] [TRACE] depth=10, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[10]=65535
+  [FTL_DEBUG] [TRACE] depth=11, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[11]=65535
+  [FTL_DEBUG] [TRACE] depth=12, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[12]=65535
+  [FTL_DEBUG] [TRACE] depth=13, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[13]=65535
+  [FTL_DEBUG] [TRACE] depth=14, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[14]=65535
+  [FTL_DEBUG] [TRACE] depth=15, target_bit=1, current_bit=0
+  [FTL_DEBUG] [TRACE] Diverge: out_meta->alt[15]=13 (current node)
+  [FTL_DEBUG] [TRACE] Path interrupted at depth=15, will insert here
+  [FTL_DEBUG] [TRACE] Not found: insert at depth=15, alt[15]=14
+  [FTL_DEBUG] [TRACE] New node alt summary: [FTL_DEBUG] alt[0]=12 [FTL_DEBUG] alt[1]=65535 [FTL_DEBUG] alt[2]=65535 [FTL_DEBUG] alt[3]=65535 [FTL_DEBUG] 
+  [FTL_DEBUG] [WRITE] Success: root_page=15, next_count=3
+  [FTL_DEBUG] [WRITE] logical_page=2
+  [FTL_DEBUG] [WRITE] Allocated physical page=16
+  [FTL_DEBUG] [TRACE] sector=2, base_root=15, new_phys=16
+  [FTL_DEBUG] [TRACE] Root sector=1
+  [FTL_DEBUG] [TRACE] depth=0, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[0]=12
+  [FTL_DEBUG] [TRACE] depth=1, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[1]=65535
+  [FTL_DEBUG] [TRACE] depth=2, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[2]=65535
+  [FTL_DEBUG] [TRACE] depth=3, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[3]=65535
+  [FTL_DEBUG] [TRACE] depth=4, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[4]=65535
+  [FTL_DEBUG] [TRACE] depth=5, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[5]=65535
+  [FTL_DEBUG] [TRACE] depth=6, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[6]=65535
+  [FTL_DEBUG] [TRACE] depth=7, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[7]=65535
+  [FTL_DEBUG] [TRACE] depth=8, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[8]=65535
+  [FTL_DEBUG] [TRACE] depth=9, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[9]=65535
+  [FTL_DEBUG] [TRACE] depth=10, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[10]=65535
+  [FTL_DEBUG] [TRACE] depth=11, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[11]=65535
+  [FTL_DEBUG] [TRACE] depth=12, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[12]=65535
+  [FTL_DEBUG] [TRACE] depth=13, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[13]=65535
+  [FTL_DEBUG] [TRACE] depth=14, target_bit=1, current_bit=0
+  [FTL_DEBUG] [TRACE] Diverge: out_meta->alt[14]=15 (current node)
+  [FTL_DEBUG] [TRACE] Path interrupted at depth=14, will insert here
+  [FTL_DEBUG] [TRACE] Not found: insert at depth=14, alt[14]=16
+  [FTL_DEBUG] [TRACE] New node alt summary: [FTL_DEBUG] alt[0]=12 [FTL_DEBUG] alt[1]=65535 [FTL_DEBUG] alt[2]=65535 [FTL_DEBUG] alt[3]=65535 [FTL_DEBUG] 
+  [FTL_DEBUG] [WRITE] Success: root_page=17, next_count=4
+  [FTL_DEBUG] [WRITE] logical_page=3
+  [FTL_DEBUG] [WRITE] Allocated physical page=18
+  [FTL_DEBUG] [TRACE] sector=3, base_root=17, new_phys=18
+  [FTL_DEBUG] [TRACE] Root sector=2
+  [FTL_DEBUG] [TRACE] depth=0, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[0]=12
+  [FTL_DEBUG] [TRACE] depth=1, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[1]=65535
+  [FTL_DEBUG] [TRACE] depth=2, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[2]=65535
+  [FTL_DEBUG] [TRACE] depth=3, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[3]=65535
+  [FTL_DEBUG] [TRACE] depth=4, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[4]=65535
+  [FTL_DEBUG] [TRACE] depth=5, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[5]=65535
+  [FTL_DEBUG] [TRACE] depth=6, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[6]=65535
+  [FTL_DEBUG] [TRACE] depth=7, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[7]=65535
+  [FTL_DEBUG] [TRACE] depth=8, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[8]=65535
+  [FTL_DEBUG] [TRACE] depth=9, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[9]=65535
+  [FTL_DEBUG] [TRACE] depth=10, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[10]=65535
+  [FTL_DEBUG] [TRACE] depth=11, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[11]=65535
+  [FTL_DEBUG] [TRACE] depth=12, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[12]=65535
+  [FTL_DEBUG] [TRACE] depth=13, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[13]=65535
+  [FTL_DEBUG] [TRACE] depth=14, target_bit=1, current_bit=1
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[14]=16
+  [FTL_DEBUG] [TRACE] depth=15, target_bit=1, current_bit=0
+  [FTL_DEBUG] [TRACE] Diverge: out_meta->alt[15]=17 (current node)
+  [FTL_DEBUG] [TRACE] Path interrupted at depth=15, will insert here
+  [FTL_DEBUG] [TRACE] Not found: insert at depth=15, alt[15]=18
+  [FTL_DEBUG] [TRACE] New node alt summary: [FTL_DEBUG] alt[0]=12 [FTL_DEBUG] alt[1]=65535 [FTL_DEBUG] alt[2]=65535 [FTL_DEBUG] alt[3]=65535 [FTL_DEBUG] 
+  [FTL_DEBUG] [WRITE] Success: root_page=19, next_count=5
+  [FTL_DEBUG] [WRITE] logical_page=7
+  [FTL_DEBUG] [WRITE] Allocated physical page=20
+  [FTL_DEBUG] [TRACE] sector=7, base_root=19, new_phys=20
+  [FTL_DEBUG] [TRACE] Root sector=3
+  [FTL_DEBUG] [TRACE] depth=0, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[0]=12
+  [FTL_DEBUG] [TRACE] depth=1, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[1]=65535
+  [FTL_DEBUG] [TRACE] depth=2, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[2]=65535
+  [FTL_DEBUG] [TRACE] depth=3, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[3]=65535
+  [FTL_DEBUG] [TRACE] depth=4, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[4]=65535
+  [FTL_DEBUG] [TRACE] depth=5, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[5]=65535
+  [FTL_DEBUG] [TRACE] depth=6, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[6]=65535
+  [FTL_DEBUG] [TRACE] depth=7, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[7]=65535
+  [FTL_DEBUG] [TRACE] depth=8, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[8]=65535
+  [FTL_DEBUG] [TRACE] depth=9, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[9]=65535
+  [FTL_DEBUG] [TRACE] depth=10, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[10]=65535
+  [FTL_DEBUG] [TRACE] depth=11, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[11]=65535
+  [FTL_DEBUG] [TRACE] depth=12, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[12]=65535
+  [FTL_DEBUG] [TRACE] depth=13, target_bit=1, current_bit=0
+  [FTL_DEBUG] [TRACE] Diverge: out_meta->alt[13]=19 (current node)
+  [FTL_DEBUG] [TRACE] Path interrupted at depth=13, will insert here
+  [FTL_DEBUG] [TRACE] Not found: insert at depth=13, alt[13]=20
+  [FTL_DEBUG] [TRACE] New node alt summary: [FTL_DEBUG] alt[0]=12 [FTL_DEBUG] alt[1]=65535 [FTL_DEBUG] alt[2]=65535 [FTL_DEBUG] alt[3]=65535 [FTL_DEBUG] 
+  [FTL_DEBUG] [WRITE] Success: root_page=21, next_count=6
+  [FTL_DEBUG] [WRITE] logical_page=8
+  [FTL_DEBUG] [WRITE] Allocated physical page=22
+  [FTL_DEBUG] [TRACE] sector=8, base_root=21, new_phys=22
+  [FTL_DEBUG] [TRACE] Root sector=7
+  [FTL_DEBUG] [TRACE] depth=0, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[0]=12
+  [FTL_DEBUG] [TRACE] depth=1, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[1]=65535
+  [FTL_DEBUG] [TRACE] depth=2, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[2]=65535
+  [FTL_DEBUG] [TRACE] depth=3, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[3]=65535
+  [FTL_DEBUG] [TRACE] depth=4, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[4]=65535
+  [FTL_DEBUG] [TRACE] depth=5, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[5]=65535
+  [FTL_DEBUG] [TRACE] depth=6, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[6]=65535
+  [FTL_DEBUG] [TRACE] depth=7, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[7]=65535
+  [FTL_DEBUG] [TRACE] depth=8, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[8]=65535
+  [FTL_DEBUG] [TRACE] depth=9, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[9]=65535
+  [FTL_DEBUG] [TRACE] depth=10, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[10]=65535
+  [FTL_DEBUG] [TRACE] depth=11, target_bit=0, current_bit=0
+  [FTL_DEBUG] [TRACE] Inherit: out_meta->alt[11]=65535
+  [FTL_DEBUG] [TRACE] depth=12, target_bit=1, current_bit=0
+

@@ -1,0 +1,229 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <PropertyGroup>
+    <ResolveNugetPackages>false</ResolveNugetPackages>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MinSizeRel|x64">
+      <Configuration>MinSizeRel</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="RelWithDebInfo|x64">
+      <Configuration>RelWithDebInfo</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{3C1545CD-5300-3BE5-A970-646AD0A3888A}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0.22621.0</WindowsTargetPlatformVersion>
+    <Platform>x64</Platform>
+    <ProjectName>ALL_BUILD</ProjectName>
+    <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>E:\SC17\dhara-master;E:\SC17\dhara-master\dhara;E:\SC17\dhara-master\ecc;E:\SC17\dhara-master\tests;E:\SC17\dhara-master\eflash_ftl;E:\SC17\dhara-master\.;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>E:\SC17\dhara-master;E:\SC17\dhara-master\dhara;E:\SC17\dhara-master\ecc;E:\SC17\dhara-master\tests;E:\SC17\dhara-master\eflash_ftl;E:\SC17\dhara-master\.;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>E:\SC17\dhara-master;E:\SC17\dhara-master\dhara;E:\SC17\dhara-master\ecc;E:\SC17\dhara-master\tests;E:\SC17\dhara-master\eflash_ftl;E:\SC17\dhara-master\.;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>E:\SC17\dhara-master;E:\SC17\dhara-master\dhara;E:\SC17\dhara-master\ecc;E:\SC17\dhara-master\tests;E:\SC17\dhara-master\eflash_ftl;E:\SC17\dhara-master\.;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <CustomBuild Include="E:\SC17\dhara-master\CMakeLists.txt">
+      <UseUtf8Encoding>Always</UseUtf8Encoding>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule E:/SC17/dhara-master/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">setlocal
+D:\CMake\bin\cmake.exe -SE:/SC17/dhara-master -BE:/SC17/dhara-master/build_vs2022 --check-stamp-file E:/SC17/dhara-master/build_vs2022/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">D:\CMake\share\cmake-4.2\Modules\CMakeCInformation.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeCommonLanguageInclude.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeGenericSystem.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeInitializeConfigs.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeLanguageInformation.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeRCInformation.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeSystemSpecificInformation.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeSystemSpecificInitialize.cmake;D:\CMake\share\cmake-4.2\Modules\Compiler\CMakeCommonCompilerMacros.cmake;D:\CMake\share\cmake-4.2\Modules\Compiler\MSVC-C.cmake;D:\CMake\share\cmake-4.2\Modules\Compiler\MSVC.cmake;D:\CMake\share\cmake-4.2\Modules\Internal\CMakeCLinkerInformation.cmake;D:\CMake\share\cmake-4.2\Modules\Internal\CMakeCommonLinkerInformation.cmake;D:\CMake\share\cmake-4.2\Modules\Linker\MSVC-C.cmake;D:\CMake\share\cmake-4.2\Modules\Linker\MSVC.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC-C.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Windows-Initialize.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC-C.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Windows.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\WindowsPaths.cmake;E:\SC17\dhara-master\build_vs2022\CMakeFiles\4.2.0\CMakeCCompiler.cmake;E:\SC17\dhara-master\build_vs2022\CMakeFiles\4.2.0\CMakeRCCompiler.cmake;E:\SC17\dhara-master\build_vs2022\CMakeFiles\4.2.0\CMakeSystem.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">E:\SC17\dhara-master\build_vs2022\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule E:/SC17/dhara-master/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
+D:\CMake\bin\cmake.exe -SE:/SC17/dhara-master -BE:/SC17/dhara-master/build_vs2022 --check-stamp-file E:/SC17/dhara-master/build_vs2022/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">D:\CMake\share\cmake-4.2\Modules\CMakeCInformation.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeCommonLanguageInclude.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeGenericSystem.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeInitializeConfigs.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeLanguageInformation.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeRCInformation.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeSystemSpecificInformation.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeSystemSpecificInitialize.cmake;D:\CMake\share\cmake-4.2\Modules\Compiler\CMakeCommonCompilerMacros.cmake;D:\CMake\share\cmake-4.2\Modules\Compiler\MSVC-C.cmake;D:\CMake\share\cmake-4.2\Modules\Compiler\MSVC.cmake;D:\CMake\share\cmake-4.2\Modules\Internal\CMakeCLinkerInformation.cmake;D:\CMake\share\cmake-4.2\Modules\Internal\CMakeCommonLinkerInformation.cmake;D:\CMake\share\cmake-4.2\Modules\Linker\MSVC-C.cmake;D:\CMake\share\cmake-4.2\Modules\Linker\MSVC.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC-C.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Windows-Initialize.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC-C.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Windows.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\WindowsPaths.cmake;E:\SC17\dhara-master\build_vs2022\CMakeFiles\4.2.0\CMakeCCompiler.cmake;E:\SC17\dhara-master\build_vs2022\CMakeFiles\4.2.0\CMakeRCCompiler.cmake;E:\SC17\dhara-master\build_vs2022\CMakeFiles\4.2.0\CMakeSystem.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">E:\SC17\dhara-master\build_vs2022\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule E:/SC17/dhara-master/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
+D:\CMake\bin\cmake.exe -SE:/SC17/dhara-master -BE:/SC17/dhara-master/build_vs2022 --check-stamp-file E:/SC17/dhara-master/build_vs2022/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">D:\CMake\share\cmake-4.2\Modules\CMakeCInformation.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeCommonLanguageInclude.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeGenericSystem.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeInitializeConfigs.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeLanguageInformation.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeRCInformation.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeSystemSpecificInformation.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeSystemSpecificInitialize.cmake;D:\CMake\share\cmake-4.2\Modules\Compiler\CMakeCommonCompilerMacros.cmake;D:\CMake\share\cmake-4.2\Modules\Compiler\MSVC-C.cmake;D:\CMake\share\cmake-4.2\Modules\Compiler\MSVC.cmake;D:\CMake\share\cmake-4.2\Modules\Internal\CMakeCLinkerInformation.cmake;D:\CMake\share\cmake-4.2\Modules\Internal\CMakeCommonLinkerInformation.cmake;D:\CMake\share\cmake-4.2\Modules\Linker\MSVC-C.cmake;D:\CMake\share\cmake-4.2\Modules\Linker\MSVC.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC-C.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Windows-Initialize.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC-C.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Windows.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\WindowsPaths.cmake;E:\SC17\dhara-master\build_vs2022\CMakeFiles\4.2.0\CMakeCCompiler.cmake;E:\SC17\dhara-master\build_vs2022\CMakeFiles\4.2.0\CMakeRCCompiler.cmake;E:\SC17\dhara-master\build_vs2022\CMakeFiles\4.2.0\CMakeSystem.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">E:\SC17\dhara-master\build_vs2022\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule E:/SC17/dhara-master/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
+D:\CMake\bin\cmake.exe -SE:/SC17/dhara-master -BE:/SC17/dhara-master/build_vs2022 --check-stamp-file E:/SC17/dhara-master/build_vs2022/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">D:\CMake\share\cmake-4.2\Modules\CMakeCInformation.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeCommonLanguageInclude.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeGenericSystem.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeInitializeConfigs.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeLanguageInformation.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeRCInformation.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeSystemSpecificInformation.cmake;D:\CMake\share\cmake-4.2\Modules\CMakeSystemSpecificInitialize.cmake;D:\CMake\share\cmake-4.2\Modules\Compiler\CMakeCommonCompilerMacros.cmake;D:\CMake\share\cmake-4.2\Modules\Compiler\MSVC-C.cmake;D:\CMake\share\cmake-4.2\Modules\Compiler\MSVC.cmake;D:\CMake\share\cmake-4.2\Modules\Internal\CMakeCLinkerInformation.cmake;D:\CMake\share\cmake-4.2\Modules\Internal\CMakeCommonLinkerInformation.cmake;D:\CMake\share\cmake-4.2\Modules\Linker\MSVC-C.cmake;D:\CMake\share\cmake-4.2\Modules\Linker\MSVC.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC-C.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Windows-Initialize.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC-C.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\Windows.cmake;D:\CMake\share\cmake-4.2\Modules\Platform\WindowsPaths.cmake;E:\SC17\dhara-master\build_vs2022\CMakeFiles\4.2.0\CMakeCCompiler.cmake;E:\SC17\dhara-master\build_vs2022\CMakeFiles\4.2.0\CMakeRCCompiler.cmake;E:\SC17\dhara-master\build_vs2022\CMakeFiles\4.2.0\CMakeSystem.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">E:\SC17\dhara-master\build_vs2022\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup />
+  <ItemGroup>
+    <ProjectReference Include="E:\SC17\dhara-master\build_vs2022\ZERO_CHECK.vcxproj">
+      <Project>{E45DF29D-4793-3C38-AE42-0563C7DC5942}</Project>
+      <Name>ZERO_CHECK</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+    <ProjectReference Include="E:\SC17\dhara-master\build_vs2022\all_tests.vcxproj">
+      <Project>{8C95EC2B-C795-3728-A183-67CEC5BB99CF}</Project>
+      <Name>all_tests</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\SC17\dhara-master\build_vs2022\crc_poly_demo.vcxproj">
+      <Project>{F716023F-CED7-3A2E-B212-3493CC03626D}</Project>
+      <Name>crc_poly_demo</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\SC17\dhara-master\build_vs2022\dhara_lib.vcxproj">
+      <Project>{56385BD1-3BAA-34C2-A5E9-64C22B7186A5}</Project>
+      <Name>dhara_lib</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\SC17\dhara-master\build_vs2022\ecc_lib.vcxproj">
+      <Project>{A0733A02-EF51-399D-ADE0-E0D5FC6222F2}</Project>
+      <Name>ecc_lib</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\SC17\dhara-master\build_vs2022\eflash_ftl_lib.vcxproj">
+      <Project>{D663A9DA-D37B-31BF-93D4-6AB2F344FC9B}</Project>
+      <Name>eflash_ftl_lib</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\SC17\dhara-master\build_vs2022\eflash_ftl_tests.vcxproj">
+      <Project>{4D8F1775-9093-3A22-AD79-2C905CE1770E}</Project>
+      <Name>eflash_ftl_tests</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\SC17\dhara-master\build_vs2022\flash_sim_demo.vcxproj">
+      <Project>{32105A70-8113-3922-B4C7-224A82EB86D0}</Project>
+      <Name>flash_sim_demo</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\SC17\dhara-master\build_vs2022\flash_with_dhara.vcxproj">
+      <Project>{3933ED09-AC1B-304B-9A17-1C1F401E0D36}</Project>
+      <Name>flash_with_dhara</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\SC17\dhara-master\build_vs2022\gentab.vcxproj">
+      <Project>{377B3758-E320-3859-BA82-379996410E5C}</Project>
+      <Name>gentab</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\SC17\dhara-master\build_vs2022\gftool.vcxproj">
+      <Project>{D2CA122D-4AC8-36CB-8F7A-48666701B533}</Project>
+      <Name>gftool</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\SC17\dhara-master\build_vs2022\test_dhara_on_file_flash.vcxproj">
+      <Project>{D143A7E8-8273-38B2-A011-64D6F4AB7893}</Project>
+      <Name>test_dhara_on_file_flash</Name>
+    </ProjectReference>
+    <ProjectReference Include="E:\SC17\dhara-master\build_vs2022\test_gentab.vcxproj">
+      <Project>{62B27DE3-7495-3D09-BD5D-DF32696D29F7}</Project>
+      <Name>test_gentab</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

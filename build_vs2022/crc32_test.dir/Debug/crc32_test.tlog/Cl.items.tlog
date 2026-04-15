@@ -1,0 +1,6 @@
+E:\SC17\dhara-master\tests\crc32.c;E:\SC17\dhara-master\build_vs2022\crc32_test.dir\Debug\tests\crc32.c.obj
+E:\SC17\dhara-master\ecc\bch.c;E:\SC17\dhara-master\build_vs2022\crc32_test.dir\Debug\bch.obj
+E:\SC17\dhara-master\ecc\gf13.c;E:\SC17\dhara-master\build_vs2022\crc32_test.dir\Debug\gf13.obj
+E:\SC17\dhara-master\ecc\hamming.c;E:\SC17\dhara-master\build_vs2022\crc32_test.dir\Debug\hamming.obj
+E:\SC17\dhara-master\ecc\crc32.c;E:\SC17\dhara-master\build_vs2022\crc32_test.dir\Debug\ecc\crc32.c.obj
+E:\SC17\dhara-master\windows_rand.c;E:\SC17\dhara-master\build_vs2022\crc32_test.dir\Debug\windows_rand.obj
