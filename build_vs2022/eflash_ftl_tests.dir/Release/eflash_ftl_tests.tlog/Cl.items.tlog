@@ -1,9 +1,0 @@
-E:\SC17\dhara-master\tests\eflash_ftl_tests.c;E:\SC17\dhara-master\build_vs2022\eflash_ftl_tests.dir\Release\eflash_ftl_tests.obj
-E:\SC17\dhara-master\eflash_ftl\mini_ftl.c;E:\SC17\dhara-master\build_vs2022\eflash_ftl_tests.dir\Release\mini_ftl.obj
-E:\SC17\dhara-master\eflash_ftl\space_mgr.c;E:\SC17\dhara-master\build_vs2022\eflash_ftl_tests.dir\Release\space_mgr.obj
-E:\SC17\dhara-master\eflash_ftl\eflash_sim.c;E:\SC17\dhara-master\build_vs2022\eflash_ftl_tests.dir\Release\eflash_sim.obj
-E:\SC17\dhara-master\ecc\bch.c;E:\SC17\dhara-master\build_vs2022\eflash_ftl_tests.dir\Release\bch.obj
-E:\SC17\dhara-master\ecc\gf13.c;E:\SC17\dhara-master\build_vs2022\eflash_ftl_tests.dir\Release\gf13.obj
-E:\SC17\dhara-master\ecc\hamming.c;E:\SC17\dhara-master\build_vs2022\eflash_ftl_tests.dir\Release\hamming.obj
-E:\SC17\dhara-master\ecc\crc32.c;E:\SC17\dhara-master\build_vs2022\eflash_ftl_tests.dir\Release\crc32.obj
-E:\SC17\dhara-master\windows_rand.c;E:\SC17\dhara-master\build_vs2022\eflash_ftl_tests.dir\Release\windows_rand.obj
