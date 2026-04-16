@@ -1134,25 +1134,33 @@ int test_gc_round_wrap() {
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
     uint16_t user_pages_count = last_user_page - first_user_page + 1;
     
-    // 策略：写入足够多的唯一 sector，使 tail 移动到大半部分
-    // 每次写入分配 1 页，tail 在 GC 时会逐页移动
+    // 关键修正：为了触发 GC，需要让空闲空间低于阈值
+    // 当前阈值是 20% (1636 页)，所以需要写入至少 (总容量 - 阈值 + 余量) 页
+    int min_writes_to_trigger_gc = ftl.total_user_pages - ftl.gc_threshold + 200;
+    
+    // 策略：写入足够多的唯一 sector，直到触发 GC
     // 为了让 tail 移动到 75% 位置，需要写入约 75% 的用户区页数
     int writes_to_push_tail = user_pages_count * 3 / 4;
     
-    printf("  [WRAP] Will write ~%d unique sectors to push tail forward\n", 
-           writes_to_push_tail);
-    printf("  [WRAP] Expected tail position after phase 1: ~%d\n",
-           first_user_page + writes_to_push_tail);
+    // 取两者最大值，确保既能推动 tail 又能触发 GC
+    int total_writes_needed = (min_writes_to_trigger_gc > writes_to_push_tail) ? 
+                              min_writes_to_trigger_gc : writes_to_push_tail;
     
-    // 阶段2：写入大量唯一 sector，推动 tail 向前
-    printf("\n  [WRAP] Phase 2: Writing unique sectors to advance tail...\n");
+    printf("  [WRAP] Min writes to trigger GC: %d\n", min_writes_to_trigger_gc);
+    printf("  [WRAP] Will write ~%d unique sectors\n", total_writes_needed);
+    printf("  [WRAP] Expected tail position after phase 1: ~%d\n",
+           first_user_page + total_writes_needed);
+    
+    // 阶段2：写入大量唯一 sector，推动 tail 向前并触发 GC
+    printf("\n  [WRAP] Phase 2: Writing unique sectors to advance tail and trigger GC...\n");
     
     int total_writes = 0;
     int gc_triggers = 0;
     uint16_t last_tail_before_wrap = ftl.gc_tail_page;
     bool wrap_detected = false;
+    bool gc_triggered = false;
     
-    for (int i = 0; i < writes_to_push_tail + 200; i++) { // 多写 200 页确保触发回绕
+    for (int i = 0; i < total_writes_needed + 500; i++) { // 多写 500 页确保充分测试
         uint16_t sector = (uint16_t)i; // 每个都是新的唯一 sector
         uint8_t write_data[USER_DATA_SIZE];
         memset(write_data, (uint8_t)(i & 0xFF), USER_DATA_SIZE);
@@ -1171,11 +1179,14 @@ int test_gc_round_wrap() {
         uint16_t tail_after = ftl.gc_tail_page;
         uint32_t free_after = mini_ftl_get_free_pages(&ftl);
         
-        // 检测 GC 触发
+        // 检测 GC 触发（空闲空间突然增加）
         if (free_after > free_before + 5) {
             gc_triggers++;
-            printf("  [WRAP] GC #%d triggered at write #%d (free: %d -> %d, tail: %d -> %d)\n",
-                   gc_triggers, i, free_before, free_after, tail_before, tail_after);
+            gc_triggered = true;
+            printf("  [WRAP] *** GC #%d TRIGGERED at write #%d ***\n", gc_triggers, i);
+            printf("  [WRAP]     Free space: %d -> %d (+%d pages)\n", 
+                   free_before, free_after, free_after - free_before);
+            printf("  [WRAP]     Tail moved: %d -> %d\n", tail_before, tail_after);
         }
         
         // 检测 Round-Wrap：tail 从高位突然跳到低位
@@ -1184,27 +1195,44 @@ int test_gc_round_wrap() {
             printf("\n  [WRAP] *** ROUND-WRAP DETECTED! ***\n");
             printf("  [WRAP] Tail jumped from %d to %d (wrapped around)\n", 
                    tail_before, tail_after);
-            printf("  [WRAP] This happened naturally after %d writes\n", total_writes);
+            printf("  [WRAP] This happened naturally after %d writes and %d GCs\n", 
+                   total_writes, gc_triggers);
         }
         
-        // 每 500 次输出状态
-        if (i % 500 == 0) {
-            printf("  [WRAP] Write #%d: tail=%d, free=%d, GCs=%d\n",
-                   i, ftl.gc_tail_page, free_after, gc_triggers);
+        // 每 1000 次输出状态
+        if (i % 1000 == 0) {
+            printf("  [WRAP] Write #%d: tail=%d, free=%d, GCs=%d%s\n",
+                   i, ftl.gc_tail_page, free_after, gc_triggers,
+                   gc_triggered ? " [GC ACTIVE]" : "");
         }
         
-        // 如果已经检测到回绕，再写 50 页验证稳定性后退出
-        if (wrap_detected && i > writes_to_push_tail + 50) {
-            printf("  [WRAP] Round-wrap verified, stopping phase 2\n");
+        // 如果已经检测到回绕，再写 100 页验证稳定性后退出
+        if (wrap_detected && gc_triggers >= 3) {
+            printf("  [WRAP] Round-wrap verified with multiple GCs, stopping phase 2\n");
+            break;
+        }
+        
+        // 安全限制：最多写入 10000 页防止无限循环
+        if (total_writes >= 10000) {
+            printf("  [WRAP] Reached max writes limit (10000), stopping\n");
             break;
         }
     }
     
     printf("\n  [WRAP] Phase 2 complete:\n");
     printf("  [WRAP]   Total writes: %d\n", total_writes);
-    printf("  [WRAP]   GC triggers: %d\n", gc_triggers);
+    printf("  [WRAP]   GC triggers: %d %s\n", gc_triggers, gc_triggered ? "✓" : "✗");
     printf("  [WRAP]   Final tail_page: %d\n", ftl.gc_tail_page);
     printf("  [WRAP]   Round-wrap detected: %s\n", wrap_detected ? "YES ✓" : "NO ✗");
+    
+    // 验证 GC 是否真正被触发
+    if (!gc_triggered) {
+        printf("\n  [WRAP] ERROR: GC was NEVER triggered!\n");
+        printf("  [WRAP] This means the test did not verify actual GC behavior.\n");
+        printf("  [WRAP] Current free space: %d pages (threshold: %d)\n",
+               mini_ftl_get_free_pages(&ftl), ftl.gc_threshold);
+        ASSERT(gc_triggered, "GC must be triggered to validate GC mechanism");
+    }
     
     // 如果没有自动触发回绕，说明 Flash 太大，需要调整策略
     if (!wrap_detected) {
@@ -1307,14 +1335,22 @@ int test_gc_stress() {
     printf("  [STRESS] Starting GC stress test...\n");
     printf("  [STRESS] Total capacity: %d pages\n", ftl.total_user_pages);
     
-    // 阶段1：激进写入，快速消耗空间
-    printf("  [STRESS] Phase 1: Aggressive writing...\n");
+    // 阶段1：激进写入，快速消耗空间直到触发 GC
+    printf("  [STRESS] Phase 1: Aggressive writing until GC triggers...\n");
     
     int total_writes = 0;
     int gc_count = 0;
     uint32_t last_free = mini_ftl_get_free_pages(&ftl);
+    bool gc_triggered = false;
     
-    for (int i = 0; i < 1000; i++) {
+    // 计算需要写入的最小页数以触发 GC
+    int min_writes_for_gc = ftl.total_user_pages - ftl.gc_threshold + 100;
+    int max_iterations = min_writes_for_gc + 500; // 额外多写一些确保触发
+    
+    printf("  [STRESS] Min writes to trigger GC: %d\n", min_writes_for_gc);
+    printf("  [STRESS] Max iterations: %d\n", max_iterations);
+    
+    for (int i = 0; i < max_iterations; i++) {
         uint16_t sector = (uint16_t)(i % 150); // 150 个 sector 循环更新
         uint8_t write_data[USER_DATA_SIZE];
         memset(write_data, (uint8_t)(i & 0xFF), USER_DATA_SIZE);
@@ -1330,26 +1366,38 @@ int test_gc_stress() {
         
         uint32_t free_after = mini_ftl_get_free_pages(&ftl);
         
-        // 检测 GC 触发
+        // 检测 GC 触发（空闲空间突然增加）
         if (free_after > free_before + 5) {
             gc_count++;
-            printf("  [STRESS] GC #%d triggered at write #%d (free: %d -> %d)\n",
-                   gc_count, i, free_before, free_after);
+            gc_triggered = true;
+            printf("  [STRESS] *** GC #%d TRIGGERED at write #%d ***\n", gc_count, i);
+            printf("  [STRESS]     Free space: %d -> %d (+%d pages recovered)\n",
+                   free_before, free_after, free_after - free_before);
         }
         
         last_free = free_after;
         
-        // 每 100 次输出状态
-        if (i % 100 == 0) {
-            printf("  [STRESS] Iteration %d: writes=%d, GCs=%d, free=%d\n",
-                   i, total_writes, gc_count, last_free);
+        // 每 500 次输出状态
+        if (i % 500 == 0) {
+            printf("  [STRESS] Iteration %d: writes=%d, GCs=%d, free=%d%s\n",
+                   i, total_writes, gc_count, last_free,
+                   gc_triggered ? " [GC ACTIVE]" : "");
+        }
+        
+        // 如果已经触发了至少 3 次 GC，继续写 200 页验证稳定性后退出
+        if (gc_count >= 3 && i > min_writes_for_gc + 200) {
+            printf("  [STRESS] GC stability verified (3+ triggers), stopping phase 1\n");
+            break;
         }
     }
     
-    printf("  [STRESS] Phase 1 complete: %d writes, %d GCs triggered\n",
-           total_writes, gc_count);
+    printf("  [STRESS] Phase 1 complete: %d writes, %d GCs triggered %s\n",
+           total_writes, gc_count, gc_triggered ? "✓" : "✗");
     printf("  [STRESS] Final free space: %d pages (%.1f%%)\n",
            last_free, (float)last_free / ftl.total_user_pages * 100);
+    
+    // 验证 GC 是否真正被触发
+    ASSERT(gc_triggered, "GC must be triggered in stress test to validate GC mechanism");
     
     // 阶段2：随机读写验证
     printf("  [STRESS] Phase 2: Random read/write verification...\n");

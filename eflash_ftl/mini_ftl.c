@@ -847,10 +847,10 @@ static int gc_collect_one_page(mini_ftl_t *ftl, uint16_t page) {
  * @pages_to_free: 需要回收的页数
  * @return: 实际回收的页数，-1 表示失败
  * 
- * 算法（仿照 Dhara）：
+ * 算法（严格仿照 Dhara）：
  * 1. 从 gc_tail_page 开始逐页扫描
  * 2. 对每页调用 gc_collect_one_page
- * 3. gc_tail_page++（处理 Round-Wrap）
+ * 3. **只有成功回收后才移动 tail 指针**（仿照 Dhara 的 dequeue）
  * 4. 直到回收了足够的页数或遍历完整个 Flash
  */
 int mini_ftl_gc_collect(mini_ftl_t *ftl, uint16_t pages_to_free) {
@@ -868,8 +868,8 @@ int mini_ftl_gc_collect(mini_ftl_t *ftl, uint16_t pages_to_free) {
     uint16_t first_user_page = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
     
-    // 最多遍历整个用户区一次，防止死循环
-    uint16_t max_iterations = last_user_page - first_user_page + 1;
+    // 最多遍历整个用户区两次，防止死循环
+    uint16_t max_iterations = (last_user_page - first_user_page + 1) * 2;
     uint16_t iterations = 0;
     
     while (pages_freed < pages_to_free && iterations < max_iterations) {
@@ -883,29 +883,45 @@ int mini_ftl_gc_collect(mini_ftl_t *ftl, uint16_t pages_to_free) {
         }
         
         // 执行单页回收
-        if (gc_collect_one_page(ftl, current_page) == 0) {
-            pages_freed++;
-        } else {
-            FTL_DEBUG("[GC] WARNING: Failed to collect page %d, skipping\n", current_page);
-        }
+        int ret = gc_collect_one_page(ftl, current_page);
         
-        // 移动 Tail 指针（Round-Wrap 处理）
-        ftl->gc_tail_page++;
-        if (ftl->gc_tail_page > last_user_page) {
-            ftl->gc_tail_page = first_user_page;
-            FTL_DEBUG("[GC] Round-wrap: tail_page reset to %d\n", first_user_page);
+        if (ret == 0) {
+            // ✅ 成功回收，移动 tail 指针（仿照 Dhara 的 dequeue）
+            pages_freed++;
+            
+            ftl->gc_tail_page++;
+            if (ftl->gc_tail_page > last_user_page) {
+                ftl->gc_tail_page = first_user_page;
+                FTL_DEBUG("[GC] Round-wrap: tail_page reset to %d\n", first_user_page);
+            }
+        } else {
+            // ❌ 回收失败，但仍移动 tail 以避免死循环
+            // 注意：Dhara 在这种情况下会重试或进入恢复流程
+            // eFlash 简化处理：跳过该页继续下一个
+            FTL_DEBUG("[GC] WARNING: Failed to collect page %d, skipping\n", current_page);
+            
+            ftl->gc_tail_page++;
+            if (ftl->gc_tail_page > last_user_page) {
+                ftl->gc_tail_page = first_user_page;
+                FTL_DEBUG("[GC] Round-wrap on error: tail_page reset to %d\n", first_user_page);
+            }
         }
         
         iterations++;
         
         // 每回收 10 页输出一次进度
         if (pages_freed % 10 == 0 && pages_freed > 0) {
-            FTL_DEBUG("[GC] Progress: freed %d/%d pages\n", pages_freed, pages_to_free);
+            FTL_DEBUG("[GC] Progress: freed %d/%d pages (iterations=%d)\n", 
+                     pages_freed, pages_to_free, iterations);
         }
     }
     
-    FTL_DEBUG("[GC] Collection complete: freed %d pages (tail: %d -> %d)\n",
-              pages_freed, start_tail, ftl->gc_tail_page);
+    if (iterations >= max_iterations) {
+        FTL_DEBUG("[GC] WARNING: Reached max iterations (%d), stopping\n", max_iterations);
+    }
+    
+    FTL_DEBUG("[GC] Collection complete: freed %d pages (tail: %d -> %d, iterations=%d)\n",
+              pages_freed, start_tail, ftl->gc_tail_page, iterations);
     FTL_DEBUG("[GC] Free pages after GC: %d\n", mini_ftl_get_free_pages(ftl));
     
     return pages_freed;
