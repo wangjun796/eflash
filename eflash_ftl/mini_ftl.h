@@ -81,6 +81,11 @@ typedef struct {
     uint16_t      base_hdr_addr;    // 基础对象头起始逻辑页
     uint16_t      free_list_addr;   // 空闲链表起始逻辑页
     uint16_t      ext_hdr_addrs[16];// 扩展对象头页的逻辑地址数组
+    
+    // GC 相关字段（仿照 Dhara Head/Tail 模型）
+    uint16_t      gc_tail_page;     // GC 回收指针：指向下一个待回收的物理页
+    uint16_t      gc_threshold;     // GC 触发阈值（剩余空闲页数）
+    uint32_t      total_user_pages; // 用户可用总页数（扣除系统保留区）
 } mini_ftl_t;
 
 // --- 接口函数 ---
@@ -92,5 +97,10 @@ int  mini_ftl_read(mini_ftl_t *ftl, uint16_t sector_id, uint8_t *data);
 void mini_ftl_txn_begin(mini_ftl_t *ftl);
 int  mini_ftl_txn_commit(mini_ftl_t *ftl);
 void mini_ftl_txn_abort(mini_ftl_t *ftl);
+
+// --- GC 接口函数 ---
+int  mini_ftl_gc_trigger(mini_ftl_t *ftl);  // 手动触发 GC
+int  mini_ftl_gc_collect(mini_ftl_t *ftl, uint16_t pages_to_free); // 回收指定页数
+uint32_t mini_ftl_get_free_pages(mini_ftl_t *ftl); // 获取当前空闲页数
 
 #endif

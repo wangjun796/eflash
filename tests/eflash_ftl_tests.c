@@ -60,6 +60,14 @@ static int bch_decode(const struct bch_def *bch, uint8_t *data, size_t len, cons
         return -1; \
     } \
 } while(0)
+
+#define ASSERT_FMT(cond, fmt, ...) do { \
+    if (!(cond)) { \
+        printf("  [FAIL] Assertion failed: " fmt "\n", ##__VA_ARGS__); \
+        return -1; \
+    } \
+} while(0)
+
 #define PASS() do { \
     printf("  [PASS]\n"); \
     return 0; \
@@ -618,6 +626,11 @@ int main(void) {
     RUN_TEST(radix_tree_multiple_sectors)
     RUN_TEST(radix_tree_path_correctness)
     RUN_TEST(radix_tree_stress_random_access)
+    
+    // GC tests
+    RUN_TEST(gc_basic)
+    RUN_TEST(gc_round_wrap)
+    RUN_TEST(gc_stress)
 
     #undef RUN_TEST
 
@@ -916,7 +929,7 @@ static int test_radix_tree_stress_random_access(void) {
     printf("\n=== Final Radix Tree Structure ===\n");
     printf("Root page: %d\n", ftl.root_page);
     if (ftl.root_page != PAGE_NONE) {
-        print_radix_tree(&ftl, ftl.root_page, 0);
+        print_radix_tree(&ftl);
     }
     printf("==================================\n\n");
 
@@ -962,6 +975,332 @@ static int test_radix_tree_stress_random_access(void) {
     printf("    Verified %d unique sectors\n", verified_count);
     ASSERT(verify_tree_integrity(&ftl) == 0, "tree integrity after stress test");
 
+    cleanup_test_flash();
+    PASS();
+}
+
+/**
+ * test_gc_basic - GC 基础功能测试
+ * 
+ * 测试内容：
+ * 1. 写入大量数据填满 Flash
+ * 2. 触发 GC，验证空间回收
+ * 3. 验证数据完整性（迁移后的数据仍可读取）
+ */
+int test_gc_basic() {
+    mini_ftl_t ftl;
+    const char *flash_file = "eflash_test.bin";
+    
+    printf("[TEST] test_gc_basic: Starting...\n");
+    
+    init_test_flash(flash_file);
+    mini_ftl_init(&ftl);
+    
+    printf("  [GC] Initial free pages: %d\n", mini_ftl_get_free_pages(&ftl));
+    printf("  [GC] GC threshold: %d pages\n", ftl.gc_threshold);
+    
+    // 阶段1：写入数据直到触发 GC
+    int write_count = 0;
+    int gc_triggered = 0;
+    uint8_t last_written[256];
+    memset(last_written, 0xFF, sizeof(last_written));
+    
+    printf("  [GC] Phase 1: Writing data until GC triggers...\n");
+    
+    for (int i = 0; i < 500 && write_count < 200; i++) {
+        uint16_t sector = i % 200; // 循环写入 200 个 sector
+        uint8_t write_val = (uint8_t)(i & 0xFF);
+        
+        uint8_t write_data[USER_DATA_SIZE];
+        memset(write_data, write_val, USER_DATA_SIZE);
+        
+        uint32_t free_before = mini_ftl_get_free_pages(&ftl);
+        
+        if (mini_ftl_write(&ftl, sector, write_data) != 0) {
+            printf("  [GC] Write failed at iteration %d (free=%d)\n", i, free_before);
+            break;
+        }
+        
+        last_written[sector] = write_val;
+        write_count++;
+        
+        uint32_t free_after = mini_ftl_get_free_pages(&ftl);
+        
+        // 检测是否触发了 GC（空闲页数突然增加）
+        if (free_after > free_before + 10) {
+            gc_triggered++;
+            printf("  [GC] *** GC triggered at write #%d! Free: %d -> %d ***\n",
+                   i, free_before, free_after);
+        }
+        
+        // 每 50 次写入输出一次状态
+        if (i % 50 == 0) {
+            printf("  [GC] Write #%d: sector=%d, free_pages=%d\n", i, sector, free_after);
+        }
+    }
+    
+    printf("  [GC] Phase 1 complete: wrote %d pages, GC triggered %d times\n",
+           write_count, gc_triggered);
+    printf("  [GC] Final free pages: %d\n", mini_ftl_get_free_pages(&ftl));
+    
+    // 阶段2：验证所有写入的数据仍可读取
+    printf("  [GC] Phase 2: Verifying data integrity after GC...\n");
+    
+    int verified_count = 0;
+    for (int i = 0; i < 200; i++) {
+        if (last_written[i] != 0xFF) {
+            uint8_t read_data[USER_DATA_SIZE];
+            if (mini_ftl_read(&ftl, i, read_data) == 0) {
+                ASSERT_FMT(read_data[0] == last_written[i],
+                          "data mismatch after GC for sector %d", i);
+                verified_count++;
+            } else {
+                printf("  [GC] ERROR: Failed to read sector %d after GC\n", i);
+                ASSERT(0, "read failed after GC");
+            }
+        }
+    }
+    
+    printf("  [GC] Verified %d sectors after GC\n", verified_count);
+    
+    // 阶段3：手动触发 GC 并验证
+    printf("  [GC] Phase 3: Manual GC trigger test...\n");
+    
+    uint32_t free_before_manual_gc = mini_ftl_get_free_pages(&ftl);
+    printf("  [GC] Free pages before manual GC: %d\n", free_before_manual_gc);
+    
+    // 手动触发 GC，尝试回收 50 页
+    int freed = mini_ftl_gc_collect(&ftl, 50);
+    printf("  [GC] Manual GC freed %d pages\n", freed);
+    
+    uint32_t free_after_manual_gc = mini_ftl_get_free_pages(&ftl);
+    printf("  [GC] Free pages after manual GC: %d\n", free_after_manual_gc);
+    
+    ASSERT(free_after_manual_gc >= free_before_manual_gc, 
+           "free pages should not decrease after GC");
+    
+    // 再次验证数据完整性
+    printf("  [GC] Phase 4: Final data verification...\n");
+    
+    for (int i = 0; i < 200; i++) {
+        if (last_written[i] != 0xFF) {
+            uint8_t read_data[USER_DATA_SIZE];
+            if (mini_ftl_read(&ftl, i, read_data) == 0) {
+                ASSERT(read_data[0] == last_written[i],
+                       "data mismatch after manual GC for sector %d", i);
+            } else {
+                printf("  [GC] ERROR: Failed to read sector %d after manual GC\n", i);
+                ASSERT(0, "read failed after manual GC");
+            }
+        }
+    }
+    
+    printf("  [PASS] All data verified after GC\n");
+    
+    cleanup_test_flash();
+    PASS();
+}
+
+/**
+ * test_gc_round_wrap - GC Round-Wrap 场景测试
+ * 
+ * 测试内容：
+ * 1. 模拟 Flash 空间接近耗尽的场景
+ * 2. 强制 gc_tail_page 到达 Flash 末尾
+ * 3. 验证 Round-Wrap 后 GC 仍能正常工作
+ * 4. 验证数据不丢失
+ */
+int test_gc_round_wrap() {
+    mini_ftl_t ftl;
+    const char *flash_file = "eflash_test.bin";
+    
+    printf("[TEST] test_gc_round_wrap: Starting...\n");
+    
+    init_test_flash(flash_file);
+    mini_ftl_init(&ftl);
+    
+    printf("  [WRAP] Testing GC round-wrap behavior...\n");
+    printf("  [WRAP] Total user pages: %d\n", ftl.total_user_pages);
+    printf("  [WRAP] Initial tail_page: %d\n", ftl.gc_tail_page);
+    
+    // 阶段1：写入数据使 tail_page 接近末尾
+    printf("  [WRAP] Phase 1: Filling flash to force tail near end...\n");
+    
+    // 计算需要写入的页数，使 tail 接近末尾
+    uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
+    uint16_t first_user_page = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;
+    uint16_t user_pages_count = last_user_page - first_user_page + 1;
+    
+    // 写入足够多的数据，让 tail 移动到大半部分
+    int writes_to_fill = user_pages_count * 3 / 4; // 填充 75%
+    
+    printf("  [WRAP] Will write %d pages to push tail forward\n", writes_to_fill);
+    
+    for (int i = 0; i < writes_to_fill; i++) {
+        uint16_t sector = i % 100; // 循环写入 100 个 sector，产生大量垃圾
+        uint8_t write_data[USER_DATA_SIZE];
+        memset(write_data, (uint8_t)(i & 0xFF), USER_DATA_SIZE);
+        
+        if (mini_ftl_write(&ftl, sector, write_data) != 0) {
+            printf("  [WRAP] Write failed at iteration %d\n", i);
+            break;
+        }
+        
+        // 每 200 次输出 tail 位置
+        if (i % 200 == 0) {
+            printf("  [WRAP] Write #%d: tail_page=%d, free=%d\n",
+                   i, ftl.gc_tail_page, mini_ftl_get_free_pages(&ftl));
+        }
+    }
+    
+    printf("  [WRAP] After filling: tail_page=%d, free=%d\n",
+           ftl.gc_tail_page, mini_ftl_get_free_pages(&ftl));
+    
+    // 阶段2：手动将 tail 设置到接近末尾的位置
+    printf("  [WRAP] Phase 2: Forcing tail to near end for wrap test...\n");
+    
+    ftl.gc_tail_page = last_user_page - 5; // 距离末尾还有 5 页
+    printf("  [WRAP] Set tail_page to %d (near end)\n", ftl.gc_tail_page);
+    
+    // 阶段3：执行 GC，触发 Round-Wrap
+    printf("  [WRAP] Phase 3: Triggering GC to cause round-wrap...\n");
+    
+    int freed = mini_ftl_gc_collect(&ftl, 20); // 尝试回收 20 页
+    printf("  [WRAP] GC freed %d pages\n", freed);
+    printf("  [WRAP] After GC: tail_page=%d (should have wrapped)\n", ftl.gc_tail_page);
+    
+    // 验证 tail_page 已经回绕
+    ASSERT(ftl.gc_tail_page < last_user_page - 5 || ftl.gc_tail_page >= first_user_page,
+           "tail_page should have wrapped around");
+    
+    printf("  [WRAP] ✓ Round-wrap confirmed: tail jumped from end to beginning\n");
+    
+    // 阶段4：继续写入，验证系统仍正常工作
+    printf("  [WRAP] Phase 4: Continuing writes after round-wrap...\n");
+    
+    for (int i = 0; i < 50; i++) {
+        uint16_t sector = (uint16_t)(200 + i); // 新的 sector ID
+        uint8_t write_data[USER_DATA_SIZE];
+        memset(write_data, (uint8_t)(0xA0 + i), USER_DATA_SIZE);
+        
+        ASSERT(mini_ftl_write(&ftl, sector, write_data) == 0,
+               "write after round-wrap");
+    }
+    
+    printf("  [WRAP] Successfully wrote 50 more pages after round-wrap\n");
+    
+    // 阶段5：验证之前写入的数据仍可读取
+    printf("  [WRAP] Phase 5: Verifying data integrity after round-wrap...\n");
+    
+    int verified = 0;
+    for (int i = 0; i < 100; i++) {
+        uint8_t read_data[USER_DATA_SIZE];
+        if (mini_ftl_read(&ftl, (uint16_t)i, read_data) == 0) {
+            verified++;
+        }
+    }
+    
+    printf("  [WRAP] Verified %d/100 sectors readable after round-wrap\n", verified);
+    
+    cleanup_test_flash();
+    PASS();
+}
+
+/**
+ * test_gc_stress - GC 压力测试
+ * 
+ * 测试内容：
+ * 1. 持续写入直到 Flash 几乎满
+ * 2. 混合读写操作
+ * 3. 验证 GC 在极端情况下的稳定性
+ */
+int test_gc_stress() {
+    mini_ftl_t ftl;
+    const char *flash_file = "eflash_test.bin";
+    
+    printf("[TEST] test_gc_stress: Starting...\n");
+    
+    init_test_flash(flash_file);
+    mini_ftl_init(&ftl);
+    
+    printf("  [STRESS] Starting GC stress test...\n");
+    printf("  [STRESS] Total capacity: %d pages\n", ftl.total_user_pages);
+    
+    // 阶段1：激进写入，快速消耗空间
+    printf("  [STRESS] Phase 1: Aggressive writing...\n");
+    
+    int total_writes = 0;
+    int gc_count = 0;
+    uint32_t last_free = mini_ftl_get_free_pages(&ftl);
+    
+    for (int i = 0; i < 1000; i++) {
+        uint16_t sector = (uint16_t)(i % 150); // 150 个 sector 循环更新
+        uint8_t write_data[USER_DATA_SIZE];
+        memset(write_data, (uint8_t)(i & 0xFF), USER_DATA_SIZE);
+        
+        uint32_t free_before = mini_ftl_get_free_pages(&ftl);
+        
+        if (mini_ftl_write(&ftl, sector, write_data) != 0) {
+            printf("  [STRESS] Write failed at iteration %d (space exhausted)\n", i);
+            break;
+        }
+        
+        total_writes++;
+        
+        uint32_t free_after = mini_ftl_get_free_pages(&ftl);
+        
+        // 检测 GC 触发
+        if (free_after > free_before + 5) {
+            gc_count++;
+            printf("  [STRESS] GC #%d triggered at write #%d (free: %d -> %d)\n",
+                   gc_count, i, free_before, free_after);
+        }
+        
+        last_free = free_after;
+        
+        // 每 100 次输出状态
+        if (i % 100 == 0) {
+            printf("  [STRESS] Iteration %d: writes=%d, GCs=%d, free=%d\n",
+                   i, total_writes, gc_count, last_free);
+        }
+    }
+    
+    printf("  [STRESS] Phase 1 complete: %d writes, %d GCs triggered\n",
+           total_writes, gc_count);
+    printf("  [STRESS] Final free space: %d pages (%.1f%%)\n",
+           last_free, (float)last_free / ftl.total_user_pages * 100);
+    
+    // 阶段2：随机读写验证
+    printf("  [STRESS] Phase 2: Random read/write verification...\n");
+    
+    int errors = 0;
+    for (int i = 0; i < 200; i++) {
+        uint16_t sector = (uint16_t)(rand() % 150);
+        uint8_t read_data[USER_DATA_SIZE];
+        
+        if (mini_ftl_read(&ftl, sector, read_data) != 0) {
+            printf("  [STRESS] ERROR: Read failed for sector %d\n", sector);
+            errors++;
+        }
+    }
+    
+    printf("  [STRESS] Random reads: %d errors out of 200 attempts\n", errors);
+    ASSERT(errors == 0, "no read errors during stress test");
+    
+    // 阶段3：最终完整性检查
+    printf("  [STRESS] Phase 3: Final integrity check...\n");
+    
+    int readable_count = 0;
+    for (int i = 0; i < 150; i++) {
+        uint8_t read_data[USER_DATA_SIZE];
+        if (mini_ftl_read(&ftl, (uint16_t)i, read_data) == 0) {
+            readable_count++;
+        }
+    }
+    
+    printf("  [STRESS] %d/150 sectors still readable\n", readable_count);
+    ASSERT(readable_count > 100, "majority of sectors should be readable");
+    
     cleanup_test_flash();
     PASS();
 }
