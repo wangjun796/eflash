@@ -750,7 +750,7 @@ uint32_t mini_ftl_get_free_pages(mini_ftl_t *ftl) {
     // Head: 下一个可写入的物理页
     // Tail: GC扫描的起始位置
     // 
-    // 空闲空间 = Tail到Head之间的区域（顺时针方向）
+    // 空闲空间 = Head 到 Tail 的距离（顺时针方向）
     
     uint16_t first_user_page = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
@@ -759,35 +759,21 @@ uint32_t mini_ftl_get_free_pages(mini_ftl_t *ftl) {
     if (ftl->gc_head_page >= ftl->gc_tail_page) {
         // 情况1: Head在Tail之后或相等
         // [first...Tail...Head...last]
-        // 已用空间 = Head - Tail
-        uint32_t used = (uint32_t)ftl->gc_head_page - (uint32_t)ftl->gc_tail_page;
+        // 空闲空间 = (last - Head + 1) + (Tail - first)
+        uint32_t free = (uint32_t)(last_user_page - ftl->gc_head_page + 1) + 
+                        (uint32_t)(ftl->gc_tail_page - first_user_page);
         
-        // 【关键修复】防止溢出：当used > total时返回0
-        if (used > total_user_pages) {
-            FTL_DEBUG("[FREE_PAGES] ERROR: used(%u) > total(%u), head=%d, tail=%d\n",
-                     used, total_user_pages, ftl->gc_head_page, ftl->gc_tail_page);
-            return 0;
-        }
-        uint32_t free = total_user_pages - used;
-        FTL_DEBUG("[FREE_PAGES] Case 1: head=%d, tail=%d, used=%u, free=%u\n",
-                 ftl->gc_head_page, ftl->gc_tail_page, used, free);
+        FTL_DEBUG("[FREE_PAGES] Case 1: head=%d, tail=%d, free=%u\n",
+                 ftl->gc_head_page, ftl->gc_tail_page, free);
         return free;
     } else {
         // 情况2: Head已经回绕到起点，在Tail之前
         // [first...Head...Tail...last]
-        // 已用空间 = (last - Tail + 1) + (Head - first + 1)
-        uint32_t used = (uint32_t)(last_user_page - ftl->gc_tail_page + 1) + 
-                        (uint32_t)(ftl->gc_head_page - first_user_page + 1);
+        // 空闲空间 = Tail - Head
+        uint32_t free = (uint32_t)(ftl->gc_tail_page - ftl->gc_head_page);
         
-        // 防止溢出
-        if (used > total_user_pages) {
-            FTL_DEBUG("[FREE_PAGES] ERROR: used(%u) > total(%u), head=%d, tail=%d\n",
-                     used, total_user_pages, ftl->gc_head_page, ftl->gc_tail_page);
-            return 0;
-        }
-        uint32_t free = total_user_pages - used;
-        FTL_DEBUG("[FREE_PAGES] Case 2: head=%d, tail=%d, used=%u, free=%u\n",
-                 ftl->gc_head_page, ftl->gc_tail_page, used, free);
+        FTL_DEBUG("[FREE_PAGES] Case 2: head=%d, tail=%d, free=%u\n",
+                 ftl->gc_head_page, ftl->gc_tail_page, free);
         return free;
     }
 }
