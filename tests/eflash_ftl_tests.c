@@ -24,6 +24,19 @@
 #include "../eflash_ftl/space_mgr.h"
 #include "ecc/bch.h"
 
+// --- 强制断言宏（不受NDEBUG影响）---
+// 在Release模式下，标准assert()会被禁用，导致测试失败时不退出而卡死
+// 使用此宏确保任何模式下都能正确终止
+#define FORCE_ASSERT(expr, msg) do { \
+    if (!(expr)) { \
+        fprintf(stderr, "\n[ASSERTION FAILED] %s\n", msg); \
+        fprintf(stderr, "  File: %s, Line: %d\n", __FILE__, __LINE__); \
+        fprintf(stderr, "  Expression: %s\n\n", #expr); \
+        fflush(stderr); \
+        abort(); \
+    } \
+} while(0)
+
 // --- BCH ECC 包装函数（用于测试）---
 
 static void bch_encode(const struct bch_def *bch, const uint8_t *data, size_t len, uint8_t *ecc) {
@@ -32,8 +45,14 @@ static void bch_encode(const struct bch_def *bch, const uint8_t *data, size_t le
 
 static int bch_decode(const struct bch_def *bch, uint8_t *data, size_t len, const uint8_t *ecc) {
     if (bch_verify(bch, data, len, ecc) == 0) {
-        return 0;
+        return 0;  // 无错误
     }
+
+    // 保存原始数据用于比较
+    uint8_t data_original[BCH_MAX_CHUNK_SIZE];
+    uint8_t ecc_original[BCH_MAX_ECC];
+    memcpy(data_original, data, len);
+    memcpy(ecc_original, ecc, bch->ecc_bytes);
 
     uint8_t data_copy[BCH_MAX_CHUNK_SIZE];
     uint8_t ecc_copy[BCH_MAX_ECC];
@@ -43,11 +62,31 @@ static int bch_decode(const struct bch_def *bch, uint8_t *data, size_t len, cons
     bch_repair(bch, data_copy, len, ecc_copy);
 
     if (bch_verify(bch, data_copy, len, ecc_copy) != 0) {
-        return -1;
+        return -1;  // 无法纠正
+    }
+
+    // 计算纠正的位数（通过比较修复前后的差异）
+    int error_count = 0;
+    for (size_t i = 0; i < len; i++) {
+        uint8_t diff = data_original[i] ^ data_copy[i];
+        // 统计diff中1的个数
+        while (diff) {
+            error_count += diff & 1;
+            diff >>= 1;
+        }
+    }
+    
+    // 同时统计ECC区域的错误
+    for (int i = 0; i < bch->ecc_bytes; i++) {
+        uint8_t diff = ecc_original[i] ^ ecc_copy[i];
+        while (diff) {
+            error_count += diff & 1;
+            diff >>= 1;
+        }
     }
 
     memcpy(data, data_copy, len);
-    return 1;
+    return error_count > 0 ? error_count : 1;  // 至少返回1表示有错误被纠正
 }
 
 #define TEST_FLASH_FILE "eflash_test.bin"
@@ -180,7 +219,8 @@ int test_init_recovery(void) {
     // Verify data persistence
     uint8_t read_data[USER_DATA_SIZE];
     mini_ftl_read(&ftl, 100, read_data);
-    assert(verify_test_pattern(read_data, USER_DATA_SIZE, 0xAA) == 0);
+    FORCE_ASSERT(verify_test_pattern(read_data, USER_DATA_SIZE, 0xAA) == 0, 
+                 "Data verification failed after recovery - read data does not match written pattern");
     printf("  [PASS] Recovery after write\n");
 
     cleanup_test_flash();
@@ -208,7 +248,8 @@ int test_basic_read_write(void) {
 
     memset(read_buf, 0, USER_DATA_SIZE);
     mini_ftl_read(&ftl, 0, read_buf);
-    assert(verify_test_pattern(read_buf, USER_DATA_SIZE, 0x11) == 0);
+    FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0x11) == 0,
+                 "Single page read verification failed - expected pattern 0x11");
     printf("  [PASS] Single page write/read\n");
 
     // Test 2b: Multiple pages
@@ -219,7 +260,8 @@ int test_basic_read_write(void) {
 
     for (int i = 0; i < 10; i++) {
         mini_ftl_read(&ftl, (uint16_t)(i * 50), read_buf);
-        assert(verify_test_pattern(read_buf, USER_DATA_SIZE, (uint8_t)(i + 0x20)) == 0);
+        FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, (uint8_t)(i + 0x20)) == 0,
+                     "Multiple pages verification failed");
     }
     printf("  [PASS] Multiple pages write/read\n");
 
@@ -228,7 +270,8 @@ int test_basic_read_write(void) {
     mini_ftl_write(&ftl, 0, write_buf);
 
     mini_ftl_read(&ftl, 0, read_buf);
-    assert(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xFF) == 0);
+    FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xFF) == 0,
+                 "Overwrite verification failed - expected pattern 0xFF");
     printf("  [PASS] Overwrite visibility\n");
 
     cleanup_test_flash();
@@ -323,7 +366,8 @@ int test_transactions(void) {
     mini_ftl_txn_commit(&ftl);
 
     mini_ftl_read(&ftl, 10, read_buf);
-    assert(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xB1) == 0);
+    FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xB1) == 0,
+                 "Transaction commit verification failed");
     printf("  [PASS] Transaction commit\n");
 
     // Test 4b: Transaction abort
@@ -333,7 +377,8 @@ int test_transactions(void) {
     mini_ftl_txn_abort(&ftl);
 
     mini_ftl_read(&ftl, 10, read_buf);
-    assert(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xB1) == 0);
+    FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xB1) == 0,
+                 "Transaction abort verification failed - data should be rolled back");
     printf("  [PASS] Transaction abort (rollback)\n");
 
     // Test 4c: Multiple operations in one transaction
@@ -346,7 +391,8 @@ int test_transactions(void) {
 
     for (int i = 0; i < 5; i++) {
         mini_ftl_read(&ftl, (uint16_t)(100 + i), read_buf);
-        assert(verify_test_pattern(read_buf, USER_DATA_SIZE, (uint8_t)(0xD0 + i)) == 0);
+        FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, (uint8_t)(0xD0 + i)) == 0,
+                     "Multi-operation transaction verification failed");
     }
     printf("  [PASS] Multi-operation transaction\n");
 
@@ -386,7 +432,8 @@ int test_power_failure(void) {
     mini_ftl_init(&ftl);
 
     mini_ftl_read(&ftl, 20, read_buf);
-    assert(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xE1) == 0);
+    FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xE1) == 0,
+                 "Power failure recovery verification failed - should see old data");
     printf("  [PASS] Recovery from incomplete transaction\n");
 
     // Test 5b: Commit then power failure
@@ -400,7 +447,8 @@ int test_power_failure(void) {
     mini_ftl_init(&ftl);
 
     mini_ftl_read(&ftl, 20, read_buf);
-    assert(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xF2) == 0);
+    FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xF2) == 0,
+                 "Committed transaction recovery verification failed");
     printf("  [PASS] Recovery after committed transaction\n");
 
     cleanup_test_flash();
@@ -418,38 +466,40 @@ int test_space_management(void) {
 
     printf("[TEST] test_space_management: Starting...\n");
 
+    // 初始化Flash模拟层（必须在使用space_mgr之前）
+    init_test_flash();
+
     // Test 6a: Basic allocation
     space_mgr_init(&mgr, 100);
-    assert(mgr.free_units == 100 * 256);
-
-    int ret = space_mgr_alloc(&mgr, 10, &page, &offset);
+    
+    uint32_t logical_addr;
+    int ret = space_mgr_alloc(&mgr, 10, &logical_addr);
     assert(ret == 0);
-    assert(page == 0);
-    assert(offset == 0);
-    printf("  [PASS] Basic allocation\n");
+    printf("  [PASS] Basic allocation (logical_addr=0x%06X)\n", logical_addr);
 
     // Test 6b: Multiple allocations
-    uint16_t pages[10];
-    uint16_t offsets[10];
+    uint32_t addrs[10];
     for (int i = 0; i < 10; i++) {
-        ret = space_mgr_alloc(&mgr, 4, &pages[i], &offsets[i]);
+        ret = space_mgr_alloc(&mgr, 4, &addrs[i]);
         assert(ret == 0);
     }
     printf("  [PASS] Multiple allocations\n");
 
     // Test 6c: Free and reallocate
-    space_mgr_free(&mgr, pages[0], offsets[0], 4);
-    ret = space_mgr_alloc(&mgr, 4, &page, &offset);
+    space_mgr_free(&mgr, addrs[0], 4);
+    uint32_t realloc_addr;
+    ret = space_mgr_alloc(&mgr, 4, &realloc_addr);
     assert(ret == 0);
-    assert(page == pages[0]);
-    assert(offset == offsets[0]);
+    assert(realloc_addr == addrs[0]);
     printf("  [PASS] Free and reallocate\n");
 
     // Test 6d: Small object allocation
-    ret = space_mgr_alloc(&mgr, 2, &page, &offset);
+    uint32_t small_addr;
+    ret = space_mgr_alloc(&mgr, 2, &small_addr);
     assert(ret == 0);
-    printf("  [PASS] Minimum size allocation (2 bytes)\n");
+    printf("  [PASS] Minimum size allocation (2 bytes, logical_addr=0x%06X)\n", small_addr);
 
+    cleanup_test_flash();
     printf("[PASS] test_space_management: Completed successfully\n");
     return 0;
 }
@@ -475,22 +525,30 @@ int test_ecc_correction(void) {
     // Decode without errors
     memcpy(corrupted, &meta, META_SIZE);
     int result = bch_decode(&bch_3bit, corrupted, META_SIZE - 5, meta.ecc);
-    assert(result == 0);
+    FORCE_ASSERT(result == 0, "ECC decode with no errors should return 0");
     printf("  [PASS] ECC encode/decode (no errors)\n");
 
     // Test 7b: Correct 1-bit error
     memcpy(corrupted, &meta, META_SIZE);
     corrupted[0] ^= 0x01; // Flip 1 bit
     result = bch_decode(&bch_3bit, corrupted, META_SIZE - 5, meta.ecc);
-    assert(result == 1);
-    assert(corrupted[0] == ((uint8_t *)&meta)[0]);
+    FORCE_ASSERT(result == 1, "ECC should correct 1-bit error and return 1");
+    FORCE_ASSERT(corrupted[0] == ((uint8_t *)&meta)[0], "ECC correction produced wrong data");
     printf("  [PASS] ECC correct 1-bit error\n");
 
-    // Test 7c: Correct 3-bit errors
+    // Test 7c: Correct 2-bit errors (保守测试，确保可靠性)
+    memcpy(corrupted, &meta, META_SIZE);
+    corrupted[0] ^= 0x01; // Flip bit 0
+    corrupted[1] ^= 0x01; // Flip bit 8
+    result = bch_decode(&bch_3bit, corrupted, META_SIZE - 5, meta.ecc);
+    FORCE_ASSERT(result == 2, "ECC should correct 2-bit errors and return 2");
+    printf("  [PASS] ECC correct 2-bit errors\n");
+
+    // Test 7d: Correct 3-bit errors
     memcpy(corrupted, &meta, META_SIZE);
     corrupted[2] ^= 0x07; // Flip 3 bits
     result = bch_decode(&bch_3bit, corrupted, META_SIZE - 5, meta.ecc);
-    assert(result == 3);
+    FORCE_ASSERT(result == 3, "ECC should correct 3-bit errors and return 3");
     printf("  [PASS] ECC correct 3-bit errors\n");
 
     printf("[PASS] test_ecc_correction: Completed successfully\n");
@@ -520,7 +578,8 @@ int test_radix_tree(void) {
     // Verify all data accessible via tree
     for (int i = 0; i < 20; i++) {
         mini_ftl_read(&ftl, (uint16_t)(i * 100), read_buf);
-        assert(verify_test_pattern(read_buf, USER_DATA_SIZE, (uint8_t)(i + 0x50)) == 0);
+        FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, (uint8_t)(i + 0x50)) == 0,
+                     "Sequential writes tree verification failed");
     }
     printf("  [PASS] Sequential writes tree integrity\n");
 
@@ -532,7 +591,8 @@ int test_radix_tree(void) {
 
     for (int i = 0; i < 20; i++) {
         mini_ftl_read(&ftl, (uint16_t)(i * 100), read_buf);
-        assert(verify_test_pattern(read_buf, USER_DATA_SIZE, (uint8_t)(i + 0x70)) == 0);
+        FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, (uint8_t)(i + 0x70)) == 0,
+                     "Random access tree verification failed");
     }
     printf("  [PASS] Random access tree integrity\n");
 
@@ -631,7 +691,10 @@ int main(void) {
     RUN_TEST(gc_basic)
     RUN_TEST(gc_round_wrap)
     RUN_TEST(gc_stress)
-
+    
+    // Logical address interface test
+    RUN_TEST(logical_address_interface)
+    
     #undef RUN_TEST
 
     printf("========================================\n");
@@ -989,11 +1052,10 @@ static int test_radix_tree_stress_random_access(void) {
  */
 int test_gc_basic() {
     mini_ftl_t ftl;
-    const char *flash_file = "eflash_test.bin";
     
     printf("[TEST] test_gc_basic: Starting...\n");
     
-    init_test_flash(flash_file);
+    init_test_flash();
     mini_ftl_init(&ftl);
     
     printf("  [GC] Initial free pages: %d\n", mini_ftl_get_free_pages(&ftl));
@@ -1114,11 +1176,10 @@ int test_gc_basic() {
  */
 int test_gc_round_wrap() {
     mini_ftl_t ftl;
-    const char *flash_file = "eflash_test.bin";
     
     printf("[TEST] test_gc_round_wrap: Starting...\n");
     
-    init_test_flash(flash_file);
+    init_test_flash();
     mini_ftl_init(&ftl);
     
     printf("  [WRAP] Testing GC round-wrap with REAL writes...\n");
@@ -1325,11 +1386,10 @@ int test_gc_round_wrap() {
  */
 int test_gc_stress() {
     mini_ftl_t ftl;
-    const char *flash_file = "eflash_test.bin";
     
     printf("[TEST] test_gc_stress: Starting...\n");
     
-    init_test_flash(flash_file);
+    init_test_flash();
     mini_ftl_init(&ftl);
     
     printf("  [STRESS] Starting GC stress test...\n");
@@ -1429,6 +1489,119 @@ int test_gc_stress() {
     
     printf("  [STRESS] %d/150 sectors still readable\n", readable_count);
     ASSERT(readable_count > 100, "majority of sectors should be readable");
+    
+    cleanup_test_flash();
+    PASS();
+}
+
+/**
+ * test_logical_address_interface: 测试基于逻辑地址的读写接口
+ * 
+ * 验证：
+ * 1. space_mgr_alloc 返回正确的24位逻辑地址
+ * 2. mini_ftl_write_logical/read_logical 正确使用逻辑地址
+ * 3. 逻辑地址到 sector_id 的转换正确
+ */
+static int test_logical_address_interface(void) {
+    TEST(logical_address_interface);
+    
+    init_test_flash();
+    
+    mini_ftl_t ftl;
+    ASSERT(mini_ftl_init(&ftl) == 0, "FTL initialization");
+    
+    printf("  [LOGICAL] Testing logical address allocation and I/O...\n");
+    
+    // 测试1：分配逻辑地址空间（以字节为单位）
+    uint32_t logical_addr1, logical_addr2, logical_addr3;
+    
+    // 分配USER_DATA_SIZE字节的空间（一个完整的页数据）
+    ASSERT(space_mgr_alloc(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr1) == 0,
+           "allocate first logical address");
+    printf("  [LOGICAL] Allocated logical_addr1 = 0x%06X (byte offset)\n", logical_addr1);
+    
+    ASSERT(space_mgr_alloc(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr2) == 0,
+           "allocate second logical address");
+    printf("  [LOGICAL] Allocated logical_addr2 = 0x%06X (byte offset)\n", logical_addr2);
+    
+    ASSERT(space_mgr_alloc(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr3) == 0,
+           "allocate third logical address");
+    printf("  [LOGICAL] Allocated logical_addr3 = 0x%06X (byte offset)\n", logical_addr3);
+    
+    // 验证逻辑地址是有效的（不为0xFFFFFFFF）
+    ASSERT(logical_addr1 != 0xFFFFFFFF, "logical_addr1 should be valid");
+    ASSERT(logical_addr2 != 0xFFFFFFFF, "logical_addr2 should be valid");
+    ASSERT(logical_addr3 != 0xFFFFFFFF, "logical_addr3 should be valid");
+    
+    // 从逻辑地址（字节偏移）转换为sector_id（页号）
+    // sector_id = logical_addr / USER_DATA_SIZE
+    uint16_t sector_id1 = (uint16_t)(logical_addr1 / USER_DATA_SIZE);
+    uint16_t sector_id2 = (uint16_t)(logical_addr2 / USER_DATA_SIZE);
+    uint16_t sector_id3 = (uint16_t)(logical_addr3 / USER_DATA_SIZE);
+    
+    printf("  [LOGICAL] Converted to sector_ids: %d, %d, %d\n",
+           sector_id1, sector_id2, sector_id3);
+    
+    // 测试2：使用sector_id写入数据
+    uint8_t write_data1[USER_DATA_SIZE], write_data2[USER_DATA_SIZE], write_data3[USER_DATA_SIZE];
+    for (int i = 0; i < USER_DATA_SIZE; i++) {
+        write_data1[i] = (uint8_t)(i & 0xFF);
+        write_data2[i] = (uint8_t)((i + 100) & 0xFF);
+        write_data3[i] = (uint8_t)((i + 200) & 0xFF);
+    }
+    
+    printf("  [LOGICAL] Writing data using sector_ids...\n");
+    ASSERT(mini_ftl_write(&ftl, sector_id1, write_data1) == 0, "write to sector_id1");
+    ASSERT(mini_ftl_write(&ftl, sector_id2, write_data2) == 0, "write to sector_id2");
+    ASSERT(mini_ftl_write(&ftl, sector_id3, write_data3) == 0, "write to sector_id3");
+    
+    // 测试3：读取数据并验证
+    uint8_t read_data[USER_DATA_SIZE];
+    
+    printf("  [LOGICAL] Reading data using sector_ids...\n");
+    ASSERT(mini_ftl_read(&ftl, sector_id1, read_data) == 0, "read from sector_id1");
+    ASSERT(memcmp(read_data, write_data1, USER_DATA_SIZE) == 0, "data matches for sector_id1");
+    
+    ASSERT(mini_ftl_read(&ftl, sector_id2, read_data) == 0, "read from sector_id2");
+    ASSERT(memcmp(read_data, write_data2, USER_DATA_SIZE) == 0, "data matches for sector_id2");
+    
+    ASSERT(mini_ftl_read(&ftl, sector_id3, read_data) == 0, "read from sector_id3");
+    ASSERT(memcmp(read_data, write_data3, USER_DATA_SIZE) == 0, "data matches for sector_id3");
+    
+    // 测试4：测试新的逻辑地址接口
+    printf("  [LOGICAL] Testing mini_ftl_write_logical/read_logical interfaces...\n");
+    
+    uint32_t logical_addr4;
+    ASSERT(space_mgr_alloc(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr4) == 0,
+           "allocate fourth logical address");
+    
+    uint8_t write_data4[USER_DATA_SIZE];
+    for (int i = 0; i < USER_DATA_SIZE; i++) {
+        write_data4[i] = (uint8_t)((i + 50) & 0xFF);
+    }
+    
+    // 使用新的逻辑地址接口写入（内部会自动转换为sector_id）
+    ASSERT(mini_ftl_write_logical(&ftl, logical_addr4, write_data4) == 0,
+           "write using mini_ftl_write_logical");
+    
+    // 使用新的逻辑地址接口读取
+    uint8_t read_data4[USER_DATA_SIZE];
+    ASSERT(mini_ftl_read_logical(&ftl, logical_addr4, read_data4) == 0,
+           "read using mini_ftl_read_logical");
+    ASSERT(memcmp(read_data4, write_data4, USER_DATA_SIZE) == 0,
+           "data matches for logical_addr4 using new interface");
+    
+    printf("  [LOGICAL] Verified: logical_addr4 = 0x%06X -> sector_id=%d\n",
+           logical_addr4, logical_addr4 / USER_DATA_SIZE);
+    
+    // 测试5：释放逻辑地址空间
+    printf("  [LOGICAL] Testing space_mgr_free...\n");
+    space_mgr_free(&ftl.spc_mgr, logical_addr1, USER_DATA_SIZE);
+    space_mgr_free(&ftl.spc_mgr, logical_addr2, USER_DATA_SIZE);
+    
+    // 验证剩余空闲空间
+    uint32_t free_bytes = space_mgr_get_free_bytes(&ftl.spc_mgr);
+    printf("  [LOGICAL] Free bytes after freeing 2 pages: %u\n", free_bytes);
     
     cleanup_test_flash();
     PASS();

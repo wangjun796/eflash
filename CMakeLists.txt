@@ -106,6 +106,13 @@ target_link_libraries(all_tests ecc_lib)
 add_executable(eflash_ftl_tests tests/eflash_ftl_tests.c ${EFLASH_FTL_SOURCES} ${ECC_SOURCES} ${WINDOWS_RAND_FILE})
 target_compile_definitions(eflash_ftl_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 
+# 关键修复：在Release模式下也启用assert，确保测试失败时立即终止
+if(MSVC AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    # 移除NDEBUG定义，让assert生效
+    string(REPLACE "/DNDEBUG" "" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
+    string(REPLACE "/DNDEBUG" "" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+endif()
+
 # 创建Flash模拟器演示程序
 add_executable(flash_sim_demo sim_flash.c)
 target_compile_definitions(flash_sim_demo PRIVATE SIM_FLASH_MAIN)

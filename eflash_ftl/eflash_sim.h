@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 #define EFLASH_PAGE_SIZE    512
-#define EFLASH_TOTAL_PAGES  8192 // 4MB / 512B
+#define EFLASH_TOTAL_PAGES  2048 // 1MB / 512B (从8192减小到2048以加速测试)
 
 // 初始化模拟 Flash 文件
 int eflash_init(const char *filename);

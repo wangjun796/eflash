@@ -83,17 +83,26 @@ typedef struct {
     uint16_t      ext_hdr_addrs[16];// 扩展对象头页的逻辑地址数组
     
     // GC 相关字段（仿照 Dhara Head/Tail 模型）
+    uint16_t      gc_head_page;     // GC 分配指针：指向下一个可写入的物理页
     uint16_t      gc_tail_page;     // GC 回收指针：指向下一个待回收的物理页
     uint16_t      gc_threshold;     // GC 触发阈值（剩余空闲页数）
     uint32_t      total_user_pages; // 用户可用总页数（扣除系统保留区）
+    bool          gc_in_progress;   // GC正在进行标志，防止递归触发GC
 } mini_ftl_t;
 
 // --- 接口函数 ---
 int  mini_ftl_init(mini_ftl_t *ftl);
 int  mini_ftl_obj_get_header(mini_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr);
 int  mini_ftl_obj_set_header(mini_ftl_t *ftl, uint16_t obj_id, const obj_header_t *hdr);
+
+// 基于 sector_id 的读写接口（推荐）
 int  mini_ftl_write(mini_ftl_t *ftl, uint16_t sector_id, const uint8_t *data);
 int  mini_ftl_read(mini_ftl_t *ftl, uint16_t sector_id, uint8_t *data);
+
+// 基于逻辑地址的读写接口（可选）
+int  mini_ftl_write_logical(mini_ftl_t *ftl, uint32_t logical_addr, const uint8_t *data);
+int  mini_ftl_read_logical(mini_ftl_t *ftl, uint32_t logical_addr, uint8_t *data);
+
 void mini_ftl_txn_begin(mini_ftl_t *ftl);
 int  mini_ftl_txn_commit(mini_ftl_t *ftl);
 void mini_ftl_txn_abort(mini_ftl_t *ftl);

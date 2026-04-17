@@ -11,26 +11,26 @@
 #define META_SIZE 0
 #endif
 
-// --- Free Node 结构 (5字节) ---
-// 3字节逻辑地址 + 2字节大小
+// --- Free Node 结构 (8字节) ---
+// 4字节逻辑地址 + 4字节大小（单位：字节）
 #ifdef _MSC_VER
 #pragma pack(push, 1)
 typedef struct {
-    uint8_t     addr[3];        // 逻辑页地址（3字节，支持最多16M页）
-    uint16_t    size;           // 连续空闲页数
+    uint32_t    addr;           // 32位逻辑地址
+    uint32_t    size;           // 连续空闲字节数
 } free_node_t;
 #pragma pack(pop)
 #else
 typedef struct __attribute__((packed)) {
-    uint8_t     addr[3];        // 逻辑页地址（3字节，支持最多16M页）
-    uint16_t    size;           // 连续空闲页数
+    uint32_t    addr;           // 32位逻辑地址
+    uint32_t    size;           // 连续空闲字节数
 } free_node_t;
 #endif
 
 // --- Free Node Page 布局 ---
 #define FREE_NODE_PAGE_COUNT    4       // 预留4页存储free_node表
-#define FREE_NODES_PER_PAGE     92      // 每页node数: (464-4)/5 = 92
-#define TOTAL_FREE_NODES        (FREE_NODE_PAGE_COUNT * FREE_NODES_PER_PAGE)  // 总计368个node
+#define FREE_NODES_PER_PAGE     58      // 每页node数: 464/8 = 58
+#define TOTAL_FREE_NODES        (FREE_NODE_PAGE_COUNT * FREE_NODES_PER_PAGE)  // 总计232个node
 #define FREE_NODE_HEADER_SIZE   4       // 每页开头4字节存储count
 
 // --- 对象头配置 ---
@@ -56,23 +56,21 @@ typedef struct {
 void space_mgr_init(space_mgr_t *mgr, uint16_t total_pages);
 
 /**
- * space_mgr_alloc: 分配指定大小的连续空间
+ * space_mgr_alloc: 分配指定大小的逻辑地址空间
  * @mgr: 空间管理器实例
  * @size: 请求的字节数
- * @out_page: 输出分配的起始物理页号
- * @out_offset: 输出页内偏移（始终为0，因为按页分配）
- * @return: 0成功，-1失败
+ * @out_logical_addr: 输出分配的起始逻辑地址（24位）
+ * @return: 0成功，-1失败（空间不足）
  */
-int space_mgr_alloc(space_mgr_t *mgr, uint32_t size, uint16_t *out_page, uint16_t *out_offset);
+int space_mgr_alloc(space_mgr_t *mgr, uint32_t size, uint32_t *out_logical_addr);
 
 /**
- * space_mgr_free: 释放指定空间并合并相邻空闲块
+ * space_mgr_free: 释放指定的逻辑地址空间并合并相邻空闲块
  * @mgr: 空间管理器实例
- * @page: 释放的起始物理页号
- * @offset: 页内偏移（未使用）
+ * @logical_addr: 要释放的起始逻辑地址（24位）
  * @size: 释放的字节数
  */
-void space_mgr_free(space_mgr_t *mgr, uint16_t page, uint16_t offset, uint32_t size);
+void space_mgr_free(space_mgr_t *mgr, uint32_t logical_addr, uint32_t size);
 
 /**
  * space_mgr_sync: 同步free_node表到Flash
