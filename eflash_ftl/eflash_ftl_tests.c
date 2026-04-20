@@ -19,11 +19,10 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <string.h>
-#include "../eflash_ftl/eflash_ftl.h"
-#include "../eflash_ftl/eflash_mgr.h"
-
-#include "../eflash_ftl/eflash_sim.h"
-#include "ecc/bch.h"
+#include "eflash_ftl.h"
+#include "eflash_mgr.h"
+#include "eflash_sim.h"
+#include "../ecc/bch.h"
 
 // --- 强制断言宏（不受NDEBUG影响）---
 // 在Release模式下，标准assert()会被禁用，导致测试失败时不退出而卡死

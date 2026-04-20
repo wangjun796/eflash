@@ -41,6 +41,10 @@ set(EFLASH_FTL_SOURCES
     eflash_ftl/eflash_sim.c
 )
 
+set(EFLASH_FTL_TEST_SOURCES
+    eflash_ftl/eflash_ftl_tests.c
+)
+
 set(TEST_SOURCES
     tests/error.c
     tests/nand.c
@@ -103,7 +107,7 @@ add_executable(all_tests tests/all_tests.c tests/sim.c tests/util.c tests/jtutil
 target_link_libraries(all_tests ecc_lib)
 
 # 创建eFlash FTL测试程序
-add_executable(eflash_ftl_tests tests/eflash_ftl_tests.c ${EFLASH_FTL_SOURCES} ${ECC_SOURCES} ${WINDOWS_RAND_FILE})
+add_executable(eflash_ftl_tests ${EFLASH_FTL_TEST_SOURCES} ${EFLASH_FTL_SOURCES} ${ECC_SOURCES} ${WINDOWS_RAND_FILE})
 target_compile_definitions(eflash_ftl_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 # 可选：启用FTL调试输出，用于故障排查
 # 要启用调试输出，请使用：cmake -DFTL_DEBUG_ENABLE=ON ..
