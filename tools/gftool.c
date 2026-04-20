@@ -15,6 +15,7 @@
  */
 
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -72,7 +73,7 @@ static void print_poly(char var, poly_t p)
 	int have_term = 0;
 	int i;
 
-	printf("0x%lx [0x%lx] -> ", p, reciprocal(p));
+	printf("0x%" PRIx64 " [0x%" PRIx64 "] -> ", p, reciprocal(p));
 
 	for (i = MAX_DEGREE; i >= 0; i--) {
 		if (!((p >> i) & 1))

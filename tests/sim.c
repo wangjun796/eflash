@@ -236,7 +236,7 @@ int dhara_nand_read(const struct dhara_nand *n, dhara_page_t p,
 	if ((offset > PAGE_SIZE) || (length > PAGE_SIZE) ||
 	    (offset + length > PAGE_SIZE)) {
 		fprintf(stderr, "sim: NAND_read called on "
-			"invalid range: offset = %ld, length = %ld\n",
+			"invalid range: offset = %zu, length = %zu\n",
 			offset, length);
 		abort();
 	}

@@ -413,7 +413,7 @@ static int try_delete(struct dhara_map *m, dhara_sector_t s,
 {
 	dhara_error_t my_err;
 	uint8_t meta[DHARA_META_SIZE];
-	dhara_page_t alt_page;
+	dhara_page_t alt_page = DHARA_PAGE_NONE;  // Initialize to suppress warning
 	uint8_t alt_meta[DHARA_META_SIZE];
 	int level = DHARA_RADIX_DEPTH - 1;
 	int i;

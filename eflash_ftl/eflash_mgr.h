@@ -5,12 +5,6 @@
 #include <stdbool.h>
 #include "eflash_sim.h"
 
-// If META_SIZE is not defined in eflash_sim.h, provide a default value here (usually 0 or specific overhead)
-// Adjust this value according to the actual Flash simulator metadata overhead
-#ifndef META_SIZE
-#define META_SIZE 0
-#endif
-
 // --- Free Node Structure (8 bytes) ---
 // 4-byte logical address + 4-byte size (unit: bytes)
 #ifdef _MSC_VER

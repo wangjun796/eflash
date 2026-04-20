@@ -38,7 +38,7 @@ void seq_assert(unsigned int seed, const uint8_t *buf, size_t length)
 		const uint8_t expect = random();
 
 		if (buf[i] != expect) {
-			fprintf(stderr, "seq_assert: mismatch at %ld in "
+			fprintf(stderr, "seq_assert: mismatch at %zu in "
 				"sequence %d: 0x%02x (expected 0x%02x)\n",
 				i, seed, buf[i], expect);
 			abort();

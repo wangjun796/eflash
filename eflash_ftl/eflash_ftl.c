@@ -44,11 +44,9 @@ static int bch_decode(const struct bch_def *bch, uint8_t *data, size_t len, cons
 
     // Need correction, create copy for repair
     // Note: Ensure data_copy and ecc_copy are large enough
-    // Assume max data length is EFLASH_PAGE_SIZE or META_SIZE depending on call context
-    // For safety, use larger static buffer or dynamic allocation, here using fixed size as reference
-    // If META_SIZE is small, can use META_SIZE
-    uint8_t data_copy[META_SIZE];
-    uint8_t ecc_copy[5]; // Reference code uses 5 bytes for ecc (META_SIZE - (META_SIZE-5))
+    // Use EFLASH_PAGE_SIZE as it's the maximum possible data length
+    uint8_t data_copy[EFLASH_PAGE_SIZE];
+    uint8_t ecc_copy[5]; // Reference code uses 5 bytes for ecc
 
     if (len > sizeof(data_copy)) return -1; // Safety check
 
@@ -196,7 +194,7 @@ static int write_full_page(uint16_t page, const uint8_t *data, const ftl_meta_t 
 
     // Copy metadata (excluding ECC field)
     ftl_meta_t *meta_out = (ftl_meta_t *)(buf + META_OFFSET);
-    memcpy(meta_out, meta_in, META_SIZE - 5);
+    memcpy(meta_out, meta_in, (size_t)(META_SIZE - 5));
 
     // Calculate ECC for full page (covers user data + metadata excluding ECC part)
     calc_page_ecc(buf);
@@ -914,7 +912,7 @@ uint32_t mini_ftl_get_free_pages(mini_ftl_t *ftl) {
 
     uint16_t first_user_page = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
-    uint16_t total_user_pages = last_user_page - first_user_page + 1;
+    (void)(last_user_page - first_user_page + 1);  // Suppress unused variable warning
 
     if (ftl->gc_head_page >= ftl->gc_tail_page) {
         // Case 1: Head is after or equal to Tail
@@ -948,6 +946,7 @@ uint32_t mini_ftl_get_free_pages(mini_ftl_t *ftl) {
  * If current mapping points to same physical page as phys_page, it's valid data.
  */
 static bool is_page_still_valid(mini_ftl_t *ftl, uint16_t phys_page) {
+    (void)ftl;  // Suppress unused parameter warning
     uint8_t meta_buf[EFLASH_PAGE_SIZE];
     ftl_meta_t meta;
 

@@ -308,11 +308,13 @@ void eflash_mgr_init(eflash_mgr_t *mgr, uint16_t total_pages) {
     // Verify write
     uint8_t verify_buf[EFLASH_PAGE_SIZE];
     eflash_hw_read(mgr->free_node_pages[0], verify_buf);
+#ifdef FTL_DEBUG_ENABLE
     uint16_t verify_count = (uint16_t)(verify_buf[META_SIZE] | (verify_buf[META_SIZE + 1] << 8));
     free_node_t verify_node;
     memcpy(&verify_node, verify_buf + META_SIZE + FREE_NODE_HEADER_SIZE, sizeof(free_node_t));
     FTL_DEBUG("[SPACE_INIT] VERIFY: count=%d, addr=0x%08X, size=%u\n",
              verify_count, verify_node.addr, verify_node.size);
+#endif
     
     FTL_DEBUG("[SPACE_INIT] === Initialization complete ===\n");
     mgr->next_alloc_page = reserved_pages;
@@ -344,21 +346,25 @@ int eflash_mgr_alloc(eflash_mgr_t *mgr, uint32_t size, uint32_t *out_logical_add
                 if (remaining > 0) {
                     insert_node_to_table(mgr, alloc_addr + size, remaining);
                     
+#ifdef FTL_DEBUG_ENABLE
                     // Verify insertion
                     uint16_t new_count = read_node_count(mgr->free_node_pages[0]);
                     free_node_t verify_after = read_free_node(mgr->free_node_pages[0], 0);
                     FTL_DEBUG("[SPACE_ALLOC] After insert: count=%d, node[0][0] addr=0x%08X, size=%u\n",
                              new_count, verify_after.addr, verify_after.size);
+#endif
                 } else {
                     FTL_DEBUG("[SPACE_ALLOC] No remaining space to insert\n");
                 }
                 
                 *out_logical_addr = alloc_addr;
                 
+#ifdef FTL_DEBUG_ENABLE
                 // Verify: read the just-removed node position to confirm it's cleared
                 free_node_t verify_node = read_free_node(mgr->free_node_pages[i], j);
                 FTL_DEBUG("[SPACE_ALLOC] After removal: node[%d][%d] addr=0x%08X, size=%u\n",
                          i, j, verify_node.addr, verify_node.size);
+#endif
                 
                 return 0;
             }

@@ -368,6 +368,7 @@ static int find_root(struct dhara_journal *j, dhara_page_t start,
 static int find_head(struct dhara_journal *j, dhara_page_t start,
 		     dhara_error_t *err)
 {
+	(void)err;  // Suppress unused parameter warning
 	j->head = next_upage(j, start);
 	if (!j->head)
 		roll_stats(j);
