@@ -105,6 +105,12 @@ target_link_libraries(all_tests ecc_lib)
 # 创建eFlash FTL测试程序
 add_executable(eflash_ftl_tests tests/eflash_ftl_tests.c ${EFLASH_FTL_SOURCES} ${ECC_SOURCES} ${WINDOWS_RAND_FILE})
 target_compile_definitions(eflash_ftl_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+# 可选：启用FTL调试输出，用于故障排查
+# 要启用调试输出，请使用：cmake -DFTL_DEBUG_ENABLE=ON ..
+option(FTL_DEBUG_ENABLE "Enable FTL debug output" OFF)
+if(FTL_DEBUG_ENABLE)
+    target_compile_definitions(eflash_ftl_tests PRIVATE FTL_DEBUG_ENABLE=1)
+endif()
 
 # 关键修复：在Release模式下也启用assert，确保测试失败时立即终止
 if(MSVC AND CMAKE_BUILD_TYPE STREQUAL "Release")

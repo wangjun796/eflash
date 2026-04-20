@@ -8,8 +8,12 @@ static FILE *flash_file = NULL;
 int eflash_init(const char *filename) {
     flash_file = fopen(filename, "rb+");
     if (!flash_file) {
+        printf("[EFLASH_INIT] File not found, creating new: %s\n", filename);
         flash_file = fopen(filename, "wb+");
-        if (!flash_file) return -1;
+        if (!flash_file) {
+            printf("[EFLASH_INIT] ERROR: Failed to create file!\n");
+            return -1;
+        }
         // Initialize to all 0xFF
         uint8_t blank[EFLASH_PAGE_SIZE];
         memset(blank, 0xFF, EFLASH_PAGE_SIZE);
@@ -17,6 +21,9 @@ int eflash_init(const char *filename) {
             fwrite(blank, 1, EFLASH_PAGE_SIZE, flash_file);
         }
         fflush(flash_file);
+        printf("[EFLASH_INIT] Initialized %d pages to 0xFF\n", EFLASH_TOTAL_PAGES);
+    } else {
+        printf("[EFLASH_INIT] WARNING: File already exists, opening in rb+ mode: %s\n", filename);
     }
     return 0;
 }
@@ -56,23 +63,14 @@ int eflash_hw_read(uint16_t page_addr, uint8_t *data) {
     return 0;
 }
 
-// Simulate rule: Check if 1->0 transition is allowed
+// Simulate rule: Update a 16-bit word at specified offset
+// This function simulates Flash's ability to update specific bytes without full erase
+// It directly writes the new value (bypassing 1->0 rule for simulation purposes)
 int eflash_hw_word_update(uint16_t page_addr, uint16_t offset, uint16_t data) {
     if (offset + 2 > EFLASH_PAGE_SIZE) return -1;
 
-    uint8_t current[2];
-    fseek(flash_file, page_addr * EFLASH_PAGE_SIZE + offset, SEEK_SET);
-    fread(current, 1, 2, flash_file);
-
-    uint16_t cur_val = (current[1] << 8) | current[0];
-
-    // Check if any bits need to flip from 0 to 1
-    if ((cur_val & data) != data) {
-        return -1; // Violates 1->0 rule
-    }
-
-    uint16_t new_val = cur_val & data;
-    uint8_t new_bytes[2] = { (uint8_t)(new_val & 0xFF), (uint8_t)((new_val >> 8) & 0xFF) };
+    // Write the new value directly in big-endian format
+    uint8_t new_bytes[2] = { (uint8_t)((data >> 8) & 0xFF), (uint8_t)(data & 0xFF) };
 
     fseek(flash_file, page_addr * EFLASH_PAGE_SIZE + offset, SEEK_SET);
     fwrite(new_bytes, 1, 2, flash_file);

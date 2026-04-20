@@ -104,7 +104,8 @@ int  mini_ftl_write_logical(mini_ftl_t *ftl, uint32_t logical_addr, const uint8_
 int  mini_ftl_read_logical(mini_ftl_t *ftl, uint32_t logical_addr, uint8_t *data);
 
 void mini_ftl_txn_begin(mini_ftl_t *ftl);
-int  mini_ftl_txn_commit(mini_ftl_t *ftl);
+int  mini_ftl_txn_commit(mini_ftl_t *ftl);  // Universal version (full page rewrite)
+int  mini_ftl_txn_commit_with_update(mini_ftl_t *ftl);  // Optimized version (word update, requires hardware support)
 void mini_ftl_txn_abort(mini_ftl_t *ftl);
 
 // --- GC Interface Functions ---

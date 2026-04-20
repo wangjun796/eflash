@@ -1,18 +1,18 @@
 /* eFlash FTL - Comprehensive Test Suite
  * Tests for Mini-FTL implementation with transaction support
-* ✅ test_init_recovery - 初始化与掉电恢复
-* ✅ test_basic_read_write - 基础读写
-* ✅ test_object_headers - 对象头管理
-* ✅ test_transactions - 事务管理
-* ✅ test_power_failure - 掉电场景模拟
-* ✅ test_space_management - 空间管理
-* ✅ test_ecc_correction - ECC纠错
-* ✅ test_radix_tree - 基数树操作
-* ✅ test_stress - 压力测试（50次连续写入）
-* ✅ radix_tree_single_sector_updates - 单sector多次更新
-* ✅ radix_tree_multiple_sectors - 多sector交叉写入
-* ✅ radix_tree_path_correctness - 路径正确性验证
-* ✅ radix_tree_stress_random_access - 随机访问压力测试（100次操作，83个唯一sector）
+*✅ test_basic_init_read_write - 基础初始化、读写测试
+*✅ test_object_headers - 对象头管理测试
+*✅ test_transactions - 事务机制测试
+*✅ test_power_failure - 掉电恢复测试
+*✅ test_space_management - 空间管理测试
+*✅ test_ecc_correction - ECC纠错测试
+*✅ test_radix_tree - 基数树结构测试
+*✅ test_stress - 压力测试（50次连续写入）
+*✅ test_radix_tree_single_sector_updates - 单sector更新测试
+*✅ test_radix_tree_multiple_sectors - 多sector测试
+*✅ test_radix_tree_path_correctness - 路径正确性测试
+*✅ test_radix_tree_stress_random_access - 随机访问压力测试（100次操作，83个唯一sector）
+*✅ test_gc_basic - 垃圾回收基础测试
 */
 
 #include <stdio.h>
@@ -75,7 +75,7 @@ static int bch_decode(const struct bch_def *bch, uint8_t *data, size_t len, cons
             diff >>= 1;
         }
     }
-    
+
     // 同时统计ECC区域的错误
     for (int i = 0; i < bch->ecc_bytes; i++) {
         uint8_t diff = ecc_original[i] ^ ecc_copy[i];
@@ -118,14 +118,14 @@ static int bch_decode(const struct bch_def *bch, uint8_t *data, size_t len, cons
 static bool is_blank_page_local(uint16_t page) {
     uint8_t buf[EFLASH_PAGE_SIZE];
     if (eflash_hw_read(page, buf) != 0) return false;
-    
+
     // 快速检查：逐个字节判断是否为 0xFF
     for (int i = 0; i < EFLASH_PAGE_SIZE; i++) {
         if (buf[i] != 0xFF) {
             return false; // 不是空白页
         }
     }
-    
+
     return true; // 是空白页
 }
 
@@ -135,7 +135,7 @@ static bool is_page_valid_local(uint16_t page, ftl_meta_t *meta) {
         memset(meta, 0xFF, sizeof(ftl_meta_t));
         return false;
     }
-    
+
     uint8_t buf[EFLASH_PAGE_SIZE];
     if (eflash_hw_read(page, buf) != 0) return false;
 
@@ -175,19 +175,37 @@ static int failed_tests = 0;
 
 // Helper: Initialize and erase flash
 static void init_test_flash(void) {
-    eflash_init(TEST_FLASH_FILE);
+    // Force close any existing file handle first
+    eflash_deinit();
     
-    // 擦除所有页面
-    for (int i = 0; i < EFLASH_TOTAL_PAGES; i++) {
-        eflash_hw_erase(i);
+    // Remove old file (retry if needed for Windows filesystem)
+    for (int i = 0; i < 3; i++) {
+        if (remove(TEST_FLASH_FILE) == 0) break;
+        // If failed, wait briefly and retry
+#ifdef _WIN32
+        Sleep(10);
+#endif
     }
+    
+    // Initialize flash (will create new file and fill with 0xFF)
+    int ret = eflash_init(TEST_FLASH_FILE);
+    FORCE_ASSERT(ret == 0, "Failed to initialize test flash");
 }
 
 // Helper: Cleanup test flash
 static void cleanup_test_flash(void) {
     eflash_deinit();
+    // Always remove file to ensure clean state for next test
     remove(TEST_FLASH_FILE);
 }
+
+// Helper: Create test data pattern
+static void create_test_data_pattern(uint8_t *data, size_t size) {
+    for (size_t i = 0; i < size; i++) {
+        data[i] = (uint8_t)(i % 256);
+    }
+}
+
 
 // Helper: Create test data pattern
 static void create_test_pattern(uint8_t *buf, size_t size, uint8_t seed) {
@@ -232,7 +250,9 @@ int test_init_recovery(void) {
     eflash_deinit();
 
     // Simulate power failure and restart
-    eflash_init(TEST_FLASH_FILE);
+    // Note: Don't delete file - we want to test recovery from existing data
+    int ret = eflash_init(TEST_FLASH_FILE);
+    FORCE_ASSERT(ret == 0, "Failed to reinitialize flash for recovery test");
     mini_ftl_init(&ftl);
 
     assert(ftl.root_page != PAGE_NONE);
@@ -241,7 +261,7 @@ int test_init_recovery(void) {
     // Verify data persistence
     uint8_t read_data[USER_DATA_SIZE];
     mini_ftl_read(&ftl, 100, read_data);
-    FORCE_ASSERT(verify_test_pattern(read_data, USER_DATA_SIZE, 0xAA) == 0, 
+    FORCE_ASSERT(verify_test_pattern(read_data, USER_DATA_SIZE, 0xAA) == 0,
                  "Data verification failed after recovery - read data does not match written pattern");
     printf("  [PASS] Recovery after write\n");
 
@@ -424,6 +444,109 @@ int test_transactions(void) {
 }
 
 // ============================================================================
+// Test 4b: Transactions with Word Update (Optimized Commit)
+// ============================================================================
+int test_transactions_with_update(void) {
+    mini_ftl_t ftl;
+    memset(&ftl, 0, sizeof(ftl));  // Important: zero out structure
+    uint8_t write_buf[USER_DATA_SIZE];
+    uint8_t read_buf[USER_DATA_SIZE];
+
+    printf("[TEST] test_transactions_with_update: Starting...\n");
+    printf("  [INFO] Using mini_ftl_txn_commit_with_update() for optimized commit\n");
+
+    init_test_flash();
+    mini_ftl_init(&ftl);
+
+    // Test 5a: Normal transaction commit with word update
+    create_test_pattern(write_buf, USER_DATA_SIZE, 0xA2);
+    mini_ftl_write(&ftl, 10, write_buf);
+
+    mini_ftl_txn_begin(&ftl);
+    create_test_pattern(write_buf, USER_DATA_SIZE, 0xB2);
+    mini_ftl_write(&ftl, 10, write_buf);
+    
+    // Use optimized commit with word update instead of full page rewrite
+    int ret = mini_ftl_txn_commit_with_update(&ftl);
+    FORCE_ASSERT(ret == 0, "Transaction commit with update failed");
+
+    mini_ftl_read(&ftl, 10, read_buf);
+    FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xB2) == 0,
+                 "Transaction commit with update verification failed");
+    printf("  [PASS] Transaction commit with word update\n");
+
+    // Test 5b: Transaction abort (should work same as normal commit)
+    mini_ftl_txn_begin(&ftl);
+    create_test_pattern(write_buf, USER_DATA_SIZE, 0xC2);
+    mini_ftl_write(&ftl, 10, write_buf);
+    mini_ftl_txn_abort(&ftl);
+
+    mini_ftl_read(&ftl, 10, read_buf);
+    FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xB2) == 0,
+                 "Transaction abort verification failed - data should be rolled back");
+    printf("  [PASS] Transaction abort with word update mode (rollback)\n");
+
+    // Test 5c: Multiple operations in one transaction with word update
+    mini_ftl_txn_begin(&ftl);
+    for (int i = 0; i < 5; i++) {
+        create_test_pattern(write_buf, USER_DATA_SIZE, (uint8_t)(0xD2 + i));
+        mini_ftl_write(&ftl, (uint16_t)(110 + i), write_buf);
+    }
+    ret = mini_ftl_txn_commit_with_update(&ftl);
+    FORCE_ASSERT(ret == 0, "Multi-operation transaction commit with update failed");
+
+    for (int i = 0; i < 5; i++) {
+        mini_ftl_read(&ftl, (uint16_t)(110 + i), read_buf);
+        FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, (uint8_t)(0xD2 + i)) == 0,
+                     "Multi-operation transaction with update verification failed");
+    }
+    printf("  [PASS] Multi-operation transaction with word update\n");
+
+    // Test 5d: Sequential transactions with word update
+    for (int txn = 0; txn < 3; txn++) {
+        mini_ftl_txn_begin(&ftl);
+        create_test_pattern(write_buf, USER_DATA_SIZE, (uint8_t)(0xE0 + txn));
+        mini_ftl_write(&ftl, (uint16_t)(200 + txn), write_buf);
+        
+        ret = mini_ftl_txn_commit_with_update(&ftl);
+        FORCE_ASSERT(ret == 0, "Sequential transaction commit failed");
+        
+        mini_ftl_read(&ftl, (uint16_t)(200 + txn), read_buf);
+        FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, (uint8_t)(0xE0 + txn)) == 0,
+                     "Sequential transaction verification failed");
+    }
+    printf("  [PASS] Sequential transactions with word update (3 consecutive)\n");
+
+    // Test 5e: Mixed commit methods (some with update, some without)
+    mini_ftl_txn_begin(&ftl);
+    create_test_pattern(write_buf, USER_DATA_SIZE, 0xF2);
+    mini_ftl_write(&ftl, 300, write_buf);
+    ret = mini_ftl_txn_commit_with_update(&ftl);
+    FORCE_ASSERT(ret == 0, "Mixed commit method 1 failed");
+
+    mini_ftl_txn_begin(&ftl);
+    create_test_pattern(write_buf, USER_DATA_SIZE, 0xF3);
+    mini_ftl_write(&ftl, 301, write_buf);
+    ret = mini_ftl_txn_commit(&ftl);  // Use normal commit
+    FORCE_ASSERT(ret == 0, "Mixed commit method 2 failed");
+
+    // Verify both commits succeeded
+    mini_ftl_read(&ftl, 300, read_buf);
+    FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xF2) == 0,
+                 "Mixed commit verification 1 failed");
+    mini_ftl_read(&ftl, 301, read_buf);
+    FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xF3) == 0,
+                 "Mixed commit verification 2 failed");
+    printf("  [PASS] Mixed commit methods (update + normal)\n");
+
+    cleanup_test_flash();
+    printf("[PASS] test_transactions_with_update: Completed successfully\n");
+    printf("  Summary: Tested word update commit, abort, multi-op, sequential,\n");
+    printf("           and mixed commit methods - all passed!\n");
+    return 0;
+}
+
+// ============================================================================
 // Test 5: Power Failure Simulation
 // ============================================================================
 int test_power_failure(void) {
@@ -493,7 +616,7 @@ int test_space_management(void) {
 
     // Test 6a: Basic allocation
     space_mgr_init(&mgr, 100);
-    
+
     uint32_t logical_addr;
     int ret = space_mgr_alloc(&mgr, 10, &logical_addr);
     assert(ret == 0);
@@ -588,12 +711,12 @@ int test_ecc_correction(void) {
     // ECC 保护范围：USER_DATA_SIZE + META_SIZE - 5 = 464 + 48 - 5 = 507 字节
     // ========================================================================
     printf("\n  [TEST] Full page ECC tests (User Data + Meta)...\n");
-    
+
     // 初始化用户数据
     for (int i = 0; i < USER_DATA_SIZE; i++) {
         user_data[i] = (uint8_t)(i & 0xFF);
     }
-    
+
     // 构建完整页：用户数据 + 元数据
     memcpy(full_page, user_data, USER_DATA_SIZE);
     memset(&meta, 0, sizeof(meta));
@@ -602,22 +725,22 @@ int test_ecc_correction(void) {
     meta.epoch = 1;
     meta.status = TXN_STATUS_COMMITTED;
     memcpy(full_page + USER_DATA_SIZE, &meta, META_SIZE);
-    
+
     // 计算完整页的 ECC（覆盖用户数据+元数据除ECC部分）
     size_t protected_len = USER_DATA_SIZE + META_SIZE - 5;
     uint8_t *ecc_ptr = full_page + USER_DATA_SIZE + META_SIZE - 5;
     bch_generate(&bch_3bit, full_page, protected_len, ecc_ptr);
-    
+
     printf("  [INFO] Protected length: %zu bytes (User=%d + Meta=%d - ECC=5)\n",
            protected_len, USER_DATA_SIZE, META_SIZE);
-    
+
     // Test 5a: 无错误验证
     uint8_t page_copy[EFLASH_PAGE_SIZE];
     memcpy(page_copy, full_page, EFLASH_PAGE_SIZE);
     result = bch_verify(&bch_3bit, page_copy, protected_len, ecc_ptr);
     FORCE_ASSERT(result == 0, "Full page ECC verify with no errors should return 0");
     printf("  [PASS] Full page ECC verify (no errors)\n");
-    
+
     // Test 5b: 纠正用户数据中的 1-bit 错误
     memcpy(page_copy, full_page, EFLASH_PAGE_SIZE);
     page_copy[100] ^= 0x01; // 在用户数据区翻转 1 bit
@@ -625,7 +748,7 @@ int test_ecc_correction(void) {
     FORCE_ASSERT(result >= 1 && result <= 3, "ECC should correct 1-bit error in user data");
     FORCE_ASSERT(page_copy[100] == full_page[100], "User data correction failed");
     printf("  [PASS] Full page ECC correct 1-bit in user data\n");
-    
+
     // Test 5c: 纠正用户数据中的 2-bit 错误
     memcpy(page_copy, full_page, EFLASH_PAGE_SIZE);
     page_copy[200] ^= 0x03; // 翻转 2 bits
@@ -633,16 +756,16 @@ int test_ecc_correction(void) {
     FORCE_ASSERT(result >= 2 && result <= 3, "ECC should correct 2-bit errors in user data");
     FORCE_ASSERT(page_copy[200] == full_page[200], "User data 2-bit correction failed");
     printf("  [PASS] Full page ECC correct 2-bit errors in user data\n");
-    
+
     // Test 5d: 纠正元数据中的错误
     memcpy(page_copy, full_page, EFLASH_PAGE_SIZE);
     page_copy[USER_DATA_SIZE + 2] ^= 0x01; // 在元数据区（global_count）翻转 1 bit
     result = bch_decode(&bch_3bit, page_copy, protected_len, ecc_ptr);
     FORCE_ASSERT(result >= 1 && result <= 3, "ECC should correct error in meta data");
-    FORCE_ASSERT(page_copy[USER_DATA_SIZE + 2] == full_page[USER_DATA_SIZE + 2], 
+    FORCE_ASSERT(page_copy[USER_DATA_SIZE + 2] == full_page[USER_DATA_SIZE + 2],
                 "Meta data correction failed");
     printf("  [PASS] Full page ECC correct 1-bit in meta data\n");
-    
+
     // Test 5e: 同时纠正用户数据和元数据中的错误
     memcpy(page_copy, full_page, EFLASH_PAGE_SIZE);
     page_copy[50] ^= 0x01;  // 用户数据错误
@@ -653,7 +776,7 @@ int test_ecc_correction(void) {
     FORCE_ASSERT(page_copy[USER_DATA_SIZE + 10] == full_page[USER_DATA_SIZE + 10],
                 "Mixed error correction failed (meta)");
     printf("  [PASS] Full page ECC correct mixed user/meta errors\n");
-    
+
     // Test 5f: 纠正 3-bit 错误（边界测试）
     memcpy(page_copy, full_page, EFLASH_PAGE_SIZE);
     page_copy[300] ^= 0x07; // 翻转 3 bits
@@ -661,7 +784,7 @@ int test_ecc_correction(void) {
     FORCE_ASSERT(result == 3, "ECC should correct 3-bit errors (boundary)");
     FORCE_ASSERT(page_copy[300] == full_page[300], "3-bit correction failed");
     printf("  [PASS] Full page ECC correct 3-bit errors (boundary)\n");
-    
+
     // Test 5g: 超过纠错能力的错误（应该失败）
     memcpy(page_copy, full_page, EFLASH_PAGE_SIZE);
     // 故意制造 4-bit 错误，超出 BCH-3 的纠错能力
@@ -670,32 +793,32 @@ int test_ecc_correction(void) {
     // 注意：BCH-3 最多纠正 3-bit，4-bit 可能无法纠正或检测为不可纠正
     printf("  [INFO] 4-bit error test result: %d (expected: uncorrectable or partial)\n", result);
     // 不强制断言，因为行为取决于具体实现
-    
+
     // ========================================================================
     // Test 6: 实际 FTL 读写场景中的 ECC 测试
     // ========================================================================
     printf("\n  [TEST] Real FTL read/write ECC scenario...\n");
-    
+
     mini_ftl_t ftl;
     memset(&ftl, 0, sizeof(ftl));
     init_test_flash();
     mini_ftl_init(&ftl);
-    
+
     // 写入数据
     uint8_t write_buf[USER_DATA_SIZE];
     for (int i = 0; i < USER_DATA_SIZE; i++) {
         write_buf[i] = (uint8_t)((i * 7 + 13) & 0xFF); // 伪随机模式
     }
-    
+
     ASSERT(mini_ftl_write(&ftl, 100, write_buf) == 0, "write for ECC test");
-    
+
     // 读取并验证
     uint8_t read_buf[USER_DATA_SIZE];
     ASSERT(mini_ftl_read(&ftl, 100, read_buf) == 0, "read for ECC test");
-    ASSERT(memcmp(write_buf, read_buf, USER_DATA_SIZE) == 0, 
+    ASSERT(memcmp(write_buf, read_buf, USER_DATA_SIZE) == 0,
            "data integrity after FTL write/read");
     printf("  [PASS] FTL write/read preserves data integrity\n");
-    
+
     cleanup_test_flash();
 
     printf("\n[PASS] test_ecc_correction: Completed successfully\n");
@@ -824,6 +947,7 @@ int main(void) {
     RUN_TEST(basic_read_write)
     RUN_TEST(object_headers)
     RUN_TEST(transactions)
+    RUN_TEST(transactions_with_update)  // Test optimized commit with word update
     RUN_TEST(power_failure)
     RUN_TEST(space_management)
     RUN_TEST(ecc_correction)
@@ -835,15 +959,15 @@ int main(void) {
     RUN_TEST(radix_tree_multiple_sectors)
     RUN_TEST(radix_tree_path_correctness)
     RUN_TEST(radix_tree_stress_random_access)
-    
+
     // GC tests
     RUN_TEST(gc_basic)
     RUN_TEST(gc_round_wrap)
     RUN_TEST(gc_stress)
-    
+
     // Logical address interface test
     RUN_TEST(logical_address_interface)
-    
+
     #undef RUN_TEST
 
     printf("========================================\n");
@@ -1193,7 +1317,7 @@ static int test_radix_tree_stress_random_access(void) {
 
 /**
  * test_gc_basic - GC 基础功能测试
- * 
+ *
  * 测试内容：
  * 1. 写入大量数据填满 Flash
  * 2. 触发 GC，验证空间回收
@@ -1201,62 +1325,62 @@ static int test_radix_tree_stress_random_access(void) {
  */
 int test_gc_basic() {
     mini_ftl_t ftl;
-    
+
     printf("[TEST] test_gc_basic: Starting...\n");
-    
+
     init_test_flash();
     mini_ftl_init(&ftl);
-    
+
     printf("  [GC] Initial free pages: %d\n", mini_ftl_get_free_pages(&ftl));
     printf("  [GC] GC threshold: %d pages\n", ftl.gc_threshold);
-    
+
     // 阶段1：写入数据直到触发 GC
     int write_count = 0;
     int gc_triggered = 0;
     uint8_t last_written[256];
     memset(last_written, 0xFF, sizeof(last_written));
-    
+
     printf("  [GC] Phase 1: Writing data until GC triggers...\n");
-    
+
     for (int i = 0; i < 500 && write_count < 200; i++) {
         uint16_t sector = i % 200; // 循环写入 200 个 sector
         uint8_t write_val = (uint8_t)(i & 0xFF);
-        
+
         uint8_t write_data[USER_DATA_SIZE];
         memset(write_data, write_val, USER_DATA_SIZE);
-        
+
         uint32_t free_before = mini_ftl_get_free_pages(&ftl);
-        
+
         if (mini_ftl_write(&ftl, sector, write_data) != 0) {
             printf("  [GC] Write failed at iteration %d (space exhausted)\n", i);
             break;
         }
-        
+
         last_written[sector] = write_val;
         write_count++;
-        
+
         uint32_t free_after = mini_ftl_get_free_pages(&ftl);
-        
+
         // 检测是否触发了 GC（空闲页数突然增加）
         if (free_after > free_before + 10) {
             gc_triggered++;
             printf("  [GC] *** GC triggered at write #%d! Free: %d -> %d ***\n",
                    i, free_before, free_after);
         }
-        
+
         // 每 50 次输出状态
         if (i % 50 == 0) {
             printf("  [GC] Write #%d: sector=%d, free_pages=%d\n", i, sector, free_after);
         }
     }
-    
+
     printf("  [GC] Phase 1 complete: wrote %d pages, GC triggered %d times\n",
            write_count, gc_triggered);
     printf("  [GC] Final free pages: %d\n", mini_ftl_get_free_pages(&ftl));
-    
+
     // 阶段2：验证所有写入的数据仍可读取
     printf("  [GC] Phase 2: Verifying data integrity after GC...\n");
-    
+
     int verified_count = 0;
     for (int i = 0; i < 200; i++) {
         if (last_written[i] != 0xFF) {
@@ -1271,28 +1395,28 @@ int test_gc_basic() {
             }
         }
     }
-    
+
     printf("  [GC] Verified %d sectors after GC\n", verified_count);
-    
+
     // 阶段3：手动触发 GC 并验证
     printf("  [GC] Phase 3: Manual GC trigger test...\n");
-    
+
     uint32_t free_before_manual_gc = mini_ftl_get_free_pages(&ftl);
     printf("  [GC] Free pages before manual GC: %d\n", free_before_manual_gc);
-    
+
     // 手动触发 GC，尝试回收 50 页
     int freed = mini_ftl_gc_collect(&ftl, 50);
     printf("  [GC] Manual GC freed %d pages\n", freed);
-    
+
     uint32_t free_after_manual_gc = mini_ftl_get_free_pages(&ftl);
     printf("  [GC] Free pages after manual GC: %d\n", free_after_manual_gc);
-    
-    ASSERT(free_after_manual_gc >= free_before_manual_gc, 
+
+    ASSERT(free_after_manual_gc >= free_before_manual_gc,
            "free pages should not decrease after GC");
-    
+
     // 再次验证数据完整性
     printf("  [GC] Phase 4: Final data verification...\n");
-    
+
     for (int i = 0; i < 200; i++) {
         if (last_written[i] != 0xFF) {
             uint8_t read_data[USER_DATA_SIZE];
@@ -1305,136 +1429,136 @@ int test_gc_basic() {
             }
         }
     }
-    
+
     printf("  [PASS] All data verified after GC\n");
-    
+
     cleanup_test_flash();
     PASS();
 }
 
 /**
  * test_gc_round_wrap - GC Round-Wrap 场景测试（真实场景版）
- * 
+ *
  * 测试内容：
  * 1. 通过持续写入使 gc_tail_page 自然移动到 Flash 末尾
  * 2. 继续写入触发 Round-Wrap（tail 回绕到起点）
  * 3. 验证回绕后系统仍正常工作
  * 4. 验证数据不丢失
- * 
+ *
  * 关键区别：不再强制设置 gc_tail_page，而是通过真实写入让它自然移动
  */
 int test_gc_round_wrap() {
     mini_ftl_t ftl;
-    
+
     printf("[TEST] test_gc_round_wrap: Starting...\n");
-    
+
     init_test_flash();
     mini_ftl_init(&ftl);
-    
+
     printf("  [WRAP] Testing GC round-wrap with REAL writes...\n");
     printf("  [WRAP] Total user pages: %d\n", ftl.total_user_pages);
     printf("  [WRAP] Initial tail_page: %d\n", ftl.gc_tail_page);
-    printf("  [WRAP] GC threshold: %d pages (%.1f%%)\n", 
+    printf("  [WRAP] GC threshold: %d pages (%.1f%%)\n",
            ftl.gc_threshold, (float)ftl.gc_threshold / ftl.total_user_pages * 100);
-    
+
     // 阶段1：计算需要写入的页数，使 tail 自然移动到接近末尾
     printf("\n  [WRAP] Phase 1: Calculating write strategy...\n");
-    
+
     uint16_t first_user_page = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
     uint16_t user_pages_count = last_user_page - first_user_page + 1;
-    
+
     // 关键修正：为了触发 GC，需要让空闲空间低于阈值
     // 当前阈值是 20% (1636 页)，所以需要写入至少 (总容量 - 阈值 + 余量) 页
     int min_writes_to_trigger_gc = ftl.total_user_pages - ftl.gc_threshold + 200;
-    
+
     // 策略：写入足够多的唯一 sector，直到触发 GC
     // 为了让 tail 移动到 75% 位置，需要写入约 75% 的用户区页数
     int writes_to_push_tail = user_pages_count * 3 / 4;
-    
+
     // 取两者最大值，确保既能推动 tail 又能触发 GC
-    int total_writes_needed = (min_writes_to_trigger_gc > writes_to_push_tail) ? 
+    int total_writes_needed = (min_writes_to_trigger_gc > writes_to_push_tail) ?
                               min_writes_to_trigger_gc : writes_to_push_tail;
-    
+
     printf("  [WRAP] Min writes to trigger GC: %d\n", min_writes_to_trigger_gc);
     printf("  [WRAP] Will write ~%d unique sectors\n", total_writes_needed);
     printf("  [WRAP] Expected tail position after phase 1: ~%d\n",
            first_user_page + total_writes_needed);
-    
+
     // 阶段2：写入大量唯一 sector，推动 tail 向前并触发 GC
     printf("\n  [WRAP] Phase 2: Writing unique sectors to advance tail and trigger GC...\n");
-    
+
     int total_writes = 0;
     int gc_triggers = 0;
     uint16_t last_tail_before_wrap = ftl.gc_tail_page;
     bool wrap_detected = false;
     bool gc_triggered = false;
-    
+
     for (int i = 0; i < total_writes_needed + 500; i++) { // 多写 500 页确保充分测试
         uint16_t sector = (uint16_t)i; // 每个都是新的唯一 sector
         uint8_t write_data[USER_DATA_SIZE];
         memset(write_data, (uint8_t)(i & 0xFF), USER_DATA_SIZE);
-        
+
         uint16_t tail_before = ftl.gc_tail_page;
         uint32_t free_before = mini_ftl_get_free_pages(&ftl);
-        
+
         if (mini_ftl_write(&ftl, sector, write_data) != 0) {
             printf("  [WRAP] Write failed at iteration %d (space exhausted)\n", i);
             printf("  [WRAP] This is EXPECTED if flash is full\n");
             break;
         }
-        
+
         total_writes++;
-        
+
         uint16_t tail_after = ftl.gc_tail_page;
         uint32_t free_after = mini_ftl_get_free_pages(&ftl);
-        
+
         // 检测 GC 触发（空闲空间突然增加）
         if (free_after > free_before + 5) {
             gc_triggers++;
             gc_triggered = true;
             printf("  [WRAP] *** GC #%d TRIGGERED at write #%d ***\n", gc_triggers, i);
-            printf("  [WRAP]     Free space: %d -> %d (+%d pages)\n", 
+            printf("  [WRAP]     Free space: %d -> %d (+%d pages)\n",
                    free_before, free_after, free_after - free_before);
             printf("  [WRAP]     Tail moved: %d -> %d\n", tail_before, tail_after);
         }
-        
+
         // 检测 Round-Wrap：tail 从高位突然跳到低位
         if (!wrap_detected && tail_after < tail_before && tail_after < first_user_page + 100) {
             wrap_detected = true;
             printf("\n  [WRAP] *** ROUND-WRAP DETECTED! ***\n");
-            printf("  [WRAP] Tail jumped from %d to %d (wrapped around)\n", 
+            printf("  [WRAP] Tail jumped from %d to %d (wrapped around)\n",
                    tail_before, tail_after);
-            printf("  [WRAP] This happened naturally after %d writes and %d GCs\n", 
+            printf("  [WRAP] This happened naturally after %d writes and %d GCs\n",
                    total_writes, gc_triggers);
         }
-        
+
         // 每 1000 次输出状态
         if (i % 1000 == 0) {
             printf("  [WRAP] Write #%d: tail=%d, free=%d, GCs=%d%s\n",
                    i, ftl.gc_tail_page, free_after, gc_triggers,
                    gc_triggered ? " [GC ACTIVE]" : "");
         }
-        
+
         // 如果已经检测到回绕，再写 100 页验证稳定性后退出
         if (wrap_detected && gc_triggers >= 3) {
             printf("  [WRAP] Round-wrap verified with multiple GCs, stopping phase 2\n");
             break;
         }
-        
+
         // 安全限制：最多写入 10000 页防止无限循环
         if (total_writes >= 10000) {
             printf("  [WRAP] Reached max writes limit (10000), stopping\n");
             break;
         }
     }
-    
+
     printf("\n  [WRAP] Phase 2 complete:\n");
     printf("  [WRAP]   Total writes: %d\n", total_writes);
     printf("  [WRAP]   GC triggers: %d %s\n", gc_triggers, gc_triggered ? "✓" : "✗");
     printf("  [WRAP]   Final tail_page: %d\n", ftl.gc_tail_page);
     printf("  [WRAP]   Round-wrap detected: %s\n", wrap_detected ? "YES ✓" : "NO ✗");
-    
+
     // 验证 GC 是否真正被触发
     if (!gc_triggered) {
         printf("\n  [WRAP] ERROR: GC was NEVER triggered!\n");
@@ -1443,44 +1567,44 @@ int test_gc_round_wrap() {
                mini_ftl_get_free_pages(&ftl), ftl.gc_threshold);
         ASSERT(gc_triggered, "GC must be triggered to validate GC mechanism");
     }
-    
+
     // 如果没有自动触发回绕，说明 Flash 太大，需要调整策略
     if (!wrap_detected) {
         printf("\n  [WRAP] WARNING: Round-wrap not triggered naturally.\n");
         printf("  [WRAP] Flash size may be too large for this test.\n");
         printf("  [WRAP] Forcing tail to near end for wrap verification...\n");
-        
+
         // 降级方案：手动设置 tail 到末尾附近
         ftl.gc_tail_page = last_user_page - 10;
         printf("  [WRAP] Set tail_page to %d (manual fallback)\n", ftl.gc_tail_page);
     }
-    
+
     // 阶段3：执行一次 GC 确认回绕行为
     printf("\n  [WRAP] Phase 3: Triggering GC to confirm wrap behavior...\n");
-    
+
     uint16_t tail_before_gc = ftl.gc_tail_page;
     int freed = mini_ftl_gc_collect(&ftl, 20); // 回收 20 页
     uint16_t tail_after_gc = ftl.gc_tail_page;
-    
+
     printf("  [WRAP] GC freed %d pages\n", freed);
     printf("  [WRAP] Tail moved: %d -> %d\n", tail_before_gc, tail_after_gc);
-    
+
     // 验证 tail 确实移动了（可能发生了回绕）
     if (tail_after_gc != tail_before_gc) {
         printf("  [WRAP] ✓ Tail pointer advanced correctly\n");
     } else {
         printf("  [WRAP] ⚠ Tail pointer did not move (may be at boundary)\n");
     }
-    
+
     // 阶段4：继续写入，验证回绕后系统正常
     printf("\n  [WRAP] Phase 4: Continuing writes after round-wrap...\n");
-    
+
     int post_wrap_writes = 0;
     for (int i = 0; i < 100; i++) {
         uint16_t sector = (uint16_t)(writes_to_push_tail + i); // 新的 sector ID
         uint8_t write_data[USER_DATA_SIZE];
         memset(write_data, (uint8_t)(0xA0 + (i % 96)), USER_DATA_SIZE);
-        
+
         if (mini_ftl_write(&ftl, sector, write_data) == 0) {
             post_wrap_writes++;
         } else {
@@ -1488,21 +1612,21 @@ int test_gc_round_wrap() {
             break;
         }
     }
-    
+
     printf("  [WRAP] Successfully wrote %d/100 pages after round-wrap\n", post_wrap_writes);
     ASSERT(post_wrap_writes > 50, "should be able to write after round-wrap");
-    
+
     // 阶段5：验证之前写入的数据仍可读取
     printf("\n  [WRAP] Phase 5: Verifying data integrity after round-wrap...\n");
-    
+
     int verified_count = 0;
     int read_errors = 0;
-    
+
     // 随机采样验证
     for (int i = 0; i < 200; i++) {
         uint16_t sector = (uint16_t)(rand() % total_writes);
         uint8_t read_data[USER_DATA_SIZE];
-        
+
         if (mini_ftl_read(&ftl, sector, read_data) == 0) {
             verified_count++;
         } else {
@@ -1512,22 +1636,22 @@ int test_gc_round_wrap() {
             }
         }
     }
-    
+
     printf("  [WRAP] Random sampling: %d/%d reads successful (%.1f%%)\n",
            verified_count, 200, (float)verified_count / 200 * 100);
-    
+
     // 验证成功率应该很高（>80%）
     ASSERT(verified_count > 160, "majority of sectors should be readable after round-wrap");
-    
+
     printf("\n  [PASS] Round-wrap test completed successfully!\n");
-    
+
     cleanup_test_flash();
     PASS();
 }
 
 /**
  * test_gc_stress - GC 压力测试
- * 
+ *
  * 测试内容：
  * 1. 持续写入直到 Flash 几乎满
  * 2. 混合读写操作
@@ -1535,46 +1659,46 @@ int test_gc_round_wrap() {
  */
 int test_gc_stress() {
     mini_ftl_t ftl;
-    
+
     printf("[TEST] test_gc_stress: Starting...\n");
-    
+
     init_test_flash();
     mini_ftl_init(&ftl);
-    
+
     printf("  [STRESS] Starting GC stress test...\n");
     printf("  [STRESS] Total capacity: %d pages\n", ftl.total_user_pages);
-    
+
     // 阶段1：激进写入，快速消耗空间直到触发 GC
     printf("  [STRESS] Phase 1: Aggressive writing until GC triggers...\n");
-    
+
     int total_writes = 0;
     int gc_count = 0;
     uint32_t last_free = mini_ftl_get_free_pages(&ftl);
     bool gc_triggered = false;
-    
+
     // 计算需要写入的最小页数以触发 GC
     int min_writes_for_gc = ftl.total_user_pages - ftl.gc_threshold + 100;
     int max_iterations = min_writes_for_gc + 500; // 额外多写一些确保触发
-    
+
     printf("  [STRESS] Min writes to trigger GC: %d\n", min_writes_for_gc);
     printf("  [STRESS] Max iterations: %d\n", max_iterations);
-    
+
     for (int i = 0; i < max_iterations; i++) {
         uint16_t sector = (uint16_t)(i % 150); // 150 个 sector 循环更新
         uint8_t write_data[USER_DATA_SIZE];
         memset(write_data, (uint8_t)(i & 0xFF), USER_DATA_SIZE);
-        
+
         uint32_t free_before = mini_ftl_get_free_pages(&ftl);
-        
+
         if (mini_ftl_write(&ftl, sector, write_data) != 0) {
             printf("  [STRESS] Write failed at iteration %d (space exhausted)\n", i);
             break;
         }
-        
+
         total_writes++;
-        
+
         uint32_t free_after = mini_ftl_get_free_pages(&ftl);
-        
+
         // 检测 GC 触发（空闲空间突然增加）
         if (free_after > free_before + 5) {
             gc_count++;
@@ -1583,51 +1707,51 @@ int test_gc_stress() {
             printf("  [STRESS]     Free space: %d -> %d (+%d pages recovered)\n",
                    free_before, free_after, free_after - free_before);
         }
-        
+
         last_free = free_after;
-        
+
         // 每 500 次输出状态
         if (i % 500 == 0) {
             printf("  [STRESS] Iteration %d: writes=%d, GCs=%d, free=%d%s\n",
                    i, total_writes, gc_count, last_free,
                    gc_triggered ? " [GC ACTIVE]" : "");
         }
-        
+
         // 如果已经触发了至少 3 次 GC，继续写 200 页验证稳定性后退出
         if (gc_count >= 3 && i > min_writes_for_gc + 200) {
             printf("  [STRESS] GC stability verified (3+ triggers), stopping phase 1\n");
             break;
         }
     }
-    
+
     printf("  [STRESS] Phase 1 complete: %d writes, %d GCs triggered %s\n",
            total_writes, gc_count, gc_triggered ? "✓" : "✗");
     printf("  [STRESS] Final free space: %d pages (%.1f%%)\n",
            last_free, (float)last_free / ftl.total_user_pages * 100);
-    
+
     // 验证 GC 是否真正被触发
     ASSERT(gc_triggered, "GC must be triggered in stress test to validate GC mechanism");
-    
+
     // 阶段2：随机读写验证
     printf("  [STRESS] Phase 2: Random read/write verification...\n");
-    
+
     int errors = 0;
     for (int i = 0; i < 200; i++) {
         uint16_t sector = (uint16_t)(rand() % 150);
         uint8_t read_data[USER_DATA_SIZE];
-        
+
         if (mini_ftl_read(&ftl, sector, read_data) != 0) {
             printf("  [STRESS] ERROR: Read failed for sector %d\n", sector);
             errors++;
         }
     }
-    
+
     printf("  [STRESS] Random reads: %d errors out of 200 attempts\n", errors);
     ASSERT(errors == 0, "no read errors during stress test");
-    
+
     // 阶段3：最终完整性检查
     printf("  [STRESS] Phase 3: Final integrity check...\n");
-    
+
     int readable_count = 0;
     for (int i = 0; i < 150; i++) {
         uint8_t read_data[USER_DATA_SIZE];
@@ -1635,17 +1759,17 @@ int test_gc_stress() {
             readable_count++;
         }
     }
-    
+
     printf("  [STRESS] %d/150 sectors still readable\n", readable_count);
     ASSERT(readable_count > 100, "majority of sectors should be readable");
-    
+
     cleanup_test_flash();
     PASS();
 }
 
 /**
  * test_logical_address_interface: 测试基于逻辑地址的读写接口
- * 
+ *
  * 验证：
  * 1. space_mgr_alloc 返回正确的24位逻辑地址
  * 2. mini_ftl_write_logical/read_logical 正确使用逻辑地址
@@ -1653,44 +1777,44 @@ int test_gc_stress() {
  */
 static int test_logical_address_interface(void) {
     TEST(logical_address_interface);
-    
+
     init_test_flash();
-    
+
     mini_ftl_t ftl;
     ASSERT(mini_ftl_init(&ftl) == 0, "FTL initialization");
-    
+
     printf("  [LOGICAL] Testing logical address allocation and I/O...\n");
-    
+
     // 测试1：分配逻辑地址空间（以字节为单位）
     uint32_t logical_addr1, logical_addr2, logical_addr3;
-    
+
     // 分配USER_DATA_SIZE字节的空间（一个完整的页数据）
     ASSERT(space_mgr_alloc(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr1) == 0,
            "allocate first logical address");
     printf("  [LOGICAL] Allocated logical_addr1 = 0x%06X (byte offset)\n", logical_addr1);
-    
+
     ASSERT(space_mgr_alloc(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr2) == 0,
            "allocate second logical address");
     printf("  [LOGICAL] Allocated logical_addr2 = 0x%06X (byte offset)\n", logical_addr2);
-    
+
     ASSERT(space_mgr_alloc(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr3) == 0,
            "allocate third logical address");
     printf("  [LOGICAL] Allocated logical_addr3 = 0x%06X (byte offset)\n", logical_addr3);
-    
+
     // 验证逻辑地址是有效的（不为0xFFFFFFFF）
     ASSERT(logical_addr1 != 0xFFFFFFFF, "logical_addr1 should be valid");
     ASSERT(logical_addr2 != 0xFFFFFFFF, "logical_addr2 should be valid");
     ASSERT(logical_addr3 != 0xFFFFFFFF, "logical_addr3 should be valid");
-    
+
     // 从逻辑地址（字节偏移）转换为sector_id（页号）
     // sector_id = logical_addr / USER_DATA_SIZE
     uint16_t sector_id1 = (uint16_t)(logical_addr1 / USER_DATA_SIZE);
     uint16_t sector_id2 = (uint16_t)(logical_addr2 / USER_DATA_SIZE);
     uint16_t sector_id3 = (uint16_t)(logical_addr3 / USER_DATA_SIZE);
-    
+
     printf("  [LOGICAL] Converted to sector_ids: %d, %d, %d\n",
            sector_id1, sector_id2, sector_id3);
-    
+
     // 测试2：使用sector_id写入数据
     uint8_t write_data1[USER_DATA_SIZE], write_data2[USER_DATA_SIZE], write_data3[USER_DATA_SIZE];
     for (int i = 0; i < USER_DATA_SIZE; i++) {
@@ -1698,60 +1822,60 @@ static int test_logical_address_interface(void) {
         write_data2[i] = (uint8_t)((i + 100) & 0xFF);
         write_data3[i] = (uint8_t)((i + 200) & 0xFF);
     }
-    
+
     printf("  [LOGICAL] Writing data using sector_ids...\n");
     ASSERT(mini_ftl_write(&ftl, sector_id1, write_data1) == 0, "write to sector_id1");
     ASSERT(mini_ftl_write(&ftl, sector_id2, write_data2) == 0, "write to sector_id2");
     ASSERT(mini_ftl_write(&ftl, sector_id3, write_data3) == 0, "write to sector_id3");
-    
+
     // 测试3：读取数据并验证
     uint8_t read_data[USER_DATA_SIZE];
-    
+
     printf("  [LOGICAL] Reading data using sector_ids...\n");
     ASSERT(mini_ftl_read(&ftl, sector_id1, read_data) == 0, "read from sector_id1");
     ASSERT(memcmp(read_data, write_data1, USER_DATA_SIZE) == 0, "data matches for sector_id1");
-    
+
     ASSERT(mini_ftl_read(&ftl, sector_id2, read_data) == 0, "read from sector_id2");
     ASSERT(memcmp(read_data, write_data2, USER_DATA_SIZE) == 0, "data matches for sector_id2");
-    
+
     ASSERT(mini_ftl_read(&ftl, sector_id3, read_data) == 0, "read from sector_id3");
     ASSERT(memcmp(read_data, write_data3, USER_DATA_SIZE) == 0, "data matches for sector_id3");
-    
+
     // 测试4：测试新的逻辑地址接口
     printf("  [LOGICAL] Testing mini_ftl_write_logical/read_logical interfaces...\n");
-    
+
     uint32_t logical_addr4;
     ASSERT(space_mgr_alloc(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr4) == 0,
            "allocate fourth logical address");
-    
+
     uint8_t write_data4[USER_DATA_SIZE];
     for (int i = 0; i < USER_DATA_SIZE; i++) {
         write_data4[i] = (uint8_t)((i + 50) & 0xFF);
     }
-    
+
     // 使用新的逻辑地址接口写入（内部会自动转换为sector_id）
     ASSERT(mini_ftl_write_logical(&ftl, logical_addr4, write_data4) == 0,
            "write using mini_ftl_write_logical");
-    
+
     // 使用新的逻辑地址接口读取
     uint8_t read_data4[USER_DATA_SIZE];
     ASSERT(mini_ftl_read_logical(&ftl, logical_addr4, read_data4) == 0,
            "read using mini_ftl_read_logical");
     ASSERT(memcmp(read_data4, write_data4, USER_DATA_SIZE) == 0,
            "data matches for logical_addr4 using new interface");
-    
+
     printf("  [LOGICAL] Verified: logical_addr4 = 0x%06X -> sector_id=%d\n",
            logical_addr4, logical_addr4 / USER_DATA_SIZE);
-    
+
     // 测试5：释放逻辑地址空间
     printf("  [LOGICAL] Testing space_mgr_free...\n");
     space_mgr_free(&ftl.spc_mgr, logical_addr1, USER_DATA_SIZE);
     space_mgr_free(&ftl.spc_mgr, logical_addr2, USER_DATA_SIZE);
-    
+
     // 验证剩余空闲空间
     uint32_t free_bytes = space_mgr_get_free_bytes(&ftl.spc_mgr);
     printf("  [LOGICAL] Free bytes after freeing 2 pages: %u\n", free_bytes);
-    
+
     cleanup_test_flash();
     PASS();
 }
