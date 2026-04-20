@@ -5,83 +5,83 @@
 #include <stdbool.h>
 #include "eflash_sim.h"
 
-// 如果 META_SIZE 未在 eflash_sim.h 中定义，这里提供一个默认值（通常为0或特定开销）
-// 请根据实际 Flash 模拟器的元数据开销调整此值
+// If META_SIZE is not defined in eflash_sim.h, provide a default value here (usually 0 or specific overhead)
+// Adjust this value according to the actual Flash simulator metadata overhead
 #ifndef META_SIZE
 #define META_SIZE 0
 #endif
 
-// --- Free Node 结构 (8字节) ---
-// 4字节逻辑地址 + 4字节大小（单位：字节）
+// --- Free Node Structure (8 bytes) ---
+// 4-byte logical address + 4-byte size (unit: bytes)
 #ifdef _MSC_VER
 #pragma pack(push, 1)
 typedef struct {
-    uint32_t    addr;           // 32位逻辑地址
-    uint32_t    size;           // 连续空闲字节数
+    uint32_t    addr;           // 32-bit logical address
+    uint32_t    size;           // Number of consecutive free bytes
 } free_node_t;
 #pragma pack(pop)
 #else
 typedef struct __attribute__((packed)) {
-    uint32_t    addr;           // 32位逻辑地址
-    uint32_t    size;           // 连续空闲字节数
+    uint32_t    addr;           // 32-bit logical address
+    uint32_t    size;           // Number of consecutive free bytes
 } free_node_t;
 #endif
 
-// --- Free Node Page 布局 ---
-#define FREE_NODE_PAGE_COUNT    4       // 预留4页存储free_node表
-#define FREE_NODES_PER_PAGE     58      // 每页node数: 464/8 = 58
-#define TOTAL_FREE_NODES        (FREE_NODE_PAGE_COUNT * FREE_NODES_PER_PAGE)  // 总计232个node
-#define FREE_NODE_HEADER_SIZE   4       // 每页开头4字节存储count
+// --- Free Node Page Layout ---
+#define FREE_NODE_PAGE_COUNT    4       // Reserve 4 pages for free_node table
+#define FREE_NODES_PER_PAGE     58      // Nodes per page: 464/8 = 58
+#define TOTAL_FREE_NODES        (FREE_NODE_PAGE_COUNT * FREE_NODES_PER_PAGE)  // Total 232 nodes
+#define FREE_NODE_HEADER_SIZE   4       // First 4 bytes of each page store count
 
-// --- 对象头配置 ---
-#define BASE_HEADER_PAGES       8       // 基础对象头页数
-#define OBJ_HEADER_SIZE         16      // 每个对象头16字节
-#define BASE_OBJ_CAPACITY       ((EFLASH_PAGE_SIZE * BASE_HEADER_PAGES - META_SIZE * BASE_HEADER_PAGES) / OBJ_HEADER_SIZE)  // 232个
-#define EXT_HEADER_PAGES_UNIT   4       // 每次扩展4页
-#define EXT_OBJ_CAPACITY        ((EFLASH_PAGE_SIZE * EXT_HEADER_PAGES_UNIT - META_SIZE * EXT_HEADER_PAGES_UNIT - 4) / OBJ_HEADER_SIZE)  // 116个（减去4字节链接指针）
+// --- Object Header Configuration ---
+#define BASE_HEADER_PAGES       8       // Base object header pages
+#define OBJ_HEADER_SIZE         16      // Each object header is 16 bytes
+#define BASE_OBJ_CAPACITY       ((EFLASH_PAGE_SIZE * BASE_HEADER_PAGES - META_SIZE * BASE_HEADER_PAGES) / OBJ_HEADER_SIZE)  // 232 objects
+#define EXT_HEADER_PAGES_UNIT   4       // 4 pages per extension
+#define EXT_OBJ_CAPACITY        ((EFLASH_PAGE_SIZE * EXT_HEADER_PAGES_UNIT - META_SIZE * EXT_HEADER_PAGES_UNIT - 4) / OBJ_HEADER_SIZE)  // 116 objects (minus 4-byte link pointer)
 
-// --- 空间管理器上下文 ---
+// --- Space Manager Context ---
 typedef struct {
-    uint16_t    total_pages;            // Flash总页数
-    uint16_t    free_node_pages[FREE_NODE_PAGE_COUNT];  // free_node表的物理页号
-    uint16_t    header_pages[BASE_HEADER_PAGES];        // 基础对象头页的物理页号
-    uint16_t    next_alloc_page;        // 下一个待分配的物理页（用于顺序分配优化）
+    uint16_t    total_pages;            // Total Flash pages
+    uint16_t    free_node_pages[FREE_NODE_PAGE_COUNT];  // Physical page numbers for free_node table
+    uint16_t    header_pages[BASE_HEADER_PAGES];        // Physical page numbers for base object headers
+    uint16_t    next_alloc_page;        // Next physical page to allocate (for sequential allocation optimization)
 } space_mgr_t;
 
 /**
- * space_mgr_init: 初始化空间管理器
- * @mgr: 空间管理器实例
- * @total_pages: Flash总页数
+ * space_mgr_init: Initialize space manager
+ * @mgr: Space manager instance
+ * @total_pages: Total Flash pages
  */
 void space_mgr_init(space_mgr_t *mgr, uint16_t total_pages);
 
 /**
- * space_mgr_alloc: 分配指定大小的逻辑地址空间
- * @mgr: 空间管理器实例
- * @size: 请求的字节数
- * @out_logical_addr: 输出分配的起始逻辑地址（24位）
- * @return: 0成功，-1失败（空间不足）
+ * space_mgr_alloc: Allocate specified size of logical address space
+ * @mgr: Space manager instance
+ * @size: Requested size in bytes
+ * @out_logical_addr: Output allocated starting logical address (24-bit)
+ * @return: 0 success, -1 failure (insufficient space)
  */
 int space_mgr_alloc(space_mgr_t *mgr, uint32_t size, uint32_t *out_logical_addr);
 
 /**
- * space_mgr_free: 释放指定的逻辑地址空间并合并相邻空闲块
- * @mgr: 空间管理器实例
- * @logical_addr: 要释放的起始逻辑地址（24位）
- * @size: 释放的字节数
+ * space_mgr_free: Free specified logical address space and merge adjacent free blocks
+ * @mgr: Space manager instance
+ * @logical_addr: Starting logical address to free (24-bit)
+ * @size: Size in bytes to free
  */
 void space_mgr_free(space_mgr_t *mgr, uint32_t logical_addr, uint32_t size);
 
 /**
- * space_mgr_sync: 同步free_node表到Flash
- * @mgr: 空间管理器实例
+ * space_mgr_sync: Sync free_node table to Flash
+ * @mgr: Space manager instance
  */
 void space_mgr_sync(space_mgr_t *mgr);
 
 /**
- * space_mgr_get_free_bytes: 获取剩余空闲字节数
- * @mgr: 空间管理器实例
- * @return: 空闲字节数
+ * space_mgr_get_free_bytes: Get remaining free bytes
+ * @mgr: Space manager instance
+ * @return: Number of free bytes
  */
 uint32_t space_mgr_get_free_bytes(space_mgr_t *mgr);
 

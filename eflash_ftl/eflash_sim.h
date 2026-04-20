@@ -5,17 +5,20 @@
 #include <stddef.h>
 
 #define EFLASH_PAGE_SIZE    512
-#define EFLASH_TOTAL_PAGES  2048 // 1MB / 512B (从8192减小到2048以加速测试)
+#define EFLASH_TOTAL_PAGES  2048 // 1MB / 512B (reduced from 8192 to 2048 to speed up testing)
 
-// 初始化模拟 Flash 文件
+// Initialize simulated Flash file
 int eflash_init(const char *filename);
 
-// 硬件原语
+// Hardware primitives
 int eflash_hw_erase(uint16_t page_addr);
 int eflash_hw_prog(uint16_t page_addr, const uint8_t *data);
 int eflash_hw_read(uint16_t page_addr, uint8_t *data);
 
-// eFlash 操作，位更新 (仅 1->0)
+// eFlash operation: bit update (1->0 only)
 int eflash_hw_word_update(uint16_t page_addr, uint16_t offset, uint16_t data);
+
+// Helper function: Check if page is all 0xFF (blank page)
+int eflash_hw_is_blank(uint16_t page_addr);
 
 #endif

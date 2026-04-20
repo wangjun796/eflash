@@ -6,7 +6,7 @@
 #include "ecc/bch.h"
 #include "space_mgr.h"
 
-// --- 跨平台 packed 结构支持 ---
+// --- Cross-platform packed structure support ---
 #ifdef _MSC_VER
     #define PACKED_STRUCT __pragma(pack(push, 1))
     #define PACKED_STRUCT_END __pragma(pack(pop))
@@ -17,44 +17,44 @@
     #define ATTRIBUTE_PACKED __attribute__((packed))
 #endif
 
-// --- 物理布局配置 ---
+// --- Physical Layout Configuration ---
 #define EFLASH_PAGE_SIZE    512
 #define META_SIZE           48
 #define USER_DATA_SIZE      (EFLASH_PAGE_SIZE - META_SIZE)
 #define RADIX_DEPTH         16
 
-// --- 对象头管理配置 ---
-#define BASE_HEADER_PAGES     8   // 基础对象头页数
-#define BASE_HEADER_CAPACITY  232 // 基础容量 (8 * 464 / 16)
-#define EXT_HEADER_PAGES_UNIT 4   // 每次扩展的页数
-#define EXT_HEADER_CAPACITY   116 // 每扩展单元的容量 (29 * 4 - 4个指针位)
-#define FREE_LIST_PAGES       4   // 空闲链表页数
+// --- Object Header Management Configuration ---
+#define BASE_HEADER_PAGES     8   // Base object header pages
+#define BASE_HEADER_CAPACITY  232 // Base capacity (8 * 464 / 16)
+#define EXT_HEADER_PAGES_UNIT 4   // Pages per extension
+#define EXT_HEADER_CAPACITY   116 // Capacity per extension unit (29 * 4 - 4 pointer fields)
+#define FREE_LIST_PAGES       4   // Free list pages
 
-// --- 对象头结构 (16 字节) ---
+// --- Object Header Structure (16 bytes) ---
 PACKED_STRUCT
 typedef struct {
-    uint16_t    pkg_id;         // 包 ID
-    uint16_t    class_id;       // 类 ID
-    uint8_t     type;           // 类型
+    uint16_t    pkg_id;         // Package ID
+    uint16_t    class_id;       // Class ID
+    uint8_t     type;           // Type
     uint8_t     reserved[3];
-    uint32_t    body_addr;      // 数据体逻辑地址
-    uint32_t    body_size;      // 数据体大小
+    uint32_t    body_addr;      // Data body logical address
+    uint32_t    body_size;      // Data body size
 } ATTRIBUTE_PACKED obj_header_t;
 PACKED_STRUCT_END
 
-// --- 事务状态机 (Status Field) ---
-// 0xAD -> 0x21 翻转符合 Flash 编程特性 (1->0)
-#define TXN_STATUS_BLANK        0xFF  // 从未写过的空白页
-#define TXN_STATUS_PENDING      0xEF  // 保留（未使用）
-#define TXN_STATUS_READY        0xAD  // 事务数据页已写入，等待提交
-#define TXN_STATUS_COMMITTED    0x21  // 事务已成功提交（通常仅标记 Root 页）
-#define TXN_STATUS_INVALID      0x00  // 非事务页或已失效的旧页
+// --- Transaction State Machine (Status Field) ---
+// 0xAD -> 0x21 transition conforms to Flash programming characteristics (1->0)
+#define TXN_STATUS_BLANK        0xFF  // Never-written blank page
+#define TXN_STATUS_PENDING      0xEF  // Reserved (unused)
+#define TXN_STATUS_READY        0xAD  // Transaction data page written, waiting for commit
+#define TXN_STATUS_COMMITTED    0x21  // Transaction successfully committed (usually only marks Root page)
+#define TXN_STATUS_INVALID      0x00  // Non-transaction page or invalidated old page
 
-// --- 特殊值 ---
+// --- Special Values ---
 #define PAGE_NONE             0xFFFF
 #define TXN_ID_NONE           0xFFFF
 
-// --- 元数据结构 (48 字节) ---
+// --- Metadata Structure (48 bytes) ---
 PACKED_STRUCT
 typedef struct {
     uint16_t        sector_id;
@@ -67,7 +67,7 @@ typedef struct {
 } ATTRIBUTE_PACKED ftl_meta_t;
 PACKED_STRUCT_END
 
-// --- FTL 上下文 ---
+// --- FTL Context ---
 typedef struct {
     space_mgr_t   spc_mgr;
     uint16_t      root_page;
@@ -77,29 +77,29 @@ typedef struct {
     uint16_t      active_txn_id;
     bool          is_initialized;
 
-    // 预分配的系统区逻辑地址
-    uint16_t      base_hdr_addr;    // 基础对象头起始逻辑页
-    uint16_t      free_list_addr;   // 空闲链表起始逻辑页
-    uint16_t      ext_hdr_addrs[16];// 扩展对象头页的逻辑地址数组
+    // Pre-allocated system area logical addresses
+    uint16_t      base_hdr_addr;    // Base object header starting logical page
+    uint16_t      free_list_addr;   // Free list starting logical page
+    uint16_t      ext_hdr_addrs[16];// Extended object header page logical address array
     
-    // GC 相关字段（仿照 Dhara Head/Tail 模型）
-    uint16_t      gc_head_page;     // GC 分配指针：指向下一个可写入的物理页
-    uint16_t      gc_tail_page;     // GC 回收指针：指向下一个待回收的物理页
-    uint16_t      gc_threshold;     // GC 触发阈值（剩余空闲页数）
-    uint32_t      total_user_pages; // 用户可用总页数（扣除系统保留区）
-    bool          gc_in_progress;   // GC正在进行标志，防止递归触发GC
+    // GC related fields (following Dhara Head/Tail model)
+    uint16_t      gc_head_page;     // GC allocation pointer: points to next writable physical page
+    uint16_t      gc_tail_page;     // GC reclamation pointer: points to next physical page to reclaim
+    uint16_t      gc_threshold;     // GC trigger threshold (remaining free pages)
+    uint32_t      total_user_pages; // Total user-available pages (excluding system reserved area)
+    bool          gc_in_progress;   // GC in progress flag, prevents recursive GC triggering
 } mini_ftl_t;
 
-// --- 接口函数 ---
+// --- Interface Functions ---
 int  mini_ftl_init(mini_ftl_t *ftl);
 int  mini_ftl_obj_get_header(mini_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr);
 int  mini_ftl_obj_set_header(mini_ftl_t *ftl, uint16_t obj_id, const obj_header_t *hdr);
 
-// 基于 sector_id 的读写接口（推荐）
+// Read/write interface based on sector_id (recommended)
 int  mini_ftl_write(mini_ftl_t *ftl, uint16_t sector_id, const uint8_t *data);
 int  mini_ftl_read(mini_ftl_t *ftl, uint16_t sector_id, uint8_t *data);
 
-// 基于逻辑地址的读写接口（可选）
+// Read/write interface based on logical address (optional)
 int  mini_ftl_write_logical(mini_ftl_t *ftl, uint32_t logical_addr, const uint8_t *data);
 int  mini_ftl_read_logical(mini_ftl_t *ftl, uint32_t logical_addr, uint8_t *data);
 
@@ -107,9 +107,9 @@ void mini_ftl_txn_begin(mini_ftl_t *ftl);
 int  mini_ftl_txn_commit(mini_ftl_t *ftl);
 void mini_ftl_txn_abort(mini_ftl_t *ftl);
 
-// --- GC 接口函数 ---
-int  mini_ftl_gc_trigger(mini_ftl_t *ftl);  // 手动触发 GC
-int  mini_ftl_gc_collect(mini_ftl_t *ftl, uint16_t pages_to_free); // 回收指定页数
-uint32_t mini_ftl_get_free_pages(mini_ftl_t *ftl); // 获取当前空闲页数
+// --- GC Interface Functions ---
+int  mini_ftl_gc_trigger(mini_ftl_t *ftl);  // Manually trigger GC
+int  mini_ftl_gc_collect(mini_ftl_t *ftl, uint16_t pages_to_free); // Reclaim specified number of pages
+uint32_t mini_ftl_get_free_pages(mini_ftl_t *ftl); // Get current number of free pages
 
 #endif

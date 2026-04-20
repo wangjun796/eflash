@@ -115,7 +115,27 @@ static int bch_decode(const struct bch_def *bch, uint8_t *data, size_t len, cons
 // Forward declarations for helper functions used in comprehensive tests
 #define META_OFFSET USER_DATA_SIZE
 
+static bool is_blank_page_local(uint16_t page) {
+    uint8_t buf[EFLASH_PAGE_SIZE];
+    if (eflash_hw_read(page, buf) != 0) return false;
+    
+    // 快速检查：逐个字节判断是否为 0xFF
+    for (int i = 0; i < EFLASH_PAGE_SIZE; i++) {
+        if (buf[i] != 0xFF) {
+            return false; // 不是空白页
+        }
+    }
+    
+    return true; // 是空白页
+}
+
 static bool is_page_valid_local(uint16_t page, ftl_meta_t *meta) {
+    // 优化：先检查是否为全 0xFF 空白页
+    if (is_blank_page_local(page)) {
+        memset(meta, 0xFF, sizeof(ftl_meta_t));
+        return false;
+    }
+    
     uint8_t buf[EFLASH_PAGE_SIZE];
     if (eflash_hw_read(page, buf) != 0) return false;
 
@@ -156,6 +176,8 @@ static int failed_tests = 0;
 // Helper: Initialize and erase flash
 static void init_test_flash(void) {
     eflash_init(TEST_FLASH_FILE);
+    
+    // 擦除所有页面
     for (int i = 0; i < EFLASH_TOTAL_PAGES; i++) {
         eflash_hw_erase(i);
     }
@@ -510,10 +532,14 @@ int test_space_management(void) {
 int test_ecc_correction(void) {
     ftl_meta_t meta;
     uint8_t corrupted[META_SIZE];
+    uint8_t full_page[EFLASH_PAGE_SIZE];
+    uint8_t user_data[USER_DATA_SIZE];
 
     printf("[TEST] test_ecc_correction: Starting...\n");
 
-    // Test 7a: Encode and decode without errors
+    // ========================================================================
+    // Test 1: 元数据 ECC - 无错误情况
+    // ========================================================================
     memset(&meta, 0, sizeof(meta));
     meta.sector_id = 123;
     meta.global_count = 456;
@@ -528,7 +554,9 @@ int test_ecc_correction(void) {
     FORCE_ASSERT(result == 0, "ECC decode with no errors should return 0");
     printf("  [PASS] ECC encode/decode (no errors)\n");
 
-    // Test 7b: Correct 1-bit error
+    // ========================================================================
+    // Test 2: 元数据 ECC - 纠正 1-bit 错误
+    // ========================================================================
     memcpy(corrupted, &meta, META_SIZE);
     corrupted[0] ^= 0x01; // Flip 1 bit
     result = bch_decode(&bch_3bit, corrupted, META_SIZE - 5, meta.ecc);
@@ -536,7 +564,9 @@ int test_ecc_correction(void) {
     FORCE_ASSERT(corrupted[0] == ((uint8_t *)&meta)[0], "ECC correction produced wrong data");
     printf("  [PASS] ECC correct 1-bit error\n");
 
-    // Test 7c: Correct 2-bit errors (保守测试，确保可靠性)
+    // ========================================================================
+    // Test 3: 元数据 ECC - 纠正 2-bit 错误
+    // ========================================================================
     memcpy(corrupted, &meta, META_SIZE);
     corrupted[0] ^= 0x01; // Flip bit 0
     corrupted[1] ^= 0x01; // Flip bit 8
@@ -544,14 +574,133 @@ int test_ecc_correction(void) {
     FORCE_ASSERT(result == 2, "ECC should correct 2-bit errors and return 2");
     printf("  [PASS] ECC correct 2-bit errors\n");
 
-    // Test 7d: Correct 3-bit errors
+    // ========================================================================
+    // Test 4: 元数据 ECC - 纠正 3-bit 错误
+    // ========================================================================
     memcpy(corrupted, &meta, META_SIZE);
     corrupted[2] ^= 0x07; // Flip 3 bits
     result = bch_decode(&bch_3bit, corrupted, META_SIZE - 5, meta.ecc);
     FORCE_ASSERT(result == 3, "ECC should correct 3-bit errors and return 3");
     printf("  [PASS] ECC correct 3-bit errors\n");
 
-    printf("[PASS] test_ecc_correction: Completed successfully\n");
+    // ========================================================================
+    // Test 5: 完整页 ECC - 用户数据 + 元数据（符合项目规范）
+    // ECC 保护范围：USER_DATA_SIZE + META_SIZE - 5 = 464 + 48 - 5 = 507 字节
+    // ========================================================================
+    printf("\n  [TEST] Full page ECC tests (User Data + Meta)...\n");
+    
+    // 初始化用户数据
+    for (int i = 0; i < USER_DATA_SIZE; i++) {
+        user_data[i] = (uint8_t)(i & 0xFF);
+    }
+    
+    // 构建完整页：用户数据 + 元数据
+    memcpy(full_page, user_data, USER_DATA_SIZE);
+    memset(&meta, 0, sizeof(meta));
+    meta.sector_id = 999;
+    meta.global_count = 12345;
+    meta.epoch = 1;
+    meta.status = TXN_STATUS_COMMITTED;
+    memcpy(full_page + USER_DATA_SIZE, &meta, META_SIZE);
+    
+    // 计算完整页的 ECC（覆盖用户数据+元数据除ECC部分）
+    size_t protected_len = USER_DATA_SIZE + META_SIZE - 5;
+    uint8_t *ecc_ptr = full_page + USER_DATA_SIZE + META_SIZE - 5;
+    bch_generate(&bch_3bit, full_page, protected_len, ecc_ptr);
+    
+    printf("  [INFO] Protected length: %zu bytes (User=%d + Meta=%d - ECC=5)\n",
+           protected_len, USER_DATA_SIZE, META_SIZE);
+    
+    // Test 5a: 无错误验证
+    uint8_t page_copy[EFLASH_PAGE_SIZE];
+    memcpy(page_copy, full_page, EFLASH_PAGE_SIZE);
+    result = bch_verify(&bch_3bit, page_copy, protected_len, ecc_ptr);
+    FORCE_ASSERT(result == 0, "Full page ECC verify with no errors should return 0");
+    printf("  [PASS] Full page ECC verify (no errors)\n");
+    
+    // Test 5b: 纠正用户数据中的 1-bit 错误
+    memcpy(page_copy, full_page, EFLASH_PAGE_SIZE);
+    page_copy[100] ^= 0x01; // 在用户数据区翻转 1 bit
+    result = bch_decode(&bch_3bit, page_copy, protected_len, ecc_ptr);
+    FORCE_ASSERT(result >= 1 && result <= 3, "ECC should correct 1-bit error in user data");
+    FORCE_ASSERT(page_copy[100] == full_page[100], "User data correction failed");
+    printf("  [PASS] Full page ECC correct 1-bit in user data\n");
+    
+    // Test 5c: 纠正用户数据中的 2-bit 错误
+    memcpy(page_copy, full_page, EFLASH_PAGE_SIZE);
+    page_copy[200] ^= 0x03; // 翻转 2 bits
+    result = bch_decode(&bch_3bit, page_copy, protected_len, ecc_ptr);
+    FORCE_ASSERT(result >= 2 && result <= 3, "ECC should correct 2-bit errors in user data");
+    FORCE_ASSERT(page_copy[200] == full_page[200], "User data 2-bit correction failed");
+    printf("  [PASS] Full page ECC correct 2-bit errors in user data\n");
+    
+    // Test 5d: 纠正元数据中的错误
+    memcpy(page_copy, full_page, EFLASH_PAGE_SIZE);
+    page_copy[USER_DATA_SIZE + 2] ^= 0x01; // 在元数据区（global_count）翻转 1 bit
+    result = bch_decode(&bch_3bit, page_copy, protected_len, ecc_ptr);
+    FORCE_ASSERT(result >= 1 && result <= 3, "ECC should correct error in meta data");
+    FORCE_ASSERT(page_copy[USER_DATA_SIZE + 2] == full_page[USER_DATA_SIZE + 2], 
+                "Meta data correction failed");
+    printf("  [PASS] Full page ECC correct 1-bit in meta data\n");
+    
+    // Test 5e: 同时纠正用户数据和元数据中的错误
+    memcpy(page_copy, full_page, EFLASH_PAGE_SIZE);
+    page_copy[50] ^= 0x01;  // 用户数据错误
+    page_copy[USER_DATA_SIZE + 10] ^= 0x02;  // 元数据错误
+    result = bch_decode(&bch_3bit, page_copy, protected_len, ecc_ptr);
+    FORCE_ASSERT(result >= 2 && result <= 3, "ECC should correct mixed errors");
+    FORCE_ASSERT(page_copy[50] == full_page[50], "Mixed error correction failed (user)");
+    FORCE_ASSERT(page_copy[USER_DATA_SIZE + 10] == full_page[USER_DATA_SIZE + 10],
+                "Mixed error correction failed (meta)");
+    printf("  [PASS] Full page ECC correct mixed user/meta errors\n");
+    
+    // Test 5f: 纠正 3-bit 错误（边界测试）
+    memcpy(page_copy, full_page, EFLASH_PAGE_SIZE);
+    page_copy[300] ^= 0x07; // 翻转 3 bits
+    result = bch_decode(&bch_3bit, page_copy, protected_len, ecc_ptr);
+    FORCE_ASSERT(result == 3, "ECC should correct 3-bit errors (boundary)");
+    FORCE_ASSERT(page_copy[300] == full_page[300], "3-bit correction failed");
+    printf("  [PASS] Full page ECC correct 3-bit errors (boundary)\n");
+    
+    // Test 5g: 超过纠错能力的错误（应该失败）
+    memcpy(page_copy, full_page, EFLASH_PAGE_SIZE);
+    // 故意制造 4-bit 错误，超出 BCH-3 的纠错能力
+    page_copy[400] ^= 0x0F; // 翻转 4 bits
+    result = bch_decode(&bch_3bit, page_copy, protected_len, ecc_ptr);
+    // 注意：BCH-3 最多纠正 3-bit，4-bit 可能无法纠正或检测为不可纠正
+    printf("  [INFO] 4-bit error test result: %d (expected: uncorrectable or partial)\n", result);
+    // 不强制断言，因为行为取决于具体实现
+    
+    // ========================================================================
+    // Test 6: 实际 FTL 读写场景中的 ECC 测试
+    // ========================================================================
+    printf("\n  [TEST] Real FTL read/write ECC scenario...\n");
+    
+    mini_ftl_t ftl;
+    memset(&ftl, 0, sizeof(ftl));
+    init_test_flash();
+    mini_ftl_init(&ftl);
+    
+    // 写入数据
+    uint8_t write_buf[USER_DATA_SIZE];
+    for (int i = 0; i < USER_DATA_SIZE; i++) {
+        write_buf[i] = (uint8_t)((i * 7 + 13) & 0xFF); // 伪随机模式
+    }
+    
+    ASSERT(mini_ftl_write(&ftl, 100, write_buf) == 0, "write for ECC test");
+    
+    // 读取并验证
+    uint8_t read_buf[USER_DATA_SIZE];
+    ASSERT(mini_ftl_read(&ftl, 100, read_buf) == 0, "read for ECC test");
+    ASSERT(memcmp(write_buf, read_buf, USER_DATA_SIZE) == 0, 
+           "data integrity after FTL write/read");
+    printf("  [PASS] FTL write/read preserves data integrity\n");
+    
+    cleanup_test_flash();
+
+    printf("\n[PASS] test_ecc_correction: Completed successfully\n");
+    printf("  Summary: Tested meta-only ECC, full-page ECC (507 bytes),\n");
+    printf("           1/2/3-bit corrections, mixed errors, and real FTL scenario\n");
     return 0;
 }
 
@@ -1148,8 +1297,8 @@ int test_gc_basic() {
         if (last_written[i] != 0xFF) {
             uint8_t read_data[USER_DATA_SIZE];
             if (mini_ftl_read(&ftl, i, read_data) == 0) {
-                ASSERT(read_data[0] == last_written[i],
-                       "data mismatch after manual GC for sector %d", i);
+                ASSERT_FMT(read_data[0] == last_written[i],
+                          "data mismatch after manual GC for sector %d", i);
             } else {
                 printf("  [GC] ERROR: Failed to read sector %d after manual GC\n", i);
                 ASSERT(0, "read failed after manual GC");

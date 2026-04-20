@@ -3,8 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
-// 定义对象头结构 (16 字节)
-// 注意：如果 mini_ftl.h 中已定义此结构，请删除此处的定义以避免重定义错误
+// Define object header structure (16 bytes)
+// Note: If this structure is already defined in mini_ftl.h, delete this definition to avoid redefinition errors
 typedef struct {
     uint16_t pkg_id;
     uint16_t class_id;
@@ -18,18 +18,18 @@ int main() {
     mini_ftl_t ftl;
     const char *flash_file = "test_flash.bin";
     
-    // 1. 初始化并擦除
+    // 1. Initialize and erase
     printf("Initializing simulated eFlash (Erasing to 0xFF)...\n");
     eflash_init(flash_file);
     for (int i = 0; i < EFLASH_TOTAL_PAGES; i++) {
         eflash_hw_erase(i);
     }
 
-    // 2. 启动 FTL
+    // 2. Start FTL
     mini_ftl_init(&ftl);
     printf("FTL Init: Base Header at Logic Page %d\n", ftl.base_hdr_addr);
 
-    // 3. 写入基础区对象头 (ID: 0)
+    // 3. Write base area object header (ID: 0)
     obj_header_t hdr;
     memset(&hdr, 0, sizeof(hdr));
     hdr.pkg_id = 0x1000;
@@ -37,12 +37,12 @@ int main() {
     mini_ftl_obj_set_header(&ftl, 0, &hdr);
     printf("Set header for ID 0 (Base Level)\n");
 
-    // 4. 写入扩展区对象头 (ID: 250 -> 触发第一级扩展)
+    // 4. Write extended area object header (ID: 250 -> triggers first level extension)
     hdr.pkg_id = 0x9999;
     mini_ftl_obj_set_header(&ftl, 250, &hdr);
     printf("Set header for ID 250 (Extended Level 1)\n");
 
-    // 5. 读取验证
+    // 5. Read verification
     obj_header_t read_hdr;
     if (mini_ftl_obj_get_header(&ftl, 250, &read_hdr) == 0) {
         printf("Read ID 250: PkgID=0x%04X\n", read_hdr.pkg_id);
@@ -50,13 +50,13 @@ int main() {
         printf("Failed to read ID 250\n");
     }
 
-    // 6. 模拟掉电恢复
+    // 6. Simulate power failure recovery
     printf("\nSimulating Power Cycle...\n");
     eflash_deinit();
     eflash_init(flash_file);
     mini_ftl_init(&ftl);
 
-    // 7. 再次读取
+    // 7. Read again
     if (mini_ftl_obj_get_header(&ftl, 250, &read_hdr) == 0) {
         printf("After Reboot - Read ID 250: PkgID=0x%04X\n", read_hdr.pkg_id);
     } else {

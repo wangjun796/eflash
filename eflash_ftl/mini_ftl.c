@@ -5,16 +5,16 @@
 #include <stdio.h>
 
 #ifndef FTL_DEBUG
-#define FTL_DEBUG(...) do {} while(0)  // 关闭调试输出
+#define FTL_DEBUG(...) do {} while(0)  // Disable debug output
 #endif
 
 #ifndef PAGE_NONE
 #define PAGE_NONE 0xFFFF
 #endif
 
-// --- 调试开关配置 ---
-// 设置为 1 开启详细调试输出，设置为 0 关闭（测试时建议关闭）
-#define FTL_DEBUG_ENABLE 1  // 开启调试以诊断压力测试问题
+// --- Debug Configuration ---
+// Set to 1 to enable verbose debug output, set to 0 to disable (recommended to disable during testing)
+#define FTL_DEBUG_ENABLE 1  // Enable debug for stress test diagnosis
 
 #if FTL_DEBUG_ENABLE
 #define FTL_DEBUG(fmt, ...) printf("[FTL_DEBUG] " fmt, ##__VA_ARGS__)
@@ -22,109 +22,109 @@
 #define FTL_DEBUG(fmt, ...) do {} while(0)
 #endif
 
-// --- BCH ECC 包装函数 ---
+// --- BCH ECC Wrapper Functions ---
 
-// bch_encode: 生成ECC校验码
+// bch_encode: Generate ECC checksum
 static void bch_encode(const struct bch_def *bch, const uint8_t *data, size_t len, uint8_t *ecc) {
     bch_generate(bch, data, len, ecc);
 }
 
-// bch_decode: 验证并纠正错误
-// 返回: 0 无错误, >0 已纠正的错误数, -1 不可纠正
+// bch_decode: Verify and correct errors
+// Returns: 0 no error, >0 number of corrected errors, -1 uncorrectable
 static int bch_decode(const struct bch_def *bch, uint8_t *data, size_t len, const uint8_t *ecc) {
-    // 先验证
+    // First verify
     if (bch_verify(bch, data, len, ecc) == 0) {
-        return 0; // 无错误
+        return 0; // No error
     }
 
-    // 需要纠错，创建副本进行修复
-    // 注意：这里需要确保 data_copy 和 ecc_copy 足够大
-    // 假设最大数据长度为 EFLASH_PAGE_SIZE 或 META_SIZE，具体取决于调用上下文
-    // 为安全起见，使用较大的静态缓冲区或动态分配，这里参考方案使用了固定大小
-    // 如果 META_SIZE 较小，可以使用 META_SIZE
+    // Need correction, create copy for repair
+    // Note: Ensure data_copy and ecc_copy are large enough
+    // Assume max data length is EFLASH_PAGE_SIZE or META_SIZE depending on call context
+    // For safety, use larger static buffer or dynamic allocation, here using fixed size as reference
+    // If META_SIZE is small, can use META_SIZE
     uint8_t data_copy[META_SIZE];
-    uint8_t ecc_copy[5]; // 参考代码中 ecc 大小为 5 字节 (META_SIZE - (META_SIZE-5))
+    uint8_t ecc_copy[5]; // Reference code uses 5 bytes for ecc (META_SIZE - (META_SIZE-5))
 
-    if (len > sizeof(data_copy)) return -1; // 安全检查
+    if (len > sizeof(data_copy)) return -1; // Safety check
 
     memcpy(data_copy, data, len);
-    memcpy(ecc_copy, ecc, 5); // 假设 ecc 长度为 5
+    memcpy(ecc_copy, ecc, 5); // Assume ecc length is 5
 
     bch_repair(bch, data_copy, len, ecc_copy);
 
-    // 再次验证
+    // Verify again
     if (bch_verify(bch, data_copy, len, ecc_copy) != 0) {
-        return -1; // 仍然有错误，不可纠正
+        return -1; // Still has errors, uncorrectable
     }
 
-    // 复制纠正后的数据回去
+    // Copy corrected data back
     memcpy(data, data_copy, len);
-    return 1; // 假设纠正了错误
+    return 1; // Assume errors were corrected
 }
 
 #define TOTAL_PAGES EFLASH_TOTAL_PAGES
 #define META_OFFSET USER_DATA_SIZE
 static const struct bch_def *bch_cfg = &bch_3bit;
 
-// --- ECC 辅助函数 ---
+// --- ECC Helper Functions ---
 
 /**
- * calc_page_ecc: 计算完整页的ECC校验码（用户数据 + 元数据除ECC部分）
- * @page_buf: 指向完整页缓冲区的指针（包含USER_DATA_SIZE字节用户数据和META_SIZE字节元数据）
+ * calc_page_ecc: Calculate ECC checksum for full page (user data + metadata excluding ECC part)
+ * @page_buf: Pointer to full page buffer (contains USER_DATA_SIZE bytes user data and META_SIZE bytes metadata)
  * 
- * 布局说明：
- * - page_buf[0 .. USER_DATA_SIZE-1]: 用户数据
- * - page_buf[USER_DATA_SIZE .. USER_DATA_SIZE+META_SIZE-6]: 元数据（不含ECC）
- * - page_buf[USER_DATA_SIZE+META_SIZE-5 .. USER_DATA_SIZE+META_SIZE-1]: ECC校验码（5字节）
+ * Layout description:
+ * - page_buf[0 .. USER_DATA_SIZE-1]: User data
+ * - page_buf[USER_DATA_SIZE .. USER_DATA_SIZE+META_SIZE-6]: Metadata (excluding ECC)
+ * - page_buf[USER_DATA_SIZE+META_SIZE-5 .. USER_DATA_SIZE+META_SIZE-1]: ECC checksum (5 bytes)
  */
 static void calc_page_ecc(uint8_t *page_buf) {
-    // ECC保护范围：用户数据 + 元数据（不含ECC字段）
+    // ECC protection range: user data + metadata (excluding ECC field)
     size_t protected_len = USER_DATA_SIZE + META_SIZE - 5;
     
-    // ECC存储在元数据的最后5字节
+    // ECC stored in last 5 bytes of metadata
     uint8_t *ecc_ptr = page_buf + USER_DATA_SIZE + META_SIZE - 5;
     
     bch_encode(bch_cfg, page_buf, protected_len, ecc_ptr);
 }
 
 /**
- * verify_and_correct_page: 校验并尝试纠正完整页数据
- * @page_buf: 指向完整页缓冲区的指针
- * 返回: 0 成功, -1 失败 (不可纠正的错误)
+ * verify_and_correct_page: Verify and attempt to correct full page data
+ * @page_buf: Pointer to full page buffer
+ * Returns: 0 success, -1 failure (uncorrectable errors)
  */
 static int verify_and_correct_page(uint8_t *page_buf) {
-    // ECC保护范围：用户数据 + 元数据（不含ECC字段）
+    // ECC protection range: user data + metadata (excluding ECC field)
     size_t protected_len = USER_DATA_SIZE + META_SIZE - 5;
     
-    // ECC存储在元数据的最后5字节
+    // ECC stored in last 5 bytes of metadata
     uint8_t *ecc_ptr = page_buf + USER_DATA_SIZE + META_SIZE - 5;
     
     FTL_DEBUG("[ECC] Verifying page: protected_len=%zu, ecc at offset %zu\n", 
               protected_len, (size_t)(ecc_ptr - page_buf));
     
-    // 创建副本进行纠错
+    // Create copy for correction
     uint8_t data_copy[EFLASH_PAGE_SIZE];
     memcpy(data_copy, page_buf, EFLASH_PAGE_SIZE);
     
-    // 先验证
+    // First verify
     int verify_result = bch_verify(bch_cfg, data_copy, protected_len, ecc_ptr);
     FTL_DEBUG("[ECC] Verify result: %d (0=ok, >0=errors, <1=uncorrectable)\n", verify_result);
     
     if (verify_result == 0) {
-        return 0; // 无错误
+        return 0; // No error
     }
     
-    // 尝试纠错
+    // Attempt correction
     int result = bch_decode(bch_cfg, data_copy, protected_len, ecc_ptr);
     FTL_DEBUG("[ECC] Decode result: %d\n", result);
     
     if (result < 0) {
         FTL_DEBUG("[ECC] ERROR: Uncorrectable errors detected!\n");
-        return -1; // 不可纠正的错误
+        return -1; // Uncorrectable errors
     }
     
     if (result > 0) {
-        // 已纠正错误，复制回原缓冲区
+        // Errors corrected, copy back to original buffer
         memcpy(page_buf, data_copy, EFLASH_PAGE_SIZE);
         FTL_DEBUG("[ECC] Corrected %d errors\n", result);
     }
@@ -132,25 +132,51 @@ static int verify_and_correct_page(uint8_t *page_buf) {
     return 0;
 }
 
-// --- 底层 Flash 操作封装 ---
+// --- Low-level Flash Operation Wrappers ---
 
 /**
- * is_page_valid: 判断物理页是否包含有效元数据
+ * is_blank_page: Check if page is all 0xFF (freshly erased blank page)
+ * @page: Physical page number
+ * @return: true=all 0xFF blank page, false=contains valid data
+ */
+static bool is_blank_page(uint16_t page) {
+    uint8_t buf[EFLASH_PAGE_SIZE];
+    if (eflash_hw_read(page, buf) != 0) return false;
+    
+    // Quick check: verify each byte is 0xFF
+    for (int i = 0; i < EFLASH_PAGE_SIZE; i++) {
+        if (buf[i] != 0xFF) {
+            return false; // Not a blank page
+        }
+    }
+    
+    return true; // Is a blank page
+}
+
+/**
+ * is_page_valid: Determine if physical page contains valid metadata
  */
 static bool is_page_valid(uint16_t page, ftl_meta_t *meta) {
+    // Optimization 1: First check if it's all 0xFF blank page, return invalid directly if so
+    if (is_blank_page(page)) {
+        FTL_DEBUG("[PAGE_VALID] Page %d is BLANK (all 0xFF)\n", page);
+        memset(meta, 0xFF, sizeof(ftl_meta_t));
+        return false;
+    }
+    
     uint8_t buf[EFLASH_PAGE_SIZE];
     if (eflash_hw_read(page, buf) != 0) return false;
 
-    // 使用新的完整页ECC验证
+    // Use new full-page ECC verification
     if (verify_and_correct_page(buf) != 0) return false;
 
-    // 从纠正后的缓冲区复制元数据
+    // Copy metadata from corrected buffer
     memcpy(meta, buf + META_OFFSET, META_SIZE);
 
-    // 1. 从未写过的页 (BLANK)
+    // 2. Unwritten page (BLANK status)
     if (meta->status == TXN_STATUS_BLANK) return false;
 
-    // 2. 状态检查：READY, COMMITTED 或 非事务有效页 (INVALID/0x00)
+    // 3. Status check: READY, COMMITTED or non-transaction valid page (INVALID/0x00)
     return (meta->status == TXN_STATUS_COMMITTED ||
             meta->status == TXN_STATUS_READY ||
             meta->status == TXN_STATUS_INVALID);
@@ -160,14 +186,14 @@ static int write_full_page(uint16_t page, const uint8_t *data, const ftl_meta_t 
     uint8_t buf[EFLASH_PAGE_SIZE];
     memset(buf, 0xFF, EFLASH_PAGE_SIZE);
 
-    // 复制用户数据
+    // Copy user data
     if (data) memcpy(buf, data, USER_DATA_SIZE);
 
-    // 复制元数据（不含ECC字段）
+    // Copy metadata (excluding ECC field)
     ftl_meta_t *meta_out = (ftl_meta_t *)(buf + META_OFFSET);
     memcpy(meta_out, meta_in, META_SIZE - 5);
     
-    // 计算完整页的ECC（覆盖用户数据+元数据除ECC部分）
+    // Calculate ECC for full page (covers user data + metadata excluding ECC part)
     calc_page_ecc(buf);
 
     if (eflash_hw_erase(page) != 0) return -1;
@@ -175,21 +201,21 @@ static int write_full_page(uint16_t page, const uint8_t *data, const ftl_meta_t 
 }
 
 /**
- * allocate_physical_page: 分配一个可用的物理页（使用 Head/Tail 机制）
- * @ftl: FTL 实例
- * @return: 物理页索引，-1 表示失败
+ * allocate_physical_page: Allocate an available physical page (using Head/Tail mechanism)
+ * @ftl: FTL instance
+ * @return: Physical page index, -1 on failure
  * 
- * 说明：仿照 Dhara 的设计，从 Head 开始顺序分配物理页
+ * Description: Following Dhara's design, allocate physical pages sequentially starting from Head
  */
 static int allocate_physical_page(mini_ftl_t *ftl) {
     uint16_t phys_page = ftl->gc_head_page;
     uint16_t first_user_page = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
     
-    // 移动到下一个物理页
+    // Move to next physical page
     ftl->gc_head_page++;
     
-    // 处理回绕
+    // Handle wraparound
     if (ftl->gc_head_page > last_user_page) {
         ftl->gc_head_page = first_user_page;
     }
@@ -200,14 +226,14 @@ static int allocate_physical_page(mini_ftl_t *ftl) {
     return phys_page;
 }
 
-// --- Radix Tree 核心逻辑 (移植自 Dhara map.c) ---
+// --- Radix Tree Core Logic (ported from Dhara map.c) ---
 
 static inline int get_bit(uint16_t sector, int depth) {
     return (sector >> (RADIX_DEPTH - 1 - depth)) & 1;
 }
 
-// 修正后的trace_path：严格遵循Dhara设计，移除new_phys参数
-// 职责：仅构建新节点的元数据模板，不插入任何物理页
+// Corrected trace_path: Strictly follow Dhara design, remove new_phys parameter
+// Responsibility: Only build metadata template for new node, do not insert any physical page
 static int trace_path(mini_ftl_t *ftl, uint16_t base_root, uint16_t sector, ftl_meta_t *out_meta) {
     uint8_t meta_buf[EFLASH_PAGE_SIZE];
     ftl_meta_t cur_meta;
@@ -216,27 +242,27 @@ static int trace_path(mini_ftl_t *ftl, uint16_t base_root, uint16_t sector, ftl_
 
     FTL_DEBUG("[TRACE] sector=%d, base_root=%d\n", sector, base_root);
 
-    // 初始化新节点的元数据（alt数组初始化为全0xFF/PAGE_NONE）
+    // Initialize new node's metadata (alt array initialized to all 0xFF/PAGE_NONE)
     memset(out_meta, 0xFF, sizeof(ftl_meta_t));
     out_meta->sector_id = sector;
     out_meta->global_count = ftl->next_count++;
     out_meta->epoch = ftl->current_epoch;
     out_meta->txn_id = ftl->active_txn_id;
     
-    // 设置状态：事务模式为READY，非事务模式直接为COMMITTED
+    // Set status: READY in transaction mode, COMMITTED directly in non-transaction mode
     if (ftl->active_txn_id != TXN_ID_NONE) {
         out_meta->status = TXN_STATUS_READY;
     } else {
-        out_meta->status = TXN_STATUS_COMMITTED;  // 非事务模式直接提交
+        out_meta->status = TXN_STATUS_COMMITTED;  // Non-transaction mode commits directly
     }
 
-    // 如果树为空，直接返回（alt数组已初始化为全PAGE_NONE）
+    // If tree is empty, return directly (alt array already initialized to all PAGE_NONE)
     if (current == PAGE_NONE) {
         FTL_DEBUG("[TRACE] Empty tree\n");
         return 0;
     }
 
-    // 读取根节点元数据
+    // Read root node metadata
     if (eflash_hw_read(current, meta_buf) != 0) {
         FTL_DEBUG("[TRACE] ERROR: Failed to read base_root page %d\n", current);
         return -1;
@@ -249,9 +275,9 @@ static int trace_path(mini_ftl_t *ftl, uint16_t base_root, uint16_t sector, ftl_
 
     FTL_DEBUG("[TRACE] Root sector=%d\n", cur_meta.sector_id);
 
-    // 遍历基数树，构建路径
+    // Traverse radix tree to build path
     while (depth < RADIX_DEPTH) {
-        // 计算当前深度的位值（MSB first）
+        // Calculate bit value at current depth (MSB first)
         uint16_t bit_mask = 1 << (RADIX_DEPTH - 1 - depth);
         int target_bit = (sector & bit_mask) ? 1 : 0;
         int current_bit = (cur_meta.sector_id & bit_mask) ? 1 : 0;
@@ -260,15 +286,15 @@ static int trace_path(mini_ftl_t *ftl, uint16_t base_root, uint16_t sector, ftl_
                   depth, target_bit, current_bit, depth, cur_meta.alt[depth]);
 
         if (target_bit != current_bit) {
-            // 位不同：发生分叉
-            // 将当前物理页保存为新节点的alt指针（记录分叉点）
+            // Bits differ: divergence occurs
+            // Save current physical page as new node's alt pointer (record divergence point)
             out_meta->alt[depth] = current;
             FTL_DEBUG("[TRACE] Diverge: out_meta->alt[%d]=%d\n", depth, current);
 
-            // 获取当前节点的alt指针，继续向下搜索
+            // Get current node's alt pointer, continue searching downward
             uint16_t next_page = cur_meta.alt[depth];
             if (next_page == PAGE_NONE) {
-                // 路径中断，跳转到not_found处理剩余深度
+                // Path interrupted, jump to not_found to handle remaining depth
                 FTL_DEBUG("[TRACE] Path interrupted at depth=%d\n", depth);
                 depth++;
                 goto not_found;
@@ -276,7 +302,7 @@ static int trace_path(mini_ftl_t *ftl, uint16_t base_root, uint16_t sector, ftl_
 
             FTL_DEBUG("[TRACE] Follow alt[%d]=%d\n", depth, next_page);
 
-            // 读取下一个节点的元数据
+            // Read next node's metadata
             if (eflash_hw_read(next_page, meta_buf) != 0) {
                 FTL_DEBUG("[TRACE] ERROR: Failed to read next page %d at depth %d\n", next_page, depth);
                 return -1;
@@ -289,7 +315,7 @@ static int trace_path(mini_ftl_t *ftl, uint16_t base_root, uint16_t sector, ftl_
 
             current = next_page;
         } else {
-            // 位相同：从当前节点继承alt指针
+            // Bits same: inherit alt pointer from current node
             out_meta->alt[depth] = cur_meta.alt[depth];
             FTL_DEBUG("[TRACE] Same bit, inherit alt[%d]=%d\n", depth, out_meta->alt[depth]);
         }
@@ -297,14 +323,14 @@ static int trace_path(mini_ftl_t *ftl, uint16_t base_root, uint16_t sector, ftl_
         depth++;
     }
 
-    // 循环正常结束，说明找到了匹配的sector（或者遍历完所有深度）
-    // new_meta的alt数组已经在遍历过程中通过Diverge和Same bit分支完整设置
+    // Loop ends normally, meaning matching sector found (or traversed all depths)
+    // new_meta's alt array already fully set during traversal through Diverge and Same bit branches
     FTL_DEBUG("[TRACE] Found match after full traversal\n");
     return 0;
 
 not_found:
-    // Dhara的逻辑：将从当前depth开始的所有alt指针设置为NONE
-    // 注意：在goto not_found之前已经执行了depth++，所以这里从当前depth开始设置
+    // Dhara's logic: Set all alt pointers from current depth to NONE
+    // Note: depth++ already executed before goto not_found, so start setting from current depth
     FTL_DEBUG("[TRACE] Not found, setting remaining alt pointers to NONE from depth=%d\n", depth);
     while (depth < RADIX_DEPTH) {
         out_meta->alt[depth] = PAGE_NONE;
@@ -314,25 +340,25 @@ not_found:
     return 0;
 }
 
-// --- 对象头管理核心逻辑 ---
+// --- Object Header Management Core Logic ---
 
 /**
- * get_header_page_info: 根据对象 ID 计算其所在的逻辑页和页内偏移
+ * get_header_page_info: Calculate logical page and page offset based on object ID
  */
 static int get_header_page_info(mini_ftl_t *ftl, uint16_t obj_id, uint16_t *out_log_page, uint16_t *out_offset) {
     if (obj_id < BASE_HEADER_CAPACITY) {
-        // 基础区
+        // Base area
         *out_log_page = ftl->base_hdr_addr + (obj_id / 29);
         *out_offset = (obj_id % 29) * sizeof(obj_header_t);
         return 0;
     }
 
-    // 扩展区
+    // Extended area
     uint16_t ext_idx = obj_id - BASE_HEADER_CAPACITY;
     uint16_t level = (ext_idx / EXT_HEADER_CAPACITY) + 1;
 
     if (level > 16 || ftl->ext_hdr_addrs[level - 1] == PAGE_NONE) {
-        return -1; // 尚未扩展或超出范围
+        return -1; // Not yet extended or out of range
     }
 
     uint16_t page_in_unit = (ext_idx % EXT_HEADER_CAPACITY) / 29;
@@ -344,39 +370,39 @@ static int get_header_page_info(mini_ftl_t *ftl, uint16_t obj_id, uint16_t *out_
 }
 
 /**
- * extend_headers: 动态扩展一级对象头空间（4页）
+ * extend_headers: Dynamically extend one level of object header space (4 pages)
  */
 static int extend_headers(mini_ftl_t *ftl) {
-    // 1. 找到当前最高级的扩展页，获取其最后一个对象头（指针位）
-    uint16_t prev_ext_addr = ftl->base_hdr_addr + BASE_HEADER_PAGES - 1; // 默认指向基础区最后一页
+    // 1. Find the highest level extension page, get its last object header (pointer field)
+    uint16_t prev_ext_addr = ftl->base_hdr_addr + BASE_HEADER_PAGES - 1; // Default points to last page of base area
     int level = 0;
     while (level < 16 && ftl->ext_hdr_addrs[level] != PAGE_NONE) {
         prev_ext_addr = ftl->ext_hdr_addrs[level] + EXT_HEADER_PAGES_UNIT - 1;
         level++;
     }
 
-    if (level >= 16) return -1; // 达到最大扩展级数
+    if (level >= 16) return -1; // Reached maximum extension levels
 
-    // 2. 分配新的 4 页逻辑空间
+    // 2. Allocate new 4-page logical space
     uint32_t new_ext_logical_addr;
     if (space_mgr_alloc(&ftl->spc_mgr, 4 * EFLASH_PAGE_SIZE, &new_ext_logical_addr) != 0) {
         return -1;
     }
     uint16_t new_ext_page = (uint16_t)(new_ext_logical_addr / EFLASH_PAGE_SIZE);
 
-    // 3. 更新上一级末尾的指针
+    // 3. Update pointer at end of previous level
     obj_header_t link_hdr;
     memset(&link_hdr, 0, sizeof(link_hdr));
-    link_hdr.type = 0xFF; // 标记为链接对象
+    link_hdr.type = 0xFF; // Mark as link object
     link_hdr.body_addr = new_ext_page;
 
-    // 写入链接信息到上一级末尾
+    // Write link info to end of previous level
     mini_ftl_obj_set_header(ftl, (level == 0 ? BASE_HEADER_CAPACITY - 1 : (level * EXT_HEADER_CAPACITY + BASE_HEADER_CAPACITY - 1)), &link_hdr);
 
-    // 4. 记录新扩展地址
+    // 4. Record new extension address
     ftl->ext_hdr_addrs[level] = new_ext_page;
 
-    // 5. 初始化新页（写全 0xFF 或空对象头）
+    // 5. Initialize new pages (write all 0xFF or empty object headers)
     uint8_t empty_page[USER_DATA_SIZE];
     memset(empty_page, 0xFF, USER_DATA_SIZE);
     for (int i = 0; i < EXT_HEADER_PAGES_UNIT; i++) {
@@ -402,7 +428,7 @@ int mini_ftl_obj_get_header(mini_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr)
 int mini_ftl_obj_set_header(mini_ftl_t *ftl, uint16_t obj_id, const obj_header_t *hdr) {
     uint16_t log_page, offset;
     if (get_header_page_info(ftl, obj_id, &log_page, &offset) != 0) {
-        // 如果是因为没扩展导致的失败，尝试自动扩展
+        // If failure is due to not extended, try auto-extension
         if (obj_id >= BASE_HEADER_CAPACITY) {
             if (extend_headers(ftl) != 0) return -1;
             if (get_header_page_info(ftl, obj_id, &log_page, &offset) != 0) return -1;
@@ -412,16 +438,16 @@ int mini_ftl_obj_set_header(mini_ftl_t *ftl, uint16_t obj_id, const obj_header_t
     }
 
     uint8_t page_data[USER_DATA_SIZE];
-    // 先读后写，防止覆盖同页其他对象头
+    // Read before write to prevent overwriting other object headers on same page
     if (mini_ftl_read(ftl, log_page, page_data) != 0) {
-        memset(page_data, 0xFF, USER_DATA_SIZE); // 如果是新页则初始化
+        memset(page_data, 0xFF, USER_DATA_SIZE); // Initialize if new page
     }
 
     memcpy(page_data + offset, hdr, sizeof(obj_header_t));
     return mini_ftl_write(ftl, log_page, page_data);
 }
 
-// --- FTL 初始化与预分配 ---
+// --- FTL Initialization and Pre-allocation ---
 
 int mini_ftl_init(mini_ftl_t *ftl) {
     FTL_DEBUG("[INIT] Starting mini_ftl_init\n");
@@ -439,27 +465,27 @@ int mini_ftl_init(mini_ftl_t *ftl) {
     ftl->active_txn_id = TXN_ID_NONE;
     ftl->is_initialized = true;
     
-    // 初始化预分配的系统区逻辑地址
+    // Initialize pre-allocated system area logical addresses
     ftl->base_hdr_addr = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;
     ftl->free_list_addr = PAGE_NONE;
     for (int i = 0; i < 16; i++) {
         ftl->ext_hdr_addrs[i] = PAGE_NONE;
     }
     
-    // 初始化 GC 相关字段（仿照 Dhara Head/Tail 模型）
+    // Initialize GC related fields (following Dhara Head/Tail model)
     ftl->total_user_pages = EFLASH_TOTAL_PAGES - FREE_NODE_PAGE_COUNT - BASE_HEADER_PAGES;
-    ftl->gc_threshold = ftl->total_user_pages / 5; // 20% 阈值
+    ftl->gc_threshold = ftl->total_user_pages / 5; // 20% threshold
     
-    // 关键修正：前12页已被系统保留区占用，Head应该从第12页开始
-    // Tail也从第12页开始，表示初始时没有已用空间（Head == Tail）
+    // Critical fix: First 12 pages are occupied by system reserved area, Head should start from page 12
+    // Tail also starts from page 12, indicating no used space initially (Head == Tail)
     ftl->gc_head_page = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;  // = 12
     ftl->gc_tail_page = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;  // = 12
-    ftl->gc_in_progress = false;  // 初始化GC标志
+    ftl->gc_in_progress = false;  // Initialize GC flag
     
     FTL_DEBUG("[INIT] GC initialized: total_user_pages=%d, threshold=%d, head_page=%d, tail_page=%d\n",
               ftl->total_user_pages, ftl->gc_threshold, ftl->gc_head_page, ftl->gc_tail_page);
 
-    // 扫描全片寻找最新的 COMMITTED 页作为 Root
+    // Scan entire chip to find latest COMMITTED page as Root
     FTL_DEBUG("[INIT] Scanning %d pages for valid root...\n", EFLASH_TOTAL_PAGES);
     for (int i = 0; i < EFLASH_TOTAL_PAGES; i++) {
         if (is_page_valid(i, &meta) && meta.status == TXN_STATUS_COMMITTED) {
@@ -474,7 +500,7 @@ int mini_ftl_init(mini_ftl_t *ftl) {
             }
         }
 
-        // 每扫描1000页输出一次进度
+        // Output progress every 1000 pages scanned
         if (i % 1000 == 0 && i > 0) {
             FTL_DEBUG("[INIT] Scanned %d/%d pages...\n", i, EFLASH_TOTAL_PAGES);
         }
@@ -482,8 +508,8 @@ int mini_ftl_init(mini_ftl_t *ftl) {
 
     FTL_DEBUG("[INIT] Scan complete. Root page: %d, next_count: %d\n", ftl->root_page, ftl->next_count);
     
-    // 如果找到了有效的 Root，将 gc_tail_page 设置为 Root 之后的位置
-    // 这样可以避免立即回收刚写入的数据
+    // If valid Root found, set gc_tail_page to position after Root
+    // This avoids immediately recycling recently written data
     if (ftl->root_page != PAGE_NONE) {
         ftl->gc_tail_page = ftl->root_page + 1;
         if (ftl->gc_tail_page >= EFLASH_TOTAL_PAGES) {
@@ -495,28 +521,28 @@ int mini_ftl_init(mini_ftl_t *ftl) {
     return 0;
 }
 
-// --- 对象管理实现 (暂时禁用，待后续完善) ---
+// --- Object Management Implementation (temporarily disabled, to be improved later) ---
 
 int mini_ftl_obj_create(mini_ftl_t *ftl, uint16_t pkg_id, uint16_t class_id, uint8_t type) {
-    // TODO: 重新实现对象管理逻辑
+    // TODO: Re-implement object management logic
     (void)ftl; (void)pkg_id; (void)class_id; (void)type;
     return -1;
 }
 
 int mini_ftl_obj_write_header(mini_ftl_t *ftl, uint16_t obj_id, const obj_header_t *hdr) {
-    // TODO: 重新实现对象头写入逻辑
+    // TODO: Re-implement object header write logic
     (void)ftl; (void)obj_id; (void)hdr;
     return -1;
 }
 
 int mini_ftl_obj_read_header(mini_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr) {
-    // TODO: 重新实现对象头读取逻辑
+    // TODO: Re-implement object header read logic
     (void)ftl; (void)obj_id; (void)hdr;
     return -1;
 }
 
 int mini_ftl_obj_write_body(mini_ftl_t *ftl, uint16_t obj_id, const uint8_t *data, uint32_t size) {
-    // TODO: 重新实现对象数据写入逻辑
+    // TODO: Re-implement object data write logic
     (void)ftl; (void)obj_id; (void)data; (void)size;
     return -1;
 }
@@ -524,7 +550,7 @@ int mini_ftl_obj_write_body(mini_ftl_t *ftl, uint16_t obj_id, const uint8_t *dat
 int mini_ftl_write(mini_ftl_t *ftl, uint16_t sector_id, const uint8_t *data) {
     if (!ftl->is_initialized) return -1;
 
-    // 在分配空间前，检查是否需要触发 GC
+    // Before allocating space, check if GC needs to be triggered
     if (mini_ftl_gc_trigger(ftl) != 0) {
         FTL_DEBUG("[WRITE] ERROR: GC trigger failed, no space available\n");
         return -1;
@@ -534,14 +560,14 @@ int mini_ftl_write(mini_ftl_t *ftl, uint16_t sector_id, const uint8_t *data) {
 
     uint16_t base_root = (ftl->active_txn_id != TXN_ID_NONE) ? ftl->shadow_root : ftl->root_page;
 
-    // 步骤1：调用trace_path构建新节点的元数据模板（不包含数据页信息）
+    // Step 1: Call trace_path to build metadata template for new node (excluding data page info)
     ftl_meta_t new_node_meta;
     if (trace_path(ftl, base_root, sector_id, &new_node_meta) != 0) {
         FTL_DEBUG("[WRITE] ERROR: trace_path failed!\n");
         return -1;
     }
 
-    // 步骤2：使用 Head/Tail 机制分配物理页
+    // Step 2: Allocate physical page using Head/Tail mechanism
     int new_phys = allocate_physical_page(ftl);
     if (new_phys < 0) {
         FTL_DEBUG("[WRITE] ERROR: Failed to allocate physical page!\n");
@@ -550,19 +576,19 @@ int mini_ftl_write(mini_ftl_t *ftl, uint16_t sector_id, const uint8_t *data) {
 
     FTL_DEBUG("[WRITE] Allocated physical page=%d\n", new_phys);
 
-    // 步骤3：将用户数据 + 元数据写入同一个物理页
-    // 注意：Dhara设计中，每个物理页既是数据页也是元数据节点页
+    // Step 3: Write user data + metadata to same physical page
+    // Note: In Dhara design, each physical page is both data page and metadata node page
     if (write_full_page(new_phys, data, &new_node_meta) != 0) {
         FTL_DEBUG("[WRITE] ERROR: Failed to write page!\n");
         return -1;
     }
 
-    // 步骤4：更新FTL的根指针
+    // Step 4: Update FTL root pointer
     if (ftl->active_txn_id != TXN_ID_NONE) {
-        // 事务模式下，更新影子根
+        // Transaction mode: update shadow root
         ftl->shadow_root = new_phys;
     } else {
-        // 非事务模式，直接更新根
+        // Non-transaction mode: update root directly
         ftl->root_page = new_phys;
     }
 
@@ -600,9 +626,9 @@ int mini_ftl_read(mini_ftl_t *ftl, uint16_t sector_id, uint8_t *data) {
         FTL_DEBUG("[READ] depth=%d, cur_sector=%d, alt[depth]=%d\n", depth, cur_meta.sector_id, cur_meta.alt[depth]);
 
         if (cur_meta.sector_id == logical_page) {
-            // 找到匹配的节点，数据就在当前页的前USER_DATA_SIZE字节
+            // Found matching node, data is in first USER_DATA_SIZE bytes of current page
             FTL_DEBUG("[READ] Found match at depth=%d, reading data from page %d\n", depth, current);
-            // 数据已经在 meta_buf 中，且已通过 verify_and_correct_page 验证/纠正
+            // Data already in meta_buf and verified/corrected by verify_and_correct_page
             memcpy(data, meta_buf, USER_DATA_SIZE);
             FTL_DEBUG("[READ] Success, first byte=0x%02X\n", data[0]);
             return 0;
@@ -613,22 +639,22 @@ int mini_ftl_read(mini_ftl_t *ftl, uint16_t sector_id, uint8_t *data) {
         int current_bit = (cur_meta.sector_id & bit_mask) ? 1 : 0;
 
         if (target_bit != current_bit) {
-            // 位不同，需要跳转
+            // Bits differ, need to jump
             current = cur_meta.alt[depth];
             if (current == PAGE_NONE) {
                 FTL_DEBUG("[READ] ERROR: Path not found at depth=%d\n", depth);
                 return -1;
             }
-            // 跳转后继续在同一深度比较新节点
-            // 注意：不增加depth，在下一次循环中继续比较同一深度的bit
+            // After jump, continue comparing same depth bit with new node
+            // Note: Don't increment depth, continue comparing same depth bit in next loop
         } else {
-            // 位相同，继续比较下一个bit
+            // Bits same, continue to next bit
             depth++;
         }
     }
 
-    // 循环结束仍未找到，尝试读取最后跳转到的节点（如果有的话）
-    // 这种情况发生在最后一次迭代中进行了跳转
+    // Loop ended without finding, try reading last jumped-to node (if any)
+    // This happens when jump occurred in last iteration
     if (current != PAGE_NONE && current != ftl->root_page) {
         if (eflash_hw_read(current, meta_buf) != 0) {
             FTL_DEBUG("[READ] ERROR: Failed to read final page %d\n", current);
@@ -649,24 +675,24 @@ int mini_ftl_read(mini_ftl_t *ftl, uint16_t sector_id, uint8_t *data) {
         }
     }
 
-    // 确实没有找到
+    // Really not found
     FTL_DEBUG("[READ] ERROR: Sector not found in tree (exceeded max depth)\n");
     return -1;
 }
 
 /**
- * mini_ftl_write_logical: 基于逻辑地址的写入接口
- * @ftl: FTL 实例
- * @logical_addr: 24位逻辑地址
- * @data: 数据指针
- * @return: 0 成功，-1 失败
+ * mini_ftl_write_logical: Write interface based on logical address
+ * @ftl: FTL instance
+ * @logical_addr: 24-bit logical address
+ * @data: Data pointer
+ * @return: 0 success, -1 failure
  * 
- * 说明：从逻辑地址提取 sector_id，然后调用 mini_ftl_write
+ * Description: Extract sector_id from logical address, then call mini_ftl_write
  */
 int mini_ftl_write_logical(mini_ftl_t *ftl, uint32_t logical_addr, const uint8_t *data) {
     if (!ftl->is_initialized) return -1;
     
-    // 从逻辑地址提取 sector_id
+    // Extract sector_id from logical address
     uint16_t sector_id = (uint16_t)(logical_addr / EFLASH_PAGE_SIZE);
     
     FTL_DEBUG("[WRITE_LOGICAL] logical_addr=0x%06X -> sector_id=%d\n", logical_addr, sector_id);
@@ -675,18 +701,18 @@ int mini_ftl_write_logical(mini_ftl_t *ftl, uint32_t logical_addr, const uint8_t
 }
 
 /**
- * mini_ftl_read_logical: 基于逻辑地址的读取接口
- * @ftl: FTL 实例
- * @logical_addr: 24位逻辑地址
- * @data: 数据输出缓冲区
- * @return: 0 成功，-1 失败
+ * mini_ftl_read_logical: Read interface based on logical address
+ * @ftl: FTL instance
+ * @logical_addr: 24-bit logical address
+ * @data: Data output buffer
+ * @return: 0 success, -1 failure
  * 
- * 说明：从逻辑地址提取 sector_id，然后调用 mini_ftl_read
+ * Description: Extract sector_id from logical address, then call mini_ftl_read
  */
 int mini_ftl_read_logical(mini_ftl_t *ftl, uint32_t logical_addr, uint8_t *data) {
     if (!ftl->is_initialized) return -1;
     
-    // 从逻辑地址提取 sector_id
+    // Extract sector_id from logical address
     uint16_t sector_id = (uint16_t)(logical_addr / EFLASH_PAGE_SIZE);
     
     FTL_DEBUG("[READ_LOGICAL] logical_addr=0x%06X -> sector_id=%d\n", logical_addr, sector_id);
@@ -696,28 +722,28 @@ int mini_ftl_read_logical(mini_ftl_t *ftl, uint32_t logical_addr, uint8_t *data)
 
 void mini_ftl_txn_begin(mini_ftl_t *ftl) {
     ftl->active_txn_id = (uint16_t)(ftl->next_count & 0xFFFF);
-    ftl->shadow_root = ftl->root_page; // 影子树初始指向当前的稳定根
+    ftl->shadow_root = ftl->root_page; // Shadow tree initially points to current stable root
 }
 
 int mini_ftl_txn_commit(mini_ftl_t *ftl) {
     if (ftl->active_txn_id == TXN_ID_NONE || ftl->shadow_root == PAGE_NONE) return -1;
 
-    // 原子提交：需要读取整页，修改status，重新计算ECC，然后写回
+    // Atomic commit: need to read entire page, modify status, recalculate ECC, then write back
     uint8_t full_page[EFLASH_PAGE_SIZE];
 
-    // 1. 读取当前页
+    // 1. Read current page
     if (eflash_hw_read(ftl->shadow_root, full_page) != 0) {
         return -1;
     }
 
-    // 2. 修改status为COMMITTED
+    // 2. Modify status to COMMITTED
     ftl_meta_t *meta = (ftl_meta_t *)(full_page + META_OFFSET);
     meta->status = TXN_STATUS_COMMITTED;
 
-    // 3. 重新计算整页ECC (因为元数据变了，且ECC覆盖用户数据+元数据)
+    // 3. Recalculate entire page ECC (because metadata changed, and ECC covers user data + metadata)
     calc_page_ecc(full_page);
 
-    // 4. 擦除并重写整页
+    // 4. Erase and rewrite entire page
     if (eflash_hw_erase(ftl->shadow_root) != 0) {
         return -1;
     }
@@ -725,7 +751,7 @@ int mini_ftl_txn_commit(mini_ftl_t *ftl) {
         return -1;
     }
 
-    // 提交成功，影子树转正
+    // Commit successful, shadow tree becomes main tree
     ftl->root_page = ftl->shadow_root;
     ftl->shadow_root = PAGE_NONE;
     ftl->active_txn_id = TXN_ID_NONE;
@@ -735,31 +761,31 @@ int mini_ftl_txn_commit(mini_ftl_t *ftl) {
 void mini_ftl_txn_abort(mini_ftl_t *ftl) {
     if (ftl->active_txn_id == TXN_ID_NONE) return;
 
-    // 简单丢弃影子树指针，Flash 中的 PENDING 页将在下次 GC 或重启时被忽略
+    // Simply discard shadow tree pointer, PENDING pages in Flash will be ignored on next GC or reboot
     ftl->shadow_root = PAGE_NONE;
     ftl->active_txn_id = TXN_ID_NONE;
 }
 
-// --- GC 核心实现（仿照 Dhara Head/Tail 模型---
+// --- GC Core Implementation (following Dhara Head/Tail model) ---
 
 /**
- * mini_ftl_get_free_pages: 获取当前空闲页数
+ * mini_ftl_get_free_pages: Get current number of free pages
  */
 uint32_t mini_ftl_get_free_pages(mini_ftl_t *ftl) {
-    // 基于Dhara的Head/Tail环形缓冲区模型
-    // Head: 下一个可写入的物理页
-    // Tail: GC扫描的起始位置
+    // Based on Dhara's Head/Tail circular buffer model
+    // Head: Next writable physical page
+    // Tail: Starting position for GC scan
     // 
-    // 空闲空间 = Head 到 Tail 的距离（顺时针方向）
+    // Free space = Distance from Head to Tail (clockwise direction)
     
     uint16_t first_user_page = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
     uint16_t total_user_pages = last_user_page - first_user_page + 1;
     
     if (ftl->gc_head_page >= ftl->gc_tail_page) {
-        // 情况1: Head在Tail之后或相等
+        // Case 1: Head is after or equal to Tail
         // [first...Tail...Head...last]
-        // 空闲空间 = (last - Head + 1) + (Tail - first)
+        // Free space = (last - Head + 1) + (Tail - first)
         uint32_t free = (uint32_t)(last_user_page - ftl->gc_head_page + 1) + 
                         (uint32_t)(ftl->gc_tail_page - first_user_page);
         
@@ -767,9 +793,9 @@ uint32_t mini_ftl_get_free_pages(mini_ftl_t *ftl) {
                  ftl->gc_head_page, ftl->gc_tail_page, free);
         return free;
     } else {
-        // 情况2: Head已经回绕到起点，在Tail之前
+        // Case 2: Head has wrapped around to start, before Tail
         // [first...Head...Tail...last]
-        // 空闲空间 = Tail - Head
+        // Free space = Tail - Head
         uint32_t free = (uint32_t)(ftl->gc_tail_page - ftl->gc_head_page);
         
         FTL_DEBUG("[FREE_PAGES] Case 2: head=%d, tail=%d, free=%u\n",
@@ -779,29 +805,29 @@ uint32_t mini_ftl_get_free_pages(mini_ftl_t *ftl) {
 }
 
 /**
- * is_page_still_valid: 检查物理页是否仍被 Radix Tree 引用
- * @ftl: FTL 实例
- * @phys_page: 待检查的物理页号
- * @return: true=有效（仍在树中），false=无效（可回收）
+ * is_page_still_valid: Check if physical page is still referenced by Radix Tree
+ * @ftl: FTL instance
+ * @phys_page: Physical page number to check
+ * @return: true=valid (still in tree), false=invalid (can be reclaimed)
  * 
- * 原理：读取该页的 sector_id，然后通过 mini_ftl_read 查找当前映射。
- * 如果当前映射指向的物理页与 phys_page 相同，说明是有效数据。
+ * Principle: Read sector_id of the page, then search current mapping via mini_ftl_read.
+ * If current mapping points to same physical page as phys_page, it's valid data.
  */
 static bool is_page_still_valid(mini_ftl_t *ftl, uint16_t phys_page) {
     uint8_t meta_buf[EFLASH_PAGE_SIZE];
     ftl_meta_t meta;
     
-    // 读取页元数据
+    // Read page metadata
     if (eflash_hw_read(phys_page, meta_buf) != 0) {
         FTL_DEBUG("[GC_VALID] Page %d: read failed\n", phys_page);
-        return false; // 读取失败，视为无效
+        return false; // Read failed, treat as invalid
     }
     
-    // 验证 ECC
+    // Verify ECC
     int ecc_result = verify_and_correct_page(meta_buf);
     if (ecc_result != 0) {
         FTL_DEBUG("[GC_VALID] Page %d: ECC verification failed (result=%d)\n", phys_page, ecc_result);
-        return false; // ECC 验证失败，视为无效
+        return false; // ECC verification failed, treat as invalid
     }
     
     memcpy(&meta, meta_buf + META_OFFSET, META_SIZE);
@@ -809,28 +835,28 @@ static bool is_page_still_valid(mini_ftl_t *ftl, uint16_t phys_page) {
     FTL_DEBUG("[GC_VALID] Page %d: sector_id=%d, status=0x%02X, count=%d\n",
              phys_page, meta.sector_id, meta.status, meta.global_count);
     
-    // 检查状态：必须是 COMMITTED 或 READY 才可能是有效数据
+    // Check status: must be COMMITTED or READY to be potentially valid data
     if (meta.status != TXN_STATUS_COMMITTED && meta.status != TXN_STATUS_READY) {
         FTL_DEBUG("[GC_VALID] Page %d: invalid status 0x%02X\n", phys_page, meta.status);
         return false;
     }
     
-    // 保守策略：COMMITTED/READY 且 ECC 有效的页视为有效
+    // Conservative strategy: COMMITTED/READY pages with valid ECC are treated as valid
     FTL_DEBUG("[GC_VALID] Page %d: VALID\n", phys_page);
     return true;
 }
 
 /**
- * gc_migrate_page: 迁移有效页到新位置
- * @ftl: FTL 实例
- * @src_page: 源物理页号
- * @return: 0 成功，-1 失败
+ * gc_migrate_page: Migrate valid page to new location
+ * @ftl: FTL instance
+ * @src_page: Source physical page number
+ * @return: 0 success, -1 failure
  */
 static int gc_migrate_page(mini_ftl_t *ftl, uint16_t src_page) {
     uint8_t full_page[EFLASH_PAGE_SIZE];
     ftl_meta_t *meta;
     
-    // 1. 读取源页完整数据
+    // 1. Read complete data from source page
     if (eflash_hw_read(src_page, full_page) != 0) {
         FTL_DEBUG("[GC_MIGRATE] ERROR: Failed to read source page %d\n", src_page);
         return -1;
@@ -841,23 +867,23 @@ static int gc_migrate_page(mini_ftl_t *ftl, uint16_t src_page) {
     FTL_DEBUG("[GC_MIGRATE] Migrating sector %d from physical page %d (count=%d)\n",
               meta->sector_id, src_page, meta->global_count);
     
-    // 2. 提取用户数据部分（前464字节）
+    // 2. Extract user data portion (first 464 bytes)
     uint8_t user_data[USER_DATA_SIZE];
     memcpy(user_data, full_page, USER_DATA_SIZE);
     
-    // 【调试】记录迁移前的状态
+    // [DEBUG] Record state before migration
     uint32_t free_before = mini_ftl_get_free_pages(ftl);
     FTL_DEBUG("[GC_MIGRATE] Before migration: head=%d, tail=%d, free=%d\n",
              ftl->gc_head_page, ftl->gc_tail_page, free_before);
     
-    // 3. 使用正常的write流程重写数据（这会触发trace_path、分配新页、更新root）
-    //    注意：只传递用户数据，让mini_ftl_write自动创建新的元数据
+    // 3. Use normal write flow to rewrite data (this triggers trace_path, allocates new page, updates root)
+    //    Note: Only pass user data, let mini_ftl_write automatically create new metadata
     if (mini_ftl_write(ftl, meta->sector_id, user_data) != 0) {
         FTL_DEBUG("[GC_MIGRATE] ERROR: Failed to rewrite data during migration\n");
         return -1;
     }
     
-    // 【调试】记录迁移后的状态
+    // [DEBUG] Record state after migration
     uint32_t free_after = mini_ftl_get_free_pages(ftl);
     FTL_DEBUG("[GC_MIGRATE] After migration: head=%d, tail=%d, free=%d (delta=%d)\n",
              ftl->gc_head_page, ftl->gc_tail_page, free_after, (int32_t)(free_after - free_before));
@@ -868,26 +894,26 @@ static int gc_migrate_page(mini_ftl_t *ftl, uint16_t src_page) {
 }
 
 /**
- * gc_collect_one_page: 回收单个物理页
- * @ftl: FTL 实例
- * @page: 待回收的物理页号
- * @return: 0 成功，-1 失败
+ * gc_collect_one_page: Reclaim single physical page
+ * @ftl: FTL instance
+ * @page: Physical page number to reclaim
+ * @return: 0 success, -1 failure
  * 
- * 流程：
- * 1. 判断页是否有效
- * 2. 如果有效，迁移到新位置
- * 3. 擦除物理页（不调用 space_mgr_free，因为 GC 只管理物理页）
+ * Process:
+ * 1. Determine if page is valid
+ * 2. If valid, migrate to new location
+ * 3. Erase physical page (do NOT call space_mgr_free, because GC only manages physical pages)
  */
 static int gc_collect_one_page(mini_ftl_t *ftl, uint16_t page) {
     FTL_DEBUG("[GC_COLLECT] Processing physical page %d...\n", page);
     
-    // 1. 检查页是否仍有效
+    // 1. Check if page is still valid
     bool valid = is_page_still_valid(ftl, page);
     
     if (valid) {
         FTL_DEBUG("[GC_COLLECT] Page %d is VALID, migrating...\n", page);
         
-        // 2. 迁移有效页
+        // 2. Migrate valid page
         if (gc_migrate_page(ftl, page) != 0) {
             FTL_DEBUG("[GC_COLLECT] ERROR: Migration failed for page %d\n", page);
             return -1;
@@ -898,9 +924,9 @@ static int gc_collect_one_page(mini_ftl_t *ftl, uint16_t page) {
         FTL_DEBUG("[GC_COLLECT] Page %d is STALE, will be erased\n", page);
     }
     
-    // 3. 擦除物理页（注意：不调用 space_mgr_free！）
-    //    Space Manager 管理的是逻辑地址空间，与物理页无关
-    //    物理页的回收由 GC 直接擦除完成
+    // 3. Erase physical page (Note: do NOT call space_mgr_free!)
+    //    Space Manager manages logical address space, unrelated to physical pages
+    //    Physical page reclamation is done by GC direct erasure
     if (eflash_hw_erase(page) != 0) {
         FTL_DEBUG("[GC_COLLECT] ERROR: Failed to erase physical page %d\n", page);
         return -1;
@@ -911,16 +937,16 @@ static int gc_collect_one_page(mini_ftl_t *ftl, uint16_t page) {
 }
 
 /**
- * mini_ftl_gc_collect: 执行 GC 回收指定数量的页数
- * @ftl: FTL 实例
- * @pages_to_free: 需要回收的页数
- * @return: 实际回收的页数，-1 表示失败
+ * mini_ftl_gc_collect: Perform GC to reclaim specified number of pages
+ * @ftl: FTL instance
+ * @pages_to_free: Number of pages to reclaim
+ * @return: Actual pages freed, -1 on failure
  * 
- * 算法（严格仿照 Dhara）：
- * 1. 从 gc_tail_page 开始逐页扫描
- * 2. 对每页调用 gc_collect_one_page
- * 3. **只有成功回收后才移动 tail 指针**（仿照 Dhara 的 dequeue）
- * 4. 直到回收了足够的页数或遍历完整个 Flash
+ * Algorithm (strictly following Dhara):
+ * 1. Start scanning from gc_tail_page page by page
+ * 2. Call gc_collect_one_page for each page
+ * 3. **Only move tail pointer after successful reclamation** (following Dhara's dequeue)
+ * 4. Continue until enough pages freed or entire Flash traversed
  */
 int mini_ftl_gc_collect(mini_ftl_t *ftl, uint16_t pages_to_free) {
     if (!ftl->is_initialized) {
@@ -938,32 +964,32 @@ int mini_ftl_gc_collect(mini_ftl_t *ftl, uint16_t pages_to_free) {
     uint16_t first_user_page = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
     
-    // 最多遍历整个用户区两次，防止死循环
+    // Traverse entire user area at most twice to prevent infinite loop
     uint16_t max_iterations = (last_user_page - first_user_page + 1) * 2;
     uint16_t iterations = 0;
     
     while (pages_freed < pages_to_free && iterations < max_iterations) {
         uint16_t current_page = ftl->gc_tail_page;
         
-        // 【调试】每10次迭代输出一次状态
+        // [DEBUG] Output status every 10 iterations
         if (iterations % 10 == 0) {
             FTL_DEBUG("[GC] Iteration %d: processing page %d, freed=%d, head=%d, tail=%d, free=%d\n",
                      iterations, current_page, pages_freed, ftl->gc_head_page, ftl->gc_tail_page,
                      mini_ftl_get_free_pages(ftl));
         }
         
-        // 跳过系统保留区
+        // Skip system reserved area
         if (current_page < first_user_page) {
             ftl->gc_tail_page = first_user_page;
             FTL_DEBUG("[GC] Skipping system reserved pages, jumping to %d\n", first_user_page);
             continue;
         }
         
-        // 执行单页回收
+        // Execute single page reclamation
         int ret = gc_collect_one_page(ftl, current_page);
         
         if (ret == 0) {
-            // ✅ 成功回收，移动 tail 指针（仿照 Dhara 的 dequeue）
+            // ✅ Successfully reclaimed, move tail pointer (following Dhara's dequeue)
             pages_freed++;
             
             ftl->gc_tail_page++;
@@ -972,7 +998,7 @@ int mini_ftl_gc_collect(mini_ftl_t *ftl, uint16_t pages_to_free) {
                 FTL_DEBUG("[GC] Round-wrap: tail_page reset to %d\n", first_user_page);
             }
         } else {
-            // ❌ 回收失败，但仍移动 tail 以避免死循环
+            // ❌ Reclamation failed, but still move tail to avoid infinite loop
             FTL_DEBUG("[GC] WARNING: Failed to collect page %d, skipping\n", current_page);
             
             ftl->gc_tail_page++;
@@ -998,14 +1024,14 @@ int mini_ftl_gc_collect(mini_ftl_t *ftl, uint16_t pages_to_free) {
 }
 
 /**
- * mini_ftl_gc_trigger: 检查并触发 GC（如果需要）
- * @ftl: FTL 实例
- * @return: 0 无需 GC 或 GC 成功，-1 GC 失败
+ * mini_ftl_gc_trigger: Check and trigger GC if needed
+ * @ftl: FTL instance
+ * @return: 0 no GC needed or GC successful, -1 GC failed
  * 
- * 触发条件：空闲页数 < gc_threshold
+ * Trigger condition: free pages < gc_threshold
  */
 int mini_ftl_gc_trigger(mini_ftl_t *ftl) {
-    // 如果GC已经在进行中，跳过触发（防止递归）
+    // If GC already in progress, skip trigger (prevent recursion)
     if (ftl->gc_in_progress) {
         return 0;
     }
@@ -1016,24 +1042,24 @@ int mini_ftl_gc_trigger(mini_ftl_t *ftl) {
               free_pages, ftl->gc_threshold);
     
     if (free_pages >= ftl->gc_threshold) {
-        // 空间充足，无需 GC
+        // Sufficient space, no GC needed
         return 0;
     }
     
     FTL_DEBUG("[GC_TRIGGER] Triggering GC! Free space below threshold\n");
     
-    // 计算需要回收的页数（目标：恢复到 50% 空闲空间）
+    // Calculate pages to reclaim (target: restore to 50% free space)
     uint32_t target_free_pages = ftl->total_user_pages / 2;
     uint16_t pages_needed = (target_free_pages > free_pages) ? 
                             (uint16_t)(target_free_pages - free_pages) : 10;
     
-    // 设置GC标志
+    // Set GC flag
     ftl->gc_in_progress = true;
     
-    // 执行 GC
+    // Execute GC
     int result = mini_ftl_gc_collect(ftl, pages_needed);
     
-    // 清除GC标志
+    // Clear GC flag
     ftl->gc_in_progress = false;
     
     if (result < 0) {
