@@ -1,10 +1,11 @@
 #include "mini_ftl.h"
+#include "eflash_ftl.h"
 #include "eflash_sim.h"
 #include <stdio.h>
 #include <string.h>
 
 // Define object header structure (16 bytes)
-// Note: If this structure is already defined in mini_ftl.h, delete this definition to avoid redefinition errors
+// Note: If this structure is already defined in eflash_ftl.h, delete this definition to avoid redefinition errors
 typedef struct {
     uint16_t pkg_id;
     uint16_t class_id;

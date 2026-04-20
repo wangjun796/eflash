@@ -1,6 +1,6 @@
-#include "space_mgr.h"
+#include "eflash_mgr.h"
+#include "eflash_ftl.h"
 #include "eflash_sim.h"
-#include "mini_ftl.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -94,7 +94,7 @@ static void write_free_node(uint16_t phys_page, uint16_t index, const free_node_
 }
 
 // Find and remove node with specified logical address from free_node table, return its size
-static uint32_t remove_node_from_table(space_mgr_t *mgr, uint32_t target_logical_addr) {
+static uint32_t remove_node_from_table(eflash_mgr_t *mgr, uint32_t target_logical_addr) {
     for (int i = 0; i < FREE_NODE_PAGE_COUNT; i++) {
         uint16_t count = read_node_count(mgr->free_node_pages[i]);
         
@@ -154,7 +154,7 @@ static uint32_t remove_node_from_table(space_mgr_t *mgr, uint32_t target_logical
 }
 
 // Insert new free_node into table (maintain sorting by size)
-static void insert_node_to_table(space_mgr_t *mgr, uint32_t logical_addr, uint32_t size) {
+static void insert_node_to_table(eflash_mgr_t *mgr, uint32_t logical_addr, uint32_t size) {
     // Find suitable insertion location (first page with size >= new node's size)
     int best_page_idx = -1;
     uint32_t best_size = 0xFFFFFFFF;
@@ -236,7 +236,7 @@ static void insert_node_to_table(space_mgr_t *mgr, uint32_t logical_addr, uint32
 
 // --- Interface Implementation ---
 
-void space_mgr_init(space_mgr_t *mgr, uint16_t total_pages) {
+void eflash_mgr_init(eflash_mgr_t *mgr, uint16_t total_pages) {
     mgr->total_pages = total_pages;
     
     FTL_DEBUG("[SPACE_INIT] === Starting initialization ===\n");
@@ -318,7 +318,7 @@ void space_mgr_init(space_mgr_t *mgr, uint16_t total_pages) {
     mgr->next_alloc_page = reserved_pages;
 }
 
-int space_mgr_alloc(space_mgr_t *mgr, uint32_t size, uint32_t *out_logical_addr) {
+int eflash_mgr_alloc(eflash_mgr_t *mgr, uint32_t size, uint32_t *out_logical_addr) {
     // Traverse all free_node pages, find first node that satisfies size requirement
     for (int i = 0; i < FREE_NODE_PAGE_COUNT; i++) {
         uint16_t count = read_node_count(mgr->free_node_pages[i]);
@@ -369,7 +369,7 @@ int space_mgr_alloc(space_mgr_t *mgr, uint32_t size, uint32_t *out_logical_addr)
     return -1;  // Insufficient space
 }
 
-void space_mgr_free(space_mgr_t *mgr, uint32_t logical_addr, uint32_t size) {
+void eflash_mgr_free(eflash_mgr_t *mgr, uint32_t logical_addr, uint32_t size) {
     FTL_DEBUG("[SPACE_FREE] Freeing logical_addr=0x%06X, size=%u\n", logical_addr, size);
     
     // Check if can merge with previous free block
@@ -392,12 +392,12 @@ void space_mgr_free(space_mgr_t *mgr, uint32_t logical_addr, uint32_t size) {
     insert_node_to_table(mgr, logical_addr, size);
 }
 
-void space_mgr_sync(space_mgr_t *mgr) {
+void eflash_mgr_sync(eflash_mgr_t *mgr) {
     // free_node table already synced to Flash on each operation, this function kept for batch sync optimization
     (void)mgr;
 }
 
-uint32_t space_mgr_get_free_bytes(space_mgr_t *mgr) {
+uint32_t eflash_mgr_get_free_bytes(eflash_mgr_t *mgr) {
     uint32_t total_free_pages = 0;
     
     for (int i = 0; i < FREE_NODE_PAGE_COUNT; i++) {

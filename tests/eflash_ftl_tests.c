@@ -19,9 +19,10 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <string.h>
-#include "../eflash_ftl/mini_ftl.h"
+#include "../eflash_ftl/eflash_ftl.h"
+#include "../eflash_ftl/eflash_mgr.h"
+
 #include "../eflash_ftl/eflash_sim.h"
-#include "../eflash_ftl/space_mgr.h"
 #include "ecc/bch.h"
 
 // --- 强制断言宏（不受NDEBUG影响）---
@@ -605,7 +606,7 @@ int test_power_failure(void) {
 // Test 6: Space Management
 // ============================================================================
 int test_space_management(void) {
-    space_mgr_t mgr;
+    eflash_mgr_t mgr;
     uint16_t page;
     uint16_t offset;
 
@@ -615,32 +616,32 @@ int test_space_management(void) {
     init_test_flash();
 
     // Test 6a: Basic allocation
-    space_mgr_init(&mgr, 100);
+    eflash_mgr_init(&mgr, 100);
 
     uint32_t logical_addr;
-    int ret = space_mgr_alloc(&mgr, 10, &logical_addr);
+    int ret = eflash_mgr_alloc(&mgr, 10, &logical_addr);
     assert(ret == 0);
     printf("  [PASS] Basic allocation (logical_addr=0x%06X)\n", logical_addr);
 
     // Test 6b: Multiple allocations
     uint32_t addrs[10];
     for (int i = 0; i < 10; i++) {
-        ret = space_mgr_alloc(&mgr, 4, &addrs[i]);
+        ret = eflash_mgr_alloc(&mgr, 4, &addrs[i]);
         assert(ret == 0);
     }
     printf("  [PASS] Multiple allocations\n");
 
     // Test 6c: Free and reallocate
-    space_mgr_free(&mgr, addrs[0], 4);
+    eflash_mgr_free(&mgr, addrs[0], 4);
     uint32_t realloc_addr;
-    ret = space_mgr_alloc(&mgr, 4, &realloc_addr);
+    ret = eflash_mgr_alloc(&mgr, 4, &realloc_addr);
     assert(ret == 0);
     assert(realloc_addr == addrs[0]);
     printf("  [PASS] Free and reallocate\n");
 
     // Test 6d: Small object allocation
     uint32_t small_addr;
-    ret = space_mgr_alloc(&mgr, 2, &small_addr);
+    ret = eflash_mgr_alloc(&mgr, 2, &small_addr);
     assert(ret == 0);
     printf("  [PASS] Minimum size allocation (2 bytes, logical_addr=0x%06X)\n", small_addr);
 
@@ -1789,15 +1790,15 @@ static int test_logical_address_interface(void) {
     uint32_t logical_addr1, logical_addr2, logical_addr3;
 
     // 分配USER_DATA_SIZE字节的空间（一个完整的页数据）
-    ASSERT(space_mgr_alloc(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr1) == 0,
+    ASSERT(eflash_mgr_alloc(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr1) == 0,
            "allocate first logical address");
     printf("  [LOGICAL] Allocated logical_addr1 = 0x%06X (byte offset)\n", logical_addr1);
 
-    ASSERT(space_mgr_alloc(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr2) == 0,
+    ASSERT(eflash_mgr_alloc(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr2) == 0,
            "allocate second logical address");
     printf("  [LOGICAL] Allocated logical_addr2 = 0x%06X (byte offset)\n", logical_addr2);
 
-    ASSERT(space_mgr_alloc(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr3) == 0,
+    ASSERT(eflash_mgr_alloc(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr3) == 0,
            "allocate third logical address");
     printf("  [LOGICAL] Allocated logical_addr3 = 0x%06X (byte offset)\n", logical_addr3);
 
@@ -1845,7 +1846,7 @@ static int test_logical_address_interface(void) {
     printf("  [LOGICAL] Testing mini_ftl_write_logical/read_logical interfaces...\n");
 
     uint32_t logical_addr4;
-    ASSERT(space_mgr_alloc(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr4) == 0,
+    ASSERT(eflash_mgr_alloc(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr4) == 0,
            "allocate fourth logical address");
 
     uint8_t write_data4[USER_DATA_SIZE];
@@ -1868,12 +1869,12 @@ static int test_logical_address_interface(void) {
            logical_addr4, logical_addr4 / USER_DATA_SIZE);
 
     // 测试5：释放逻辑地址空间
-    printf("  [LOGICAL] Testing space_mgr_free...\n");
-    space_mgr_free(&ftl.spc_mgr, logical_addr1, USER_DATA_SIZE);
-    space_mgr_free(&ftl.spc_mgr, logical_addr2, USER_DATA_SIZE);
+    printf("  [LOGICAL] Testing eflash_mgr_free...\n");
+    eflash_mgr_free(&ftl.spc_mgr, logical_addr1, USER_DATA_SIZE);
+    eflash_mgr_free(&ftl.spc_mgr, logical_addr2, USER_DATA_SIZE);
 
     // 验证剩余空闲空间
-    uint32_t free_bytes = space_mgr_get_free_bytes(&ftl.spc_mgr);
+    uint32_t free_bytes = eflash_mgr_get_free_bytes(&ftl.spc_mgr);
     printf("  [LOGICAL] Free bytes after freeing 2 pages: %u\n", free_bytes);
 
     cleanup_test_flash();

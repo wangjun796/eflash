@@ -1,5 +1,5 @@
-#ifndef SPACE_MGR_H
-#define SPACE_MGR_H
+#ifndef EFLASH_MGR_H
+#define EFLASH_MGR_H
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -46,43 +46,43 @@ typedef struct {
     uint16_t    free_node_pages[FREE_NODE_PAGE_COUNT];  // Physical page numbers for free_node table
     uint16_t    header_pages[BASE_HEADER_PAGES];        // Physical page numbers for base object headers
     uint16_t    next_alloc_page;        // Next physical page to allocate (for sequential allocation optimization)
-} space_mgr_t;
+} eflash_mgr_t;
 
 /**
- * space_mgr_init: Initialize space manager
+ * eflash_mgr_init: Initialize space manager
  * @mgr: Space manager instance
  * @total_pages: Total Flash pages
  */
-void space_mgr_init(space_mgr_t *mgr, uint16_t total_pages);
+void eflash_mgr_init(eflash_mgr_t *mgr, uint16_t total_pages);
 
 /**
- * space_mgr_alloc: Allocate specified size of logical address space
+ * eflash_mgr_alloc: Allocate specified size of logical address space
  * @mgr: Space manager instance
  * @size: Requested size in bytes
  * @out_logical_addr: Output allocated starting logical address (24-bit)
  * @return: 0 success, -1 failure (insufficient space)
  */
-int space_mgr_alloc(space_mgr_t *mgr, uint32_t size, uint32_t *out_logical_addr);
+int eflash_mgr_alloc(eflash_mgr_t *mgr, uint32_t size, uint32_t *out_logical_addr);
 
 /**
- * space_mgr_free: Free specified logical address space and merge adjacent free blocks
+ * eflash_mgr_free: Free specified logical address space and merge adjacent free blocks
  * @mgr: Space manager instance
  * @logical_addr: Starting logical address to free (24-bit)
  * @size: Size in bytes to free
  */
-void space_mgr_free(space_mgr_t *mgr, uint32_t logical_addr, uint32_t size);
+void eflash_mgr_free(eflash_mgr_t *mgr, uint32_t logical_addr, uint32_t size);
 
 /**
- * space_mgr_sync: Sync free_node table to Flash
+ * eflash_mgr_sync: Sync free_node table to Flash
  * @mgr: Space manager instance
  */
-void space_mgr_sync(space_mgr_t *mgr);
+void eflash_mgr_sync(eflash_mgr_t *mgr);
 
 /**
- * space_mgr_get_free_bytes: Get remaining free bytes
+ * eflash_mgr_get_free_bytes: Get remaining free bytes
  * @mgr: Space manager instance
  * @return: Number of free bytes
  */
-uint32_t space_mgr_get_free_bytes(space_mgr_t *mgr);
+uint32_t eflash_mgr_get_free_bytes(eflash_mgr_t *mgr);
 
-#endif // SPACE_MGR_H
+#endif // EFLASH_MGR_H

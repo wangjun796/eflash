@@ -1,6 +1,6 @@
-#include "mini_ftl.h"
+#include "eflash_ftl.h"
 #include "eflash_sim.h"
-#include "space_mgr.h"
+#include "eflash_mgr.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -390,7 +390,7 @@ static int extend_headers(mini_ftl_t *ftl) {
 
     // 2. Allocate new 4-page logical space
     uint32_t new_ext_logical_addr;
-    if (space_mgr_alloc(&ftl->spc_mgr, 4 * EFLASH_PAGE_SIZE, &new_ext_logical_addr) != 0) {
+    if (eflash_mgr_alloc(&ftl->spc_mgr, 4 * EFLASH_PAGE_SIZE, &new_ext_logical_addr) != 0) {
         return -1;
     }
     uint16_t new_ext_page = (uint16_t)(new_ext_logical_addr / EFLASH_PAGE_SIZE);
@@ -457,7 +457,7 @@ int mini_ftl_obj_set_header(mini_ftl_t *ftl, uint16_t obj_id, const obj_header_t
 int mini_ftl_init(mini_ftl_t *ftl) {
     FTL_DEBUG("[INIT] Starting mini_ftl_init\n");
 
-    space_mgr_init(&ftl->spc_mgr, EFLASH_TOTAL_PAGES);
+    eflash_mgr_init(&ftl->spc_mgr, EFLASH_TOTAL_PAGES);
 
     ftl_meta_t meta;
     uint32_t max_count = 0;

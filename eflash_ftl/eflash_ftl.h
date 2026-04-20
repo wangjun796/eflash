@@ -1,10 +1,10 @@
-#ifndef MINI_FTL_H
-#define MINI_FTL_H
+#ifndef EFLASH_FTL_H
+#define EFLASH_FTL_H
 
 #include <stdint.h>
 #include <stdbool.h>
 #include "ecc/bch.h"
-#include "space_mgr.h"
+#include "eflash_mgr.h"
 
 // --- Cross-platform packed structure support ---
 #ifdef _MSC_VER
@@ -15,7 +15,7 @@
     #define PACKED_STRUCT
     #define PACKED_STRUCT_END
     #define ATTRIBUTE_PACKED __attribute__((packed))
-#endif
+#endif // EFLASH_FTL_H
 
 // --- Physical Layout Configuration ---
 #define EFLASH_PAGE_SIZE    512
@@ -69,7 +69,7 @@ PACKED_STRUCT_END
 
 // --- FTL Context ---
 typedef struct {
-    space_mgr_t   spc_mgr;
+    eflash_mgr_t   spc_mgr;
     uint16_t      root_page;
     uint16_t      shadow_root;
     uint32_t      next_count;

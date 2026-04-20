@@ -36,8 +36,8 @@ set(ECC_SOURCES
 )
 
 set(EFLASH_FTL_SOURCES
-    eflash_ftl/mini_ftl.c
-    eflash_ftl/space_mgr.c
+    eflash_ftl/eflash_ftl.c
+    eflash_ftl/eflash_mgr.c
     eflash_ftl/eflash_sim.c
 )
 
