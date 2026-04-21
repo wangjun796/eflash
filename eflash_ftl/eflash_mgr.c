@@ -262,19 +262,25 @@ void eflash_mgr_init(eflash_mgr_t *mgr, uint16_t total_pages) {
         eflash_hw_prog(mgr->header_pages[i], blank_buf);
     }
     
-    // Calculate system reserved physical pages
-    uint32_t reserved_pages = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;  // 12
+    // Calculate system reserved logical pages (LPN 0-11)
+    // These logical pages are used for system areas:
+    //   - LPN 0-7:   Base object header table
+    //   - LPN 8-11:  Free list pages
+    // Note: Physical pages (PPN) are dynamically allocated by FTL, not reserved here.
+    uint32_t reserved_logic_page_count = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;  // 12 logical pages
     
     // Calculate available logical address space
-    // Note: System reserved 12 pages do not participate in logical address allocation
-    uint32_t available_pages = total_pages - reserved_pages;  // 8192 - 12 = 8180
+    // Note: System reserved 12 logical pages do not participate in user data allocation
+    uint32_t available_pages = total_pages - reserved_logic_page_count;  // 8192 - 12 = 8180
     uint32_t total_logical_size = available_pages * USER_DATA_SIZE;  // 8180 * 464 = 3,795,520
-    uint32_t start_logical_addr = reserved_pages * USER_DATA_SIZE;   // 12 * 464 = 5,568
+    uint32_t start_logical_addr = reserved_logic_page_count * USER_DATA_SIZE;   // 12 * 464 = 5,568
     
-    FTL_DEBUG("[SPACE_INIT] Total pages: %d, Reserved pages: %d, Available pages: %d\n",
-             total_pages, reserved_pages, available_pages);
-    FTL_DEBUG("[SPACE_INIT] Logical address space: start=0x%08X, size=%u bytes\n",
-             start_logical_addr, total_logical_size);
+    FTL_DEBUG("[SPACE_INIT] Total physical pages: %d, Reserved logical pages: %d (LPN 0-%d)\n",
+             total_pages, reserved_logic_page_count, reserved_logic_page_count - 1);
+    FTL_DEBUG("[SPACE_INIT] Available logical pages: %d, Total logical size: %u bytes\n",
+             available_pages, total_logical_size);
+    FTL_DEBUG("[SPACE_INIT] User logical address range: 0x%08X - 0x%08X\n",
+             start_logical_addr, start_logical_addr + total_logical_size - 1);
     
     // Initialize single free node in first free_node page
     // count = 1, addr = start_logical_addr, size = total_logical_size
@@ -317,7 +323,7 @@ void eflash_mgr_init(eflash_mgr_t *mgr, uint16_t total_pages) {
 #endif
     
     FTL_DEBUG("[SPACE_INIT] === Initialization complete ===\n");
-    mgr->next_alloc_page = reserved_pages;
+    mgr->next_alloc_page = reserved_logic_page_count;
 }
 
 int eflash_mgr_alloc(eflash_mgr_t *mgr, uint32_t size, uint32_t *out_logical_addr) {
