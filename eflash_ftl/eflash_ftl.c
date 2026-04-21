@@ -4,6 +4,20 @@
 #include <string.h>
 #include <stdio.h>
 
+// --- Abbreviation Reference ---
+// This file uses the following abbreviations for clarity:
+//   PPN  - Physical Page Number (physical flash page address)
+//   LPN  - Logical Page Number (logical address in FTL mapping)
+//   OBJ  - Object (object header or data object)
+//   HDR  - Header (metadata header)
+//   GC   - Garbage Collection
+//   TXN  - Transaction
+//   EXT  - Extension (extended header area)
+//   MGR  - Manager (space manager)
+//   FTL  - Flash Translation Layer
+//   ECC  - Error Correction Code
+//   META - Metadata (page metadata including epoch, count, status, etc.)
+
 #ifndef PAGE_NONE
 #define PAGE_NONE 0xFFFF
 #endif
@@ -185,7 +199,14 @@ static bool is_valid_page(uint16_t page, ftl_meta_t *meta) {
             meta->status == TXN_STATUS_INVALID);
 }
 
-static int write_full_page(uint16_t page, const uint8_t *data, const ftl_meta_t *meta_in) {
+/**
+ * write_full_page: Write a complete page with data and metadata
+ * @ppn: Physical Page Number to write
+ * @data: User data buffer (USER_DATA_SIZE bytes)
+ * @meta_in: Metadata to write
+ * @return: 0 on success, -1 on failure
+ */
+static int write_full_page(uint16_t ppn, const uint8_t *data, const ftl_meta_t *meta_in) {
     uint8_t buf[EFLASH_PAGE_SIZE];
     memset(buf, 0xFF, EFLASH_PAGE_SIZE);
 
@@ -199,8 +220,8 @@ static int write_full_page(uint16_t page, const uint8_t *data, const ftl_meta_t 
     // Calculate ECC for full page (covers user data + metadata excluding ECC part)
     calc_page_ecc(buf);
 
-    if (eflash_hw_erase(page) != 0) return -1;
-    return eflash_hw_prog(page, buf);
+    if (eflash_hw_erase(ppn) != 0) return -1;
+    return eflash_hw_prog(ppn, buf);
 }
 
 /**
@@ -211,7 +232,7 @@ static int write_full_page(uint16_t page, const uint8_t *data, const ftl_meta_t 
  * Description: Following Dhara's design, allocate physical pages sequentially starting from Head
  */
 static int allocate_physical_page(eflash_ftl_t *ftl) {
-    uint16_t phys_page = ftl->gc_head_page;
+    uint16_t ppn = ftl->gc_head_page;  // Physical Page Number
     uint16_t first_user_page = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
 
@@ -224,9 +245,9 @@ static int allocate_physical_page(eflash_ftl_t *ftl) {
     }
 
     FTL_DEBUG("[ALLOC_PHYS] Allocated physical page %d (next head=%d)\n",
-             phys_page, ftl->gc_head_page);
+             ppn, ftl->gc_head_page);
 
-    return phys_page;
+    return ppn;
 }
 
 // --- Radix Tree Core Logic (ported from Dhara map.c) ---
@@ -299,28 +320,28 @@ static int trace_path(eflash_ftl_t *ftl, uint16_t base_root, uint16_t sector, ft
             FTL_DEBUG("[TRACE] Diverge: out_meta->alt[%d]=%d\n", depth, current);
 
             // Get current node's alt pointer, continue searching downward
-            uint16_t next_page = cur_meta.alt[depth];
-            if (next_page == PAGE_NONE) {
+            uint16_t next_ppn = cur_meta.alt[depth];  // Next Physical Page Number
+            if (next_ppn == PAGE_NONE) {
                 // Path interrupted, jump to not_found to handle remaining depth
                 FTL_DEBUG("[TRACE] Path interrupted at depth=%d\n", depth);
                 depth++;
                 goto not_found;
             }
 
-            FTL_DEBUG("[TRACE] Follow alt[%d]=%d\n", depth, next_page);
-
+            FTL_DEBUG("[TRACE] Follow alt[%d]=%d\n", depth, next_ppn);
+            
             // Read next node's metadata
-            if (eflash_hw_read(next_page, meta_buf) != 0) {
-                FTL_DEBUG("[TRACE] ERROR: Failed to read next page %d at depth %d\n", next_page, depth);
+            if (eflash_hw_read(next_ppn, meta_buf) != 0) {
+                FTL_DEBUG("[TRACE] ERROR: Failed to read next PPN %d\n", next_ppn);
                 return -1;
             }
             if (verify_and_correct_page(meta_buf) != 0) {
-                FTL_DEBUG("[TRACE] ERROR: Page verification failed for page %d at depth %d\n", next_page, depth);
+                FTL_DEBUG("[TRACE] ERROR: Page verification failed at PPN %d\n", next_ppn);
                 return -1;
             }
             memcpy(&cur_meta, meta_buf + META_OFFSET, META_SIZE);
-
-            current = next_page;
+            
+            current = next_ppn;
         } else {
             // Bits same: inherit alt pointer from current node
             out_meta->alt[depth] = cur_meta.alt[depth];
@@ -468,26 +489,26 @@ static int extend_headers(eflash_ftl_t *ftl) {
     if (eflash_mgr_alloc(&ftl->spc_mgr, 4 * EFLASH_PAGE_SIZE, &new_ext_logical_addr) != 0) {
         return -1;
     }
-    uint16_t new_ext_page = (uint16_t)(new_ext_logical_addr / EFLASH_PAGE_SIZE);
+    uint16_t new_ext_lpn = (uint16_t)(new_ext_logical_addr / EFLASH_PAGE_SIZE);  // Logical Page Number
 
     // 3. Update pointer at end of previous level
     obj_header_t link_hdr;
     memset(&link_hdr, 0, sizeof(link_hdr));
     link_hdr.type = OBJ_TYPE_LINK; // Mark as extension link object
-    link_hdr.body_addr = new_ext_page;
+    link_hdr.body_addr = new_ext_lpn;
     link_hdr.body_size = EXT_HEADER_PAGES_UNIT * USER_DATA_SIZE; // Total size of extension area
 
     // Write link info to end of previous level
     eflash_ftl_obj_set_header(ftl, (level == 0 ? BASE_HEADER_CAPACITY - 1 : (level * EXT_HEADER_CAPACITY + BASE_HEADER_CAPACITY - 1)), &link_hdr);
 
     // 4. Record new extension address
-    ftl->ext_hdr_addrs[level] = new_ext_page;
+    ftl->ext_hdr_addrs[level] = new_ext_lpn;
 
     // 5. Initialize new pages (write all 0xFF or empty object headers)
     uint8_t empty_page[USER_DATA_SIZE];
     memset(empty_page, 0xFF, USER_DATA_SIZE);
     for (int i = 0; i < EXT_HEADER_PAGES_UNIT; i++) {
-        eflash_ftl_write(ftl, new_ext_page + i, empty_page);
+        eflash_ftl_write(ftl, new_ext_lpn + i, empty_page);
     }
 
     return 0;
@@ -511,11 +532,11 @@ static void scan_and_rebuild_ext_headers(eflash_ftl_t *ftl) {
     }
     
     int level = 0;
-    uint16_t current_scan_page;
+    uint16_t current_scan_lpn;  // Current scan Logical Page Number
     
     // Start from base area's last page
     if (level == 0) {
-        current_scan_page = ftl->base_hdr_addr + BASE_HEADER_PAGES - 1;
+        current_scan_lpn = ftl->base_hdr_addr + BASE_HEADER_PAGES - 1;
     } else {
         // Should not reach here in first iteration
         return;
@@ -528,8 +549,8 @@ static void scan_and_rebuild_ext_headers(eflash_ftl_t *ftl) {
         uint16_t offset = (OBJ_HEADERS_PER_PAGE - 1) * sizeof(obj_header_t);
         
         uint8_t page_buf[EFLASH_PAGE_SIZE];
-        if (eflash_hw_read(current_scan_page, page_buf) != 0) {
-            FTL_DEBUG("[INIT] ERROR: Failed to read page %d for link scan\n", current_scan_page);
+        if (eflash_hw_read(current_scan_lpn, page_buf) != 0) {
+            FTL_DEBUG("[INIT] ERROR: Failed to read LPN %d for link scan\n", current_scan_lpn);
             break;
         }
         
@@ -540,12 +561,12 @@ static void scan_and_rebuild_ext_headers(eflash_ftl_t *ftl) {
         if (link_hdr.type == OBJ_TYPE_LINK && link_hdr.body_addr != PAGE_NONE) {
             // Found a valid extension link
             ftl->ext_hdr_addrs[level] = (uint16_t)link_hdr.body_addr;
-            FTL_DEBUG("[INIT] Found extension level %d at page %d\n", level, ftl->ext_hdr_addrs[level]);
+            FTL_DEBUG("[INIT] Found extension level %d at LPN %d\n", level, ftl->ext_hdr_addrs[level]);
             
             // Move to next level's last page
             level++;
             if (level < MAX_EXT_LEVELS) {
-                current_scan_page = ftl->ext_hdr_addrs[level - 1] + EXT_HEADER_PAGES_UNIT - 1;
+                current_scan_lpn = ftl->ext_hdr_addrs[level - 1] + EXT_HEADER_PAGES_UNIT - 1;
             }
         } else {
             // No more extensions
@@ -716,9 +737,9 @@ int eflash_ftl_write(eflash_ftl_t *ftl, uint16_t sector_id, const uint8_t *data)
 int eflash_ftl_read(eflash_ftl_t *ftl, uint16_t sector_id, uint8_t *data) {
     if (!ftl->is_initialized || ftl->root_page == PAGE_NONE) return -1;
 
-    uint16_t logical_page = sector_id;
+    uint16_t lpn = sector_id;  // Logical Page Number
 
-    FTL_DEBUG("[READ] logical_page=%d, root_page=%d\n", logical_page, ftl->root_page);
+    FTL_DEBUG("[READ] LPN=%d, root_page=%d\n", lpn, ftl->root_page);
 
     uint8_t meta_buf[EFLASH_PAGE_SIZE];
     ftl_meta_t cur_meta;
@@ -727,21 +748,21 @@ int eflash_ftl_read(eflash_ftl_t *ftl, uint16_t sector_id, uint8_t *data) {
 
     while (depth < RADIX_DEPTH) {
         if (eflash_hw_read(current, meta_buf) != 0) {
-            FTL_DEBUG("[READ] ERROR: Failed to read page %d at depth %d\n", current, depth);
+            FTL_DEBUG("[READ] ERROR: Failed to read PPN %d at depth %d\n", current, depth);
             return -1;
         }
 
         if (verify_and_correct_page(meta_buf) != 0) {
-            FTL_DEBUG("[READ] ERROR: Page verification failed at page %d\n", current);
+            FTL_DEBUG("[READ] ERROR: Page verification failed at PPN %d\n", current);
             return -1;
         }
         memcpy(&cur_meta, meta_buf + META_OFFSET, META_SIZE);
 
         FTL_DEBUG("[READ] depth=%d, cur_sector=%d, alt[depth]=%d\n", depth, cur_meta.sector_id, cur_meta.alt[depth]);
 
-        if (cur_meta.sector_id == logical_page) {
+        if (cur_meta.sector_id == lpn) {
             // Found matching node, data is in first USER_DATA_SIZE bytes of current page
-            FTL_DEBUG("[READ] Found match at depth=%d, reading data from page %d\n", depth, current);
+            FTL_DEBUG("[READ] Found match at depth=%d, reading data from PPN %d\n", depth, current);
             // Data already in meta_buf and verified/corrected by verify_and_correct_page
             memcpy(data, meta_buf, USER_DATA_SIZE);
             FTL_DEBUG("[READ] Success, first byte=0x%02X\n", data[0]);
@@ -749,7 +770,7 @@ int eflash_ftl_read(eflash_ftl_t *ftl, uint16_t sector_id, uint8_t *data) {
         }
 
         uint16_t bit_mask = 1 << (RADIX_DEPTH - 1 - depth);
-        int target_bit = (logical_page & bit_mask) ? 1 : 0;
+        int target_bit = (lpn & bit_mask) ? 1 : 0;
         int current_bit = (cur_meta.sector_id & bit_mask) ? 1 : 0;
 
         if (target_bit != current_bit) {
@@ -771,18 +792,18 @@ int eflash_ftl_read(eflash_ftl_t *ftl, uint16_t sector_id, uint8_t *data) {
     // This happens when jump occurred in last iteration
     if (current != PAGE_NONE && current != ftl->root_page) {
         if (eflash_hw_read(current, meta_buf) != 0) {
-            FTL_DEBUG("[READ] ERROR: Failed to read final page %d\n", current);
+            FTL_DEBUG("[READ] ERROR: Failed to read final PPN %d\n", current);
             return -1;
         }
 
         if (verify_and_correct_page(meta_buf) != 0) {
-            FTL_DEBUG("[READ] ERROR: Page verification failed at final page %d\n", current);
+            FTL_DEBUG("[READ] ERROR: Page verification failed at final PPN %d\n", current);
             return -1;
         }
         memcpy(&cur_meta, meta_buf + META_OFFSET, META_SIZE);
 
-        if (cur_meta.sector_id == logical_page) {
-            FTL_DEBUG("[READ] Found match at final page %d, reading data\n", current);
+        if (cur_meta.sector_id == lpn) {
+            FTL_DEBUG("[READ] Found match at final PPN %d, reading data\n", current);
             memcpy(data, meta_buf, USER_DATA_SIZE);
             FTL_DEBUG("[READ] Success, first byte=0x%02X\n", data[0]);
             return 0;
@@ -1155,45 +1176,45 @@ static int gc_migrate_page(eflash_ftl_t *ftl, uint16_t src_page) {
 }
 
 /**
- * gc_collect_one_page: Reclaim single physical page
+ * gc_collect_one_page: Collect (reclaim) a single physical page during GC
  * @ftl: FTL instance
- * @page: Physical page number to reclaim
- * @return: 0 success, -1 failure
+ * @ppn: Physical Page Number to collect
+ * @return: 0 on success, -1 on failure
  *
- * Process:
- * 1. Determine if page is valid
- * 2. If valid, migrate to new location
- * 3. Erase physical page (do NOT call space_mgr_free, because GC only manages physical pages)
+ * Description:
+ *   1. Check if the page is still valid (not stale)
+ *   2. If valid, migrate data to a new physical page
+ *   3. Erase physical page (do NOT call space_mgr_free, because GC only manages physical pages)
  */
-static int gc_collect_one_page(eflash_ftl_t *ftl, uint16_t page) {
-    FTL_DEBUG("[GC_COLLECT] Processing physical page %d...\n", page);
+static int gc_collect_one_page(eflash_ftl_t *ftl, uint16_t ppn) {
+    FTL_DEBUG("[GC_COLLECT] Processing physical page %d...\n", ppn);
 
     // 1. Check if page is still valid
-    bool valid = is_page_still_valid(ftl, page);
+    bool valid = is_page_still_valid(ftl, ppn);
 
     if (valid) {
-        FTL_DEBUG("[GC_COLLECT] Page %d is VALID, migrating...\n", page);
+        FTL_DEBUG("[GC_COLLECT] Page %d is VALID, migrating...\n", ppn);
 
         // 2. Migrate valid page
-        if (gc_migrate_page(ftl, page) != 0) {
-            FTL_DEBUG("[GC_COLLECT] ERROR: Migration failed for page %d\n", page);
+        if (gc_migrate_page(ftl, ppn) != 0) {
+            FTL_DEBUG("[GC_COLLECT] ERROR: Migration failed for page %d\n", ppn);
             return -1;
         }
 
-        FTL_DEBUG("[GC_COLLECT] Page %d migrated successfully\n", page);
+        FTL_DEBUG("[GC_COLLECT] Page %d migrated successfully\n", ppn);
     } else {
-        FTL_DEBUG("[GC_COLLECT] Page %d is STALE, will be erased\n", page);
+        FTL_DEBUG("[GC_COLLECT] Page %d is STALE, will be erased\n", ppn);
     }
 
     // 3. Erase physical page (Note: do NOT call space_mgr_free!)
     //    Space Manager manages logical address space, unrelated to physical pages
     //    Physical page reclamation is done by GC direct erasure
-    if (eflash_hw_erase(page) != 0) {
-        FTL_DEBUG("[GC_COLLECT] ERROR: Failed to erase physical page %d\n", page);
+    if (eflash_hw_erase(ppn) != 0) {
+        FTL_DEBUG("[GC_COLLECT] ERROR: Failed to erase physical page %d\n", ppn);
         return -1;
     }
 
-    FTL_DEBUG("[GC_COLLECT] Erased physical page %d\n", page);
+    FTL_DEBUG("[GC_COLLECT] Erased physical page %d\n", ppn);
     return 0;
 }
 
