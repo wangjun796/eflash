@@ -232,6 +232,10 @@ static int allocate_physical_page(eflash_ftl_t *ftl) {
 // --- Radix Tree Core Logic (ported from Dhara map.c) ---
 
 static inline int get_bit(uint16_t sector, int depth) {
+    // Safety check: ensure depth is within valid range
+    if (depth < 0 || depth >= RADIX_DEPTH) {
+        return -1; // Return error code for invalid depth
+    }
     return (sector >> (RADIX_DEPTH - 1 - depth)) & 1;
 }
 
@@ -351,8 +355,8 @@ not_found:
 static int get_header_page_info(eflash_ftl_t *ftl, uint16_t obj_id, uint16_t *out_log_page, uint16_t *out_offset) {
     if (obj_id < BASE_HEADER_CAPACITY) {
         // Base area
-        *out_log_page = ftl->base_hdr_addr + (obj_id / 29);
-        *out_offset = (obj_id % 29) * sizeof(obj_header_t);
+        *out_log_page = ftl->base_hdr_addr + (obj_id / OBJ_HEADERS_PER_PAGE);
+        *out_offset = (obj_id % OBJ_HEADERS_PER_PAGE) * sizeof(obj_header_t);
         return 0;
     }
 
@@ -364,8 +368,8 @@ static int get_header_page_info(eflash_ftl_t *ftl, uint16_t obj_id, uint16_t *ou
         return -1; // Not yet extended or out of range
     }
 
-    uint16_t page_in_unit = (ext_idx % EXT_HEADER_CAPACITY) / 29;
-    uint16_t idx_in_page = (ext_idx % EXT_HEADER_CAPACITY) % 29;
+    uint16_t page_in_unit = (ext_idx % EXT_HEADER_CAPACITY) / OBJ_HEADERS_PER_PAGE;
+    uint16_t idx_in_page = (ext_idx % EXT_HEADER_CAPACITY) % OBJ_HEADERS_PER_PAGE;
 
     *out_log_page = ftl->ext_hdr_addrs[level - 1] + page_in_unit;
     *out_offset = idx_in_page * sizeof(obj_header_t);
@@ -723,9 +727,26 @@ int eflash_ftl_read_logical(eflash_ftl_t *ftl, uint32_t logical_addr, uint8_t *d
     return eflash_ftl_read(ftl, sector_id, data);
 }
 
+/**
+ * eflash_ftl_txn_begin: Begin a new transaction
+ * @ftl: FTL instance
+ *
+ * Description: 
+ *   1. Trigger GC to ensure sufficient free space before transaction starts
+ *   2. Set transaction ID and shadow root for atomic operations
+ */
 void eflash_ftl_txn_begin(eflash_ftl_t *ftl) {
+    // Trigger GC before starting transaction to ensure enough free space
+    // This prevents GC from being triggered during transaction, which could cause inconsistency
+    if (eflash_ftl_gc_trigger(ftl) != 0) {
+        FTL_DEBUG("[TXN_BEGIN] WARNING: GC trigger failed, but proceeding with transaction\n");
+    }
+
     ftl->active_txn_id = (uint16_t)(ftl->next_count & 0xFFFF);
     ftl->shadow_root = ftl->root_page; // Shadow tree initially points to current stable root
+    
+    FTL_DEBUG("[TXN_BEGIN] Transaction started: txn_id=%d, shadow_root=%d\n", 
+              ftl->active_txn_id, ftl->shadow_root);
 }
 
 /**
@@ -1157,15 +1178,26 @@ int eflash_ftl_gc_collect(eflash_ftl_t *ftl, uint16_t pages_to_free) {
 }
 
 /**
- * eflash_ftl_gc_trigger: Check and trigger GC if needed
+ * eflash_ftl_gc_trigger: Manually trigger garbage collection
  * @ftl: FTL instance
  * @return: 0 no GC needed or GC successful, -1 GC failed
  *
  * Trigger condition: free pages < gc_threshold
+ * 
+ * IMPORTANT: GC is NOT allowed during transaction to maintain atomicity.
+ * If a transaction is active, this function returns immediately without triggering GC.
  */
 int eflash_ftl_gc_trigger(eflash_ftl_t *ftl) {
     // If GC already in progress, skip trigger (prevent recursion)
     if (ftl->gc_in_progress) {
+        return 0;
+    }
+
+    // CRITICAL: Do NOT trigger GC during transaction
+    // Transaction requires atomic operations, and GC could interfere with shadow tree consistency
+    if (ftl->active_txn_id != TXN_ID_NONE) {
+        FTL_DEBUG("[GC_TRIGGER] SKIPPED: GC not allowed during transaction (txn_id=%d)\n", 
+                  ftl->active_txn_id);
         return 0;
     }
 

@@ -27,8 +27,11 @@
 #define BASE_HEADER_PAGES     8   // Base object header pages
 #define BASE_HEADER_CAPACITY  232 // Base capacity (8 * 464 / 16)
 #define EXT_HEADER_PAGES_UNIT 4   // Pages per extension
-#define EXT_HEADER_CAPACITY   116 // Capacity per extension unit (29 * 4 - 4 pointer fields)
+#define EXT_HEADER_CAPACITY   116 // Capacity per extension unit (OBJ_HEADERS_PER_PAGE * 4 - 4 pointer fields)
 #define FREE_LIST_PAGES       4   // Free list pages
+
+// --- Object Header Storage Configuration ---
+#define OBJ_HEADERS_PER_PAGE  (USER_DATA_SIZE / sizeof(obj_header_t))  // Number of object headers per page (464/16 = 29)
 
 // --- Object Header Structure (16 bytes) ---
 PACKED_STRUCT
