@@ -157,9 +157,9 @@ static bool is_blank_page(uint16_t page) {
 }
 
 /**
- * is_page_valid: Determine if physical page contains valid metadata
+ * is_valid_page: Determine if physical page contains valid metadata
  */
-static bool is_page_valid(uint16_t page, ftl_meta_t *meta) {
+static bool is_valid_page(uint16_t page, ftl_meta_t *meta) {
     // Optimization 1: First check if it's all 0xFF blank page, return invalid directly if so
     if (is_blank_page(page)) {
         FTL_DEBUG("[PAGE_VALID] Page %d is BLANK (all 0xFF)\n", page);
@@ -210,7 +210,7 @@ static int write_full_page(uint16_t page, const uint8_t *data, const ftl_meta_t 
  *
  * Description: Following Dhara's design, allocate physical pages sequentially starting from Head
  */
-static int allocate_physical_page(mini_ftl_t *ftl) {
+static int allocate_physical_page(eflash_ftl_t *ftl) {
     uint16_t phys_page = ftl->gc_head_page;
     uint16_t first_user_page = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
@@ -237,7 +237,7 @@ static inline int get_bit(uint16_t sector, int depth) {
 
 // Corrected trace_path: Strictly follow Dhara design, remove new_phys parameter
 // Responsibility: Only build metadata template for new node, do not insert any physical page
-static int trace_path(mini_ftl_t *ftl, uint16_t base_root, uint16_t sector, ftl_meta_t *out_meta) {
+static int trace_path(eflash_ftl_t *ftl, uint16_t base_root, uint16_t sector, ftl_meta_t *out_meta) {
     uint8_t meta_buf[EFLASH_PAGE_SIZE];
     ftl_meta_t cur_meta;
     int depth = 0;
@@ -348,7 +348,7 @@ not_found:
 /**
  * get_header_page_info: Calculate logical page and page offset based on object ID
  */
-static int get_header_page_info(mini_ftl_t *ftl, uint16_t obj_id, uint16_t *out_log_page, uint16_t *out_offset) {
+static int get_header_page_info(eflash_ftl_t *ftl, uint16_t obj_id, uint16_t *out_log_page, uint16_t *out_offset) {
     if (obj_id < BASE_HEADER_CAPACITY) {
         // Base area
         *out_log_page = ftl->base_hdr_addr + (obj_id / 29);
@@ -375,7 +375,7 @@ static int get_header_page_info(mini_ftl_t *ftl, uint16_t obj_id, uint16_t *out_
 /**
  * extend_headers: Dynamically extend one level of object header space (4 pages)
  */
-static int extend_headers(mini_ftl_t *ftl) {
+static int extend_headers(eflash_ftl_t *ftl) {
     // 1. Find the highest level extension page, get its last object header (pointer field)
     uint16_t prev_ext_addr = ftl->base_hdr_addr + BASE_HEADER_PAGES - 1; // Default points to last page of base area
     int level = 0;
@@ -400,7 +400,7 @@ static int extend_headers(mini_ftl_t *ftl) {
     link_hdr.body_addr = new_ext_page;
 
     // Write link info to end of previous level
-    mini_ftl_obj_set_header(ftl, (level == 0 ? BASE_HEADER_CAPACITY - 1 : (level * EXT_HEADER_CAPACITY + BASE_HEADER_CAPACITY - 1)), &link_hdr);
+    eflash_ftl_obj_set_header(ftl, (level == 0 ? BASE_HEADER_CAPACITY - 1 : (level * EXT_HEADER_CAPACITY + BASE_HEADER_CAPACITY - 1)), &link_hdr);
 
     // 4. Record new extension address
     ftl->ext_hdr_addrs[level] = new_ext_page;
@@ -409,26 +409,26 @@ static int extend_headers(mini_ftl_t *ftl) {
     uint8_t empty_page[USER_DATA_SIZE];
     memset(empty_page, 0xFF, USER_DATA_SIZE);
     for (int i = 0; i < EXT_HEADER_PAGES_UNIT; i++) {
-        mini_ftl_write(ftl, new_ext_page + i, empty_page);
+        eflash_ftl_write(ftl, new_ext_page + i, empty_page);
     }
 
     return 0;
 }
 
-int mini_ftl_obj_get_header(mini_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr) {
+int eflash_ftl_obj_get_header(eflash_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr) {
     uint16_t log_page, offset;
     if (get_header_page_info(ftl, obj_id, &log_page, &offset) != 0) {
         return -1;
     }
 
     uint8_t page_data[USER_DATA_SIZE];
-    if (mini_ftl_read(ftl, log_page, page_data) != 0) return -1;
+    if (eflash_ftl_read(ftl, log_page, page_data) != 0) return -1;
 
     memcpy(hdr, page_data + offset, sizeof(obj_header_t));
     return 0;
 }
 
-int mini_ftl_obj_set_header(mini_ftl_t *ftl, uint16_t obj_id, const obj_header_t *hdr) {
+int eflash_ftl_obj_set_header(eflash_ftl_t *ftl, uint16_t obj_id, const obj_header_t *hdr) {
     uint16_t log_page, offset;
     if (get_header_page_info(ftl, obj_id, &log_page, &offset) != 0) {
         // If failure is due to not extended, try auto-extension
@@ -442,18 +442,18 @@ int mini_ftl_obj_set_header(mini_ftl_t *ftl, uint16_t obj_id, const obj_header_t
 
     uint8_t page_data[USER_DATA_SIZE];
     // Read before write to prevent overwriting other object headers on same page
-    if (mini_ftl_read(ftl, log_page, page_data) != 0) {
+    if (eflash_ftl_read(ftl, log_page, page_data) != 0) {
         memset(page_data, 0xFF, USER_DATA_SIZE); // Initialize if new page
     }
 
     memcpy(page_data + offset, hdr, sizeof(obj_header_t));
-    return mini_ftl_write(ftl, log_page, page_data);
+    return eflash_ftl_write(ftl, log_page, page_data);
 }
 
 // --- FTL Initialization and Pre-allocation ---
 
-int mini_ftl_init(mini_ftl_t *ftl) {
-    FTL_DEBUG("[INIT] Starting mini_ftl_init\n");
+int eflash_ftl_init(eflash_ftl_t *ftl) {
+    FTL_DEBUG("[INIT] Starting eflash_ftl_init\n");
 
     eflash_mgr_init(&ftl->spc_mgr, EFLASH_TOTAL_PAGES);
 
@@ -491,7 +491,7 @@ int mini_ftl_init(mini_ftl_t *ftl) {
     // Scan entire chip to find latest COMMITTED page as Root
     FTL_DEBUG("[INIT] Scanning %d pages for valid root...\n", EFLASH_TOTAL_PAGES);
     for (int i = 0; i < EFLASH_TOTAL_PAGES; i++) {
-        if (is_page_valid(i, &meta) && meta.status == TXN_STATUS_COMMITTED) {
+        if (is_valid_page(i, &meta) && meta.status == TXN_STATUS_COMMITTED) {
             if (meta.epoch > max_epoch ||
                 (meta.epoch == max_epoch && meta.global_count > max_count)) {
                 max_epoch = meta.epoch;
@@ -526,35 +526,35 @@ int mini_ftl_init(mini_ftl_t *ftl) {
 
 // --- Object Management Implementation (temporarily disabled, to be improved later) ---
 
-int mini_ftl_obj_create(mini_ftl_t *ftl, uint16_t pkg_id, uint16_t class_id, uint8_t type) {
+int eflash_ftl_obj_create(eflash_ftl_t *ftl, uint16_t pkg_id, uint16_t class_id, uint8_t type) {
     // TODO: Re-implement object management logic
     (void)ftl; (void)pkg_id; (void)class_id; (void)type;
     return -1;
 }
 
-int mini_ftl_obj_write_header(mini_ftl_t *ftl, uint16_t obj_id, const obj_header_t *hdr) {
+int eflash_ftl_obj_write_header(eflash_ftl_t *ftl, uint16_t obj_id, const obj_header_t *hdr) {
     // TODO: Re-implement object header write logic
     (void)ftl; (void)obj_id; (void)hdr;
     return -1;
 }
 
-int mini_ftl_obj_read_header(mini_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr) {
+int eflash_ftl_obj_read_header(eflash_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr) {
     // TODO: Re-implement object header read logic
     (void)ftl; (void)obj_id; (void)hdr;
     return -1;
 }
 
-int mini_ftl_obj_write_body(mini_ftl_t *ftl, uint16_t obj_id, const uint8_t *data, uint32_t size) {
+int eflash_ftl_obj_write_body(eflash_ftl_t *ftl, uint16_t obj_id, const uint8_t *data, uint32_t size) {
     // TODO: Re-implement object data write logic
     (void)ftl; (void)obj_id; (void)data; (void)size;
     return -1;
 }
 
-int mini_ftl_write(mini_ftl_t *ftl, uint16_t sector_id, const uint8_t *data) {
+int eflash_ftl_write(eflash_ftl_t *ftl, uint16_t sector_id, const uint8_t *data) {
     if (!ftl->is_initialized) return -1;
 
     // Before allocating space, check if GC needs to be triggered
-    if (mini_ftl_gc_trigger(ftl) != 0) {
+    if (eflash_ftl_gc_trigger(ftl) != 0) {
         FTL_DEBUG("[WRITE] ERROR: GC trigger failed, no space available\n");
         return -1;
     }
@@ -602,7 +602,7 @@ int mini_ftl_write(mini_ftl_t *ftl, uint16_t sector_id, const uint8_t *data) {
     return 0;
 }
 
-int mini_ftl_read(mini_ftl_t *ftl, uint16_t sector_id, uint8_t *data) {
+int eflash_ftl_read(eflash_ftl_t *ftl, uint16_t sector_id, uint8_t *data) {
     if (!ftl->is_initialized || ftl->root_page == PAGE_NONE) return -1;
 
     uint16_t logical_page = sector_id;
@@ -684,15 +684,15 @@ int mini_ftl_read(mini_ftl_t *ftl, uint16_t sector_id, uint8_t *data) {
 }
 
 /**
- * mini_ftl_write_logical: Write interface based on logical address
+ * eflash_ftl_write_logical: Write interface based on logical address
  * @ftl: FTL instance
  * @logical_addr: 24-bit logical address
  * @data: Data pointer
  * @return: 0 success, -1 failure
  *
- * Description: Extract sector_id from logical address, then call mini_ftl_write
+ * Description: Extract sector_id from logical address, then call eflash_ftl_write
  */
-int mini_ftl_write_logical(mini_ftl_t *ftl, uint32_t logical_addr, const uint8_t *data) {
+int eflash_ftl_write_logical(eflash_ftl_t *ftl, uint32_t logical_addr, const uint8_t *data) {
     if (!ftl->is_initialized) return -1;
 
     // Extract sector_id from logical address
@@ -700,19 +700,19 @@ int mini_ftl_write_logical(mini_ftl_t *ftl, uint32_t logical_addr, const uint8_t
 
     FTL_DEBUG("[WRITE_LOGICAL] logical_addr=0x%06X -> sector_id=%d\n", logical_addr, sector_id);
 
-    return mini_ftl_write(ftl, sector_id, data);
+    return eflash_ftl_write(ftl, sector_id, data);
 }
 
 /**
- * mini_ftl_read_logical: Read interface based on logical address
+ * eflash_ftl_read_logical: Read interface based on logical address
  * @ftl: FTL instance
  * @logical_addr: 24-bit logical address
  * @data: Data output buffer
  * @return: 0 success, -1 failure
  *
- * Description: Extract sector_id from logical address, then call mini_ftl_read
+ * Description: Extract sector_id from logical address, then call eflash_ftl_read
  */
-int mini_ftl_read_logical(mini_ftl_t *ftl, uint32_t logical_addr, uint8_t *data) {
+int eflash_ftl_read_logical(eflash_ftl_t *ftl, uint32_t logical_addr, uint8_t *data) {
     if (!ftl->is_initialized) return -1;
 
     // Extract sector_id from logical address
@@ -720,23 +720,23 @@ int mini_ftl_read_logical(mini_ftl_t *ftl, uint32_t logical_addr, uint8_t *data)
 
     FTL_DEBUG("[READ_LOGICAL] logical_addr=0x%06X -> sector_id=%d\n", logical_addr, sector_id);
 
-    return mini_ftl_read(ftl, sector_id, data);
+    return eflash_ftl_read(ftl, sector_id, data);
 }
 
-void mini_ftl_txn_begin(mini_ftl_t *ftl) {
+void eflash_ftl_txn_begin(eflash_ftl_t *ftl) {
     ftl->active_txn_id = (uint16_t)(ftl->next_count & 0xFFFF);
     ftl->shadow_root = ftl->root_page; // Shadow tree initially points to current stable root
 }
 
 /**
- * mini_ftl_txn_commit: Commit transaction using full page erase/rewrite (compatible with all hardware)
+ * eflash_ftl_txn_commit: Commit transaction using full page erase/rewrite (compatible with all hardware)
  * @ftl: FTL instance
  * @return: 0 success, -1 failure
  *
  * Description: This is the universal version that works on all eFlash hardware.
  * It reads the entire page, modifies status, recalculates ECC, erases and rewrites.
  */
-int mini_ftl_txn_commit(mini_ftl_t *ftl) {
+int eflash_ftl_txn_commit(eflash_ftl_t *ftl) {
     if (ftl->active_txn_id == TXN_ID_NONE || ftl->shadow_root == PAGE_NONE) return -1;
 
     FTL_DEBUG("[TXN_COMMIT] Committing transaction on page %d (full rewrite mode)\n", ftl->shadow_root);
@@ -783,7 +783,7 @@ int mini_ftl_txn_commit(mini_ftl_t *ftl) {
 }
 
 /**
- * mini_ftl_txn_commit_with_update: Commit transaction using word update (optimized for hardware that supports it)
+ * eflash_ftl_txn_commit_with_update: Commit transaction using word update (optimized for hardware that supports it)
  * @ftl: FTL instance
  * @return: 0 success, -1 failure
  *
@@ -803,7 +803,7 @@ int mini_ftl_txn_commit(mini_ftl_t *ftl) {
  *
  * Note: Only use this function if your eFlash hardware supports partial page updates!
  */
-int mini_ftl_txn_commit_with_update(mini_ftl_t *ftl) {
+int eflash_ftl_txn_commit_with_update(eflash_ftl_t *ftl) {
     printf("[TXN_COMMIT_UPDATE] >>> ENTRY: active_txn_id=%d, shadow_root=%d\n",
            ftl->active_txn_id, ftl->shadow_root);
 
@@ -890,7 +890,7 @@ int mini_ftl_txn_commit_with_update(mini_ftl_t *ftl) {
     return 0;
 }
 
-void mini_ftl_txn_abort(mini_ftl_t *ftl) {
+void eflash_ftl_txn_abort(eflash_ftl_t *ftl) {
     if (ftl->active_txn_id == TXN_ID_NONE) return;
 
     // Simply discard shadow tree pointer, PENDING pages in Flash will be ignored on next GC or reboot
@@ -901,9 +901,9 @@ void mini_ftl_txn_abort(mini_ftl_t *ftl) {
 // --- GC Core Implementation (following Dhara Head/Tail model) ---
 
 /**
- * mini_ftl_get_free_pages: Get current number of free pages
+ * eflash_ftl_get_free_pages: Get current number of free pages
  */
-uint32_t mini_ftl_get_free_pages(mini_ftl_t *ftl) {
+uint32_t eflash_ftl_get_free_pages(eflash_ftl_t *ftl) {
     // Based on Dhara's Head/Tail circular buffer model
     // Head: Next writable physical page
     // Tail: Starting position for GC scan
@@ -942,10 +942,10 @@ uint32_t mini_ftl_get_free_pages(mini_ftl_t *ftl) {
  * @phys_page: Physical page number to check
  * @return: true=valid (still in tree), false=invalid (can be reclaimed)
  *
- * Principle: Read sector_id of the page, then search current mapping via mini_ftl_read.
+ * Principle: Read sector_id of the page, then search current mapping via eflash_ftl_read.
  * If current mapping points to same physical page as phys_page, it's valid data.
  */
-static bool is_page_still_valid(mini_ftl_t *ftl, uint16_t phys_page) {
+static bool is_page_still_valid(eflash_ftl_t *ftl, uint16_t phys_page) {
     (void)ftl;  // Suppress unused parameter warning
     uint8_t meta_buf[EFLASH_PAGE_SIZE];
     ftl_meta_t meta;
@@ -985,7 +985,7 @@ static bool is_page_still_valid(mini_ftl_t *ftl, uint16_t phys_page) {
  * @src_page: Source physical page number
  * @return: 0 success, -1 failure
  */
-static int gc_migrate_page(mini_ftl_t *ftl, uint16_t src_page) {
+static int gc_migrate_page(eflash_ftl_t *ftl, uint16_t src_page) {
     uint8_t full_page[EFLASH_PAGE_SIZE];
     ftl_meta_t *meta;
 
@@ -1005,19 +1005,19 @@ static int gc_migrate_page(mini_ftl_t *ftl, uint16_t src_page) {
     memcpy(user_data, full_page, USER_DATA_SIZE);
 
     // [DEBUG] Record state before migration
-    uint32_t free_before = mini_ftl_get_free_pages(ftl);
+    uint32_t free_before = eflash_ftl_get_free_pages(ftl);
     FTL_DEBUG("[GC_MIGRATE] Before migration: head=%d, tail=%d, free=%d\n",
              ftl->gc_head_page, ftl->gc_tail_page, free_before);
 
     // 3. Use normal write flow to rewrite data (this triggers trace_path, allocates new page, updates root)
-    //    Note: Only pass user data, let mini_ftl_write automatically create new metadata
-    if (mini_ftl_write(ftl, meta->sector_id, user_data) != 0) {
+    //    Note: Only pass user data, let eflash_ftl_write automatically create new metadata
+    if (eflash_ftl_write(ftl, meta->sector_id, user_data) != 0) {
         FTL_DEBUG("[GC_MIGRATE] ERROR: Failed to rewrite data during migration\n");
         return -1;
     }
 
     // [DEBUG] Record state after migration
-    uint32_t free_after = mini_ftl_get_free_pages(ftl);
+    uint32_t free_after = eflash_ftl_get_free_pages(ftl);
     FTL_DEBUG("[GC_MIGRATE] After migration: head=%d, tail=%d, free=%d (delta=%d)\n",
              ftl->gc_head_page, ftl->gc_tail_page, free_after, (int32_t)(free_after - free_before));
 
@@ -1037,7 +1037,7 @@ static int gc_migrate_page(mini_ftl_t *ftl, uint16_t src_page) {
  * 2. If valid, migrate to new location
  * 3. Erase physical page (do NOT call space_mgr_free, because GC only manages physical pages)
  */
-static int gc_collect_one_page(mini_ftl_t *ftl, uint16_t page) {
+static int gc_collect_one_page(eflash_ftl_t *ftl, uint16_t page) {
     FTL_DEBUG("[GC_COLLECT] Processing physical page %d...\n", page);
 
     // 1. Check if page is still valid
@@ -1070,7 +1070,7 @@ static int gc_collect_one_page(mini_ftl_t *ftl, uint16_t page) {
 }
 
 /**
- * mini_ftl_gc_collect: Perform GC to reclaim specified number of pages
+ * eflash_ftl_gc_collect: Perform GC to reclaim specified number of pages
  * @ftl: FTL instance
  * @pages_to_free: Number of pages to reclaim
  * @return: Actual pages freed, -1 on failure
@@ -1081,7 +1081,7 @@ static int gc_collect_one_page(mini_ftl_t *ftl, uint16_t page) {
  * 3. **Only move tail pointer after successful reclamation** (following Dhara's dequeue)
  * 4. Continue until enough pages freed or entire Flash traversed
  */
-int mini_ftl_gc_collect(mini_ftl_t *ftl, uint16_t pages_to_free) {
+int eflash_ftl_gc_collect(eflash_ftl_t *ftl, uint16_t pages_to_free) {
     if (!ftl->is_initialized) {
         FTL_DEBUG("[GC] ERROR: FTL not initialized\n");
         return -1;
@@ -1090,7 +1090,7 @@ int mini_ftl_gc_collect(mini_ftl_t *ftl, uint16_t pages_to_free) {
     FTL_DEBUG("[GC] ========== Starting collection ==========\n");
     FTL_DEBUG("[GC] Need to free %d pages\n", pages_to_free);
     FTL_DEBUG("[GC] Initial state: head=%d, tail=%d, free=%d\n",
-              ftl->gc_head_page, ftl->gc_tail_page, mini_ftl_get_free_pages(ftl));
+              ftl->gc_head_page, ftl->gc_tail_page, eflash_ftl_get_free_pages(ftl));
 
     uint16_t pages_freed = 0;
     uint16_t start_tail = ftl->gc_tail_page;
@@ -1108,7 +1108,7 @@ int mini_ftl_gc_collect(mini_ftl_t *ftl, uint16_t pages_to_free) {
         if (iterations % 10 == 0) {
             FTL_DEBUG("[GC] Iteration %d: processing page %d, freed=%d, head=%d, tail=%d, free=%d\n",
                      iterations, current_page, pages_freed, ftl->gc_head_page, ftl->gc_tail_page,
-                     mini_ftl_get_free_pages(ftl));
+                     eflash_ftl_get_free_pages(ftl));
         }
 
         // Skip system reserved area
@@ -1151,25 +1151,25 @@ int mini_ftl_gc_collect(mini_ftl_t *ftl, uint16_t pages_to_free) {
     FTL_DEBUG("[GC] ========== Collection complete ==========\n");
     FTL_DEBUG("[GC] Final state: freed %d pages (tail: %d -> %d, iterations=%d)\n",
               pages_freed, start_tail, ftl->gc_tail_page, iterations);
-    FTL_DEBUG("[GC] Final free pages: %d\n", mini_ftl_get_free_pages(ftl));
+    FTL_DEBUG("[GC] Final free pages: %d\n", eflash_ftl_get_free_pages(ftl));
 
     return pages_freed;
 }
 
 /**
- * mini_ftl_gc_trigger: Check and trigger GC if needed
+ * eflash_ftl_gc_trigger: Check and trigger GC if needed
  * @ftl: FTL instance
  * @return: 0 no GC needed or GC successful, -1 GC failed
  *
  * Trigger condition: free pages < gc_threshold
  */
-int mini_ftl_gc_trigger(mini_ftl_t *ftl) {
+int eflash_ftl_gc_trigger(eflash_ftl_t *ftl) {
     // If GC already in progress, skip trigger (prevent recursion)
     if (ftl->gc_in_progress) {
         return 0;
     }
 
-    uint32_t free_pages = mini_ftl_get_free_pages(ftl);
+    uint32_t free_pages = eflash_ftl_get_free_pages(ftl);
 
     FTL_DEBUG("[GC_TRIGGER] Checking GC: free_pages=%d, threshold=%d\n",
               free_pages, ftl->gc_threshold);
@@ -1190,7 +1190,7 @@ int mini_ftl_gc_trigger(mini_ftl_t *ftl) {
     ftl->gc_in_progress = true;
 
     // Execute GC
-    int result = mini_ftl_gc_collect(ftl, pages_needed);
+    int result = eflash_ftl_gc_collect(ftl, pages_needed);
 
     // Clear GC flag
     ftl->gc_in_progress = false;

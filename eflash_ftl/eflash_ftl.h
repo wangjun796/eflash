@@ -88,29 +88,29 @@ typedef struct {
     uint16_t      gc_threshold;     // GC trigger threshold (remaining free pages)
     uint32_t      total_user_pages; // Total user-available pages (excluding system reserved area)
     bool          gc_in_progress;   // GC in progress flag, prevents recursive GC triggering
-} mini_ftl_t;
+} eflash_ftl_t;
 
 // --- Interface Functions ---
-int  mini_ftl_init(mini_ftl_t *ftl);
-int  mini_ftl_obj_get_header(mini_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr);
-int  mini_ftl_obj_set_header(mini_ftl_t *ftl, uint16_t obj_id, const obj_header_t *hdr);
+int  eflash_ftl_init(eflash_ftl_t *ftl);
+int  eflash_ftl_obj_get_header(eflash_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr);
+int  eflash_ftl_obj_set_header(eflash_ftl_t *ftl, uint16_t obj_id, const obj_header_t *hdr);
 
 // Read/write interface based on sector_id (recommended)
-int  mini_ftl_write(mini_ftl_t *ftl, uint16_t sector_id, const uint8_t *data);
-int  mini_ftl_read(mini_ftl_t *ftl, uint16_t sector_id, uint8_t *data);
+int  eflash_ftl_write(eflash_ftl_t *ftl, uint16_t sector_id, const uint8_t *data);
+int  eflash_ftl_read(eflash_ftl_t *ftl, uint16_t sector_id, uint8_t *data);
 
 // Read/write interface based on logical address (optional)
-int  mini_ftl_write_logical(mini_ftl_t *ftl, uint32_t logical_addr, const uint8_t *data);
-int  mini_ftl_read_logical(mini_ftl_t *ftl, uint32_t logical_addr, uint8_t *data);
+int  eflash_ftl_write_logical(eflash_ftl_t *ftl, uint32_t logical_addr, const uint8_t *data);
+int  eflash_ftl_read_logical(eflash_ftl_t *ftl, uint32_t logical_addr, uint8_t *data);
 
-void mini_ftl_txn_begin(mini_ftl_t *ftl);
-int  mini_ftl_txn_commit(mini_ftl_t *ftl);  // Universal version (full page rewrite)
-int  mini_ftl_txn_commit_with_update(mini_ftl_t *ftl);  // Optimized version (word update, requires hardware support)
-void mini_ftl_txn_abort(mini_ftl_t *ftl);
+void eflash_ftl_txn_begin(eflash_ftl_t *ftl);
+int  eflash_ftl_txn_commit(eflash_ftl_t *ftl);  // Universal version (full page rewrite)
+int  eflash_ftl_txn_commit_with_update(eflash_ftl_t *ftl);  // Optimized version (word update, requires hardware support)
+void eflash_ftl_txn_abort(eflash_ftl_t *ftl);
 
 // --- GC Interface Functions ---
-int  mini_ftl_gc_trigger(mini_ftl_t *ftl);  // Manually trigger GC
-int  mini_ftl_gc_collect(mini_ftl_t *ftl, uint16_t pages_to_free); // Reclaim specified number of pages
-uint32_t mini_ftl_get_free_pages(mini_ftl_t *ftl); // Get current number of free pages
+int  eflash_ftl_gc_trigger(eflash_ftl_t *ftl);  // Manually trigger GC
+int  eflash_ftl_gc_collect(eflash_ftl_t *ftl, uint16_t pages_to_free); // Reclaim specified number of pages
+uint32_t eflash_ftl_get_free_pages(eflash_ftl_t *ftl); // Get current number of free pages
 
 #endif

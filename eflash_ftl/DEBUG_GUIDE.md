@@ -44,7 +44,7 @@ cmake --build . --config Release
 
 #### 方法 B: 临时修改代码（快速调试）
 
-编辑 `eflash_ftl/mini_ftl.c` 第 17 行：
+编辑 `eflash_ftl/eflash_ftl.c` 第 17 行：
 
 ```c
 // 临时改为 1 开启调试
@@ -57,7 +57,7 @@ cmake --build . --config Release
 
 ## 🔧 技术实现
 
-### 代码层面 (`mini_ftl.c`)
+### 代码层面 (`eflash_ftl.c`)
 
 ```c
 #ifndef FTL_DEBUG_ENABLE

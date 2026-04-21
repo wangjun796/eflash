@@ -70,7 +70,7 @@ Test Results: 9 passed, 0 failed out of 9 total
 ### 5. 调试技巧
 
 - **设置断点**：在 `tests/eflash_ftl_tests.c` 中的测试函数入口设置断点
-- **查看状态**：使用"即时窗口"查看 [mini_ftl_t](file://e:\SC17\dhara-master\eflash_ftl\mini_ftl.h#L56-L69) 结构体字段
+- **查看状态**：使用"即时窗口"查看 [eflash_ftl_t](file://e:\SC17\dhara-master\eflash_ftl\eflash_ftl.h#L56-L69) 结构体字段
 - **Flash 文件**：测试过程中会生成 `eflash_test.bin`，可用十六进制编辑器查看
 - **详细日志**：测试输出包含 `[PASS]` 和 `[FAIL]` 标记，便于定位问题
 
