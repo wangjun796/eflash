@@ -350,6 +350,79 @@ not_found:
 // --- Object Header Management Core Logic ---
 
 /**
+ * eflash_ftl_obj_get_header: Read object header by obj_id
+ * @ftl: FTL instance
+ * @obj_id: Object ID (0-2087)
+ * @hdr: Output buffer for object header
+ * @return: 0 on success, -1 on failure
+ */
+int eflash_ftl_obj_get_header(eflash_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr) {
+    if (!ftl || !hdr) return -1;
+    
+    uint16_t log_page, offset;
+    if (get_header_page_info(ftl, obj_id, &log_page, &offset) != 0) {
+        FTL_DEBUG("[OBJ_GET] ERROR: Invalid obj_id=%d\n", obj_id);
+        return -1;
+    }
+    
+    // Read the entire page using local buffer
+    uint8_t page_buf[EFLASH_PAGE_SIZE];
+    if (eflash_hw_read(log_page, page_buf) != 0) {
+        FTL_DEBUG("[OBJ_GET] ERROR: Failed to read page %d\n", log_page);
+        return -1;
+    }
+    
+    // Extract the specific object header from the page
+    memcpy(hdr, page_buf + offset, sizeof(obj_header_t));
+    
+    FTL_DEBUG("[OBJ_GET] obj_id=%d, type=0x%02X, body_addr=%d\n", 
+              obj_id, hdr->type, hdr->body_addr);
+    
+    return 0;
+}
+
+/**
+ * eflash_ftl_obj_set_header: Write object header by obj_id
+ * @ftl: FTL instance
+ * @obj_id: Object ID (0-2087)
+ * @hdr: Object header to write
+ * @return: 0 on success, -1 on failure
+ * 
+ * Note: This function performs read-modify-write on the entire page
+ * to maintain data integrity and ECC consistency.
+ */
+int eflash_ftl_obj_set_header(eflash_ftl_t *ftl, uint16_t obj_id, const obj_header_t *hdr) {
+    if (!ftl || !hdr) return -1;
+    
+    uint16_t log_page, offset;
+    if (get_header_page_info(ftl, obj_id, &log_page, &offset) != 0) {
+        FTL_DEBUG("[OBJ_SET] ERROR: Invalid obj_id=%d\n", obj_id);
+        return -1;
+    }
+    
+    // Step 1: Read the entire page into local buffer
+    uint8_t page_buf[EFLASH_PAGE_SIZE];
+    if (eflash_hw_read(log_page, page_buf) != 0) {
+        FTL_DEBUG("[OBJ_SET] ERROR: Failed to read page %d\n", log_page);
+        return -1;
+    }
+    
+    // Step 2: Modify the specific object header in buffer
+    memcpy(page_buf + offset, hdr, sizeof(obj_header_t));
+    
+    // Step 3: Write the entire page back (hardware handles erase+write)
+    if (eflash_hw_prog(log_page, page_buf) != 0) {
+        FTL_DEBUG("[OBJ_SET] ERROR: Failed to write page %d\n", log_page);
+        return -1;
+    }
+    
+    FTL_DEBUG("[OBJ_SET] obj_id=%d, type=0x%02X, body_addr=%d -> page %d\n", 
+              obj_id, hdr->type, hdr->body_addr, log_page);
+    
+    return 0;
+}
+
+/**
  * get_header_page_info: Calculate logical page and page offset based on object ID
  */
 static int get_header_page_info(eflash_ftl_t *ftl, uint16_t obj_id, uint16_t *out_log_page, uint16_t *out_offset) {
@@ -400,8 +473,9 @@ static int extend_headers(eflash_ftl_t *ftl) {
     // 3. Update pointer at end of previous level
     obj_header_t link_hdr;
     memset(&link_hdr, 0, sizeof(link_hdr));
-    link_hdr.type = 0xFF; // Mark as link object
+    link_hdr.type = OBJ_TYPE_LINK; // Mark as extension link object
     link_hdr.body_addr = new_ext_page;
+    link_hdr.body_size = EXT_HEADER_PAGES_UNIT * USER_DATA_SIZE; // Total size of extension area
 
     // Write link info to end of previous level
     eflash_ftl_obj_set_header(ftl, (level == 0 ? BASE_HEADER_CAPACITY - 1 : (level * EXT_HEADER_CAPACITY + BASE_HEADER_CAPACITY - 1)), &link_hdr);
@@ -419,39 +493,68 @@ static int extend_headers(eflash_ftl_t *ftl) {
     return 0;
 }
 
-int eflash_ftl_obj_get_header(eflash_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr) {
-    uint16_t log_page, offset;
-    if (get_header_page_info(ftl, obj_id, &log_page, &offset) != 0) {
-        return -1;
+/**
+ * scan_and_rebuild_ext_headers: Scan object header chain and rebuild ext_hdr_addrs array
+ * @ftl: FTL instance
+ * 
+ * Description:
+ *   Scans the base area and extension areas to find all LINK headers,
+ *   then rebuilds the ext_hdr_addrs array based on the link chain.
+ *   This ensures correct recovery after power failure.
+ */
+static void scan_and_rebuild_ext_headers(eflash_ftl_t *ftl) {
+    FTL_DEBUG("[INIT] Scanning object header extension chain...\n");
+    
+    // Initialize all entries to PAGE_NONE
+    for (int i = 0; i < MAX_EXT_LEVELS; i++) {
+        ftl->ext_hdr_addrs[i] = PAGE_NONE;
     }
-
-    uint8_t page_data[USER_DATA_SIZE];
-    if (eflash_ftl_read(ftl, log_page, page_data) != 0) return -1;
-
-    memcpy(hdr, page_data + offset, sizeof(obj_header_t));
-    return 0;
-}
-
-int eflash_ftl_obj_set_header(eflash_ftl_t *ftl, uint16_t obj_id, const obj_header_t *hdr) {
-    uint16_t log_page, offset;
-    if (get_header_page_info(ftl, obj_id, &log_page, &offset) != 0) {
-        // If failure is due to not extended, try auto-extension
-        if (obj_id >= BASE_HEADER_CAPACITY) {
-            if (extend_headers(ftl) != 0) return -1;
-            if (get_header_page_info(ftl, obj_id, &log_page, &offset) != 0) return -1;
+    
+    int level = 0;
+    uint16_t current_scan_page;
+    
+    // Start from base area's last page
+    if (level == 0) {
+        current_scan_page = ftl->base_hdr_addr + BASE_HEADER_PAGES - 1;
+    } else {
+        // Should not reach here in first iteration
+        return;
+    }
+    
+    // Traverse the extension chain
+    while (level < MAX_EXT_LEVELS) {
+        // Read the last object header of current level
+        obj_header_t link_hdr;
+        uint16_t offset = (OBJ_HEADERS_PER_PAGE - 1) * sizeof(obj_header_t);
+        
+        uint8_t page_buf[EFLASH_PAGE_SIZE];
+        if (eflash_hw_read(current_scan_page, page_buf) != 0) {
+            FTL_DEBUG("[INIT] ERROR: Failed to read page %d for link scan\n", current_scan_page);
+            break;
+        }
+        
+        // Extract the last object header from the page
+        memcpy(&link_hdr, page_buf + offset, sizeof(obj_header_t));
+        
+        // Check if this is a valid LINK header
+        if (link_hdr.type == OBJ_TYPE_LINK && link_hdr.body_addr != PAGE_NONE) {
+            // Found a valid extension link
+            ftl->ext_hdr_addrs[level] = (uint16_t)link_hdr.body_addr;
+            FTL_DEBUG("[INIT] Found extension level %d at page %d\n", level, ftl->ext_hdr_addrs[level]);
+            
+            // Move to next level's last page
+            level++;
+            if (level < MAX_EXT_LEVELS) {
+                current_scan_page = ftl->ext_hdr_addrs[level - 1] + EXT_HEADER_PAGES_UNIT - 1;
+            }
         } else {
-            return -1;
+            // No more extensions
+            FTL_DEBUG("[INIT] Extension chain ends at level %d\n", level);
+            break;
         }
     }
-
-    uint8_t page_data[USER_DATA_SIZE];
-    // Read before write to prevent overwriting other object headers on same page
-    if (eflash_ftl_read(ftl, log_page, page_data) != 0) {
-        memset(page_data, 0xFF, USER_DATA_SIZE); // Initialize if new page
-    }
-
-    memcpy(page_data + offset, hdr, sizeof(obj_header_t));
-    return eflash_ftl_write(ftl, log_page, page_data);
+    
+    FTL_DEBUG("[INIT] Extension scan complete. Total levels: %d\n", level);
 }
 
 // --- FTL Initialization and Pre-allocation ---
@@ -475,6 +578,10 @@ int eflash_ftl_init(eflash_ftl_t *ftl) {
     // Initialize pre-allocated system area logical addresses
     ftl->base_hdr_addr = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;
     ftl->free_list_addr = PAGE_NONE;
+    
+    // Scan and rebuild extension header addresses from existing data
+    scan_and_rebuild_ext_headers(ftl);
+    
     for (int i = 0; i < MAX_EXT_LEVELS; i++) {
         ftl->ext_hdr_addrs[i] = PAGE_NONE;
     }

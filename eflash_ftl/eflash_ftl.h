@@ -1,4 +1,4 @@
-#ifndef EFLASH_FTL_H
+ #ifndef EFLASH_FTL_H
 #define EFLASH_FTL_H
 
 #include <stdint.h>
@@ -89,7 +89,7 @@ typedef struct {
     uint16_t      base_hdr_addr;    // Base object header starting logical page
     uint16_t      free_list_addr;   // Free list starting logical page
     uint16_t      ext_hdr_addrs[MAX_EXT_LEVELS]; // Extended object header page logical address array
-    
+
     // GC related fields (following Dhara Head/Tail model)
     uint16_t      gc_head_page;     // GC allocation pointer: points to next writable physical page
     uint16_t      gc_tail_page;     // GC reclamation pointer: points to next physical page to reclaim
