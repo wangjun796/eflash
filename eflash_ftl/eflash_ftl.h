@@ -34,6 +34,20 @@
 // --- Object Header Storage Configuration ---
 #define OBJ_HEADERS_PER_PAGE  (USER_DATA_SIZE / sizeof(obj_header_t))  // Number of object headers per page (464/16 = 29)
 
+// --- System Area Logical Page Layout ---
+// All pages (including system areas) are managed through FTL's Radix Tree for wear leveling:
+//   FIXED System Pages (LPN 0-11):
+//     LPN 0 ~ 7           : Base object header table (8 pages, 232 objects)
+//     LPN 8 ~ 11          : Free list (4 pages)
+//   DYNAMIC Pages (LPN 12+):
+//     User data pages: allocated by FTL write operations
+//     Extended object headers: allocated by eflash_mgr_alloc (LPN not fixed)
+#define SYS_OBJ_HEADER_BASE_LPN   0       // Base object header table starts at LPN 0
+#define SYS_OBJ_HEADER_PAGES      8       // Base object header table size
+#define SYS_FREE_LIST_BASE_LPN    8       // Free list starts at LPN 8
+#define SYS_FREE_LIST_PAGES       4       // Free list size
+#define SYS_RESERVED_LPN_COUNT    12      // Total reserved LPNs for system areas
+
 // --- Object Header Type Definitions ---
 #define OBJ_TYPE_NORMAL     0x00    // Normal object header
 #define OBJ_TYPE_LINK       0xFF    // Extension link object (points to next extension level)
