@@ -29,19 +29,24 @@
 #define EXT_HEADER_PAGES_UNIT 4   // Pages per extension
 #define EXT_HEADER_CAPACITY   116 // Capacity per extension unit (OBJ_HEADERS_PER_PAGE * 4 - 4 pointer fields)
 #define FREE_LIST_PAGES       4   // Free list pages
+#define MAX_EXT_LEVELS        16  // Maximum extension levels for object headers
 
 // --- Object Header Storage Configuration ---
 #define OBJ_HEADERS_PER_PAGE  (USER_DATA_SIZE / sizeof(obj_header_t))  // Number of object headers per page (464/16 = 29)
+
+// --- Object Header Type Definitions ---
+#define OBJ_TYPE_NORMAL     0x00    // Normal object header
+#define OBJ_TYPE_LINK       0xFF    // Extension link object (points to next extension level)
 
 // --- Object Header Structure (16 bytes) ---
 PACKED_STRUCT
 typedef struct {
     uint16_t    pkg_id;         // Package ID
     uint16_t    class_id;       // Class ID
-    uint8_t     type;           // Type
+    uint8_t     type;           // Type (OBJ_TYPE_NORMAL or OBJ_TYPE_LINK)
     uint8_t     reserved[3];
-    uint32_t    body_addr;      // Data body logical address
-    uint32_t    body_size;      // Data body size
+    uint32_t    body_addr;      // Data body logical address (for LINK: points to next extension start page)
+    uint32_t    body_size;      // Data body size (for LINK: should be EXT_HEADER_PAGES_UNIT * USER_DATA_SIZE)
 } ATTRIBUTE_PACKED obj_header_t;
 PACKED_STRUCT_END
 
@@ -83,7 +88,7 @@ typedef struct {
     // Pre-allocated system area logical addresses
     uint16_t      base_hdr_addr;    // Base object header starting logical page
     uint16_t      free_list_addr;   // Free list starting logical page
-    uint16_t      ext_hdr_addrs[16];// Extended object header page logical address array
+    uint16_t      ext_hdr_addrs[MAX_EXT_LEVELS]; // Extended object header page logical address array
     
     // GC related fields (following Dhara Head/Tail model)
     uint16_t      gc_head_page;     // GC allocation pointer: points to next writable physical page

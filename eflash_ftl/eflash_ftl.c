@@ -364,7 +364,7 @@ static int get_header_page_info(eflash_ftl_t *ftl, uint16_t obj_id, uint16_t *ou
     uint16_t ext_idx = obj_id - BASE_HEADER_CAPACITY;
     uint16_t level = (ext_idx / EXT_HEADER_CAPACITY) + 1;
 
-    if (level > 16 || ftl->ext_hdr_addrs[level - 1] == PAGE_NONE) {
+    if (level > MAX_EXT_LEVELS || ftl->ext_hdr_addrs[level - 1] == PAGE_NONE) {
         return -1; // Not yet extended or out of range
     }
 
@@ -383,12 +383,12 @@ static int extend_headers(eflash_ftl_t *ftl) {
     // 1. Find the highest level extension page, get its last object header (pointer field)
     uint16_t prev_ext_addr = ftl->base_hdr_addr + BASE_HEADER_PAGES - 1; // Default points to last page of base area
     int level = 0;
-    while (level < 16 && ftl->ext_hdr_addrs[level] != PAGE_NONE) {
+    while (level < MAX_EXT_LEVELS && ftl->ext_hdr_addrs[level] != PAGE_NONE) {
         prev_ext_addr = ftl->ext_hdr_addrs[level] + EXT_HEADER_PAGES_UNIT - 1;
         level++;
     }
 
-    if (level >= 16) return -1; // Reached maximum extension levels
+    if (level >= MAX_EXT_LEVELS) return -1; // Reached maximum extension levels
 
     // 2. Allocate new 4-page logical space
     uint32_t new_ext_logical_addr;
@@ -475,7 +475,7 @@ int eflash_ftl_init(eflash_ftl_t *ftl) {
     // Initialize pre-allocated system area logical addresses
     ftl->base_hdr_addr = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;
     ftl->free_list_addr = PAGE_NONE;
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < MAX_EXT_LEVELS; i++) {
         ftl->ext_hdr_addrs[i] = PAGE_NONE;
     }
 
