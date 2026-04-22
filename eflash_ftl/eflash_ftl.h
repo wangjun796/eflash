@@ -104,6 +104,9 @@ typedef struct {
     uint16_t      free_list_addr;   // Free list starting logical page
     uint16_t      ext_hdr_addrs[MAX_EXT_LEVELS]; // Extended object header page logical address array
 
+    // Object header management
+    uint16_t      max_obj_id;       // Current maximum allocated object ID (for sequential allocation)
+
     // GC related fields (following Dhara Head/Tail model)
     uint16_t      gc_head_page;     // GC allocation pointer: points to next writable physical page
     uint16_t      gc_tail_page;     // GC reclamation pointer: points to next physical page to reclaim
@@ -114,6 +117,7 @@ typedef struct {
 
 // --- Interface Functions ---
 int  eflash_ftl_init(eflash_ftl_t *ftl);
+uint16_t eflash_ftl_obj_alloc_header(eflash_ftl_t *ftl);  // Allocate next object header ID
 int  eflash_ftl_obj_get_header(eflash_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr);
 int  eflash_ftl_obj_set_header(eflash_ftl_t *ftl, uint16_t obj_id, const obj_header_t *hdr);
 

@@ -429,6 +429,52 @@ not_found:
 // --- Object Header Management Core Logic ---
 
 /**
+ * eflash_ftl_obj_alloc_header: Allocate next object header ID (sequential allocation)
+ * @ftl: FTL instance
+ * @return: Next available obj_id, or 0xFFFF on failure
+ *
+ * Description:
+ *   - Automatically handles extension when reaching capacity boundaries
+ *   - Ensures sequential allocation (no gaps in obj_id sequence)
+ *   - Returns max_obj_id + 1 after incrementing
+ */
+uint16_t eflash_ftl_obj_alloc_header(eflash_ftl_t *ftl) {
+    if (!ftl) return PAGE_NONE;
+
+    // Calculate next obj_id
+    // If max_obj_id is 0xFFFF (uninitialized), start from 0
+    uint16_t next_id = (ftl->max_obj_id == 0xFFFF) ? 0 : (ftl->max_obj_id + 1);
+
+    // Check if we need to extend
+    if (next_id == BASE_HEADER_CAPACITY) {
+        // First extension: obj_id = 232
+        FTL_DEBUG("[ALLOC_HDR] Triggering first extension at obj_id=%d\n", next_id);
+        if (extend_headers(ftl) != 0) {
+            FTL_DEBUG("[ALLOC_HDR] ERROR: First extension failed\n");
+            return PAGE_NONE;
+        }
+    } else if (next_id > BASE_HEADER_CAPACITY) {
+        // Check if we need next level extension
+        uint16_t ext_idx = next_id - BASE_HEADER_CAPACITY;
+        uint16_t level = (ext_idx / EXT_HEADER_CAPACITY) + 1;
+        
+        // If this is the first obj_id of a new extension level
+        if (ext_idx % EXT_HEADER_CAPACITY == 0) {
+            FTL_DEBUG("[ALLOC_HDR] Triggering extension level %d at obj_id=%d\n", level, next_id);
+            if (extend_headers(ftl) != 0) {
+                FTL_DEBUG("[ALLOC_HDR] ERROR: Extension level %d failed\n", level);
+                return PAGE_NONE;
+            }
+        }
+    }
+
+    // Update and return
+    ftl->max_obj_id = next_id;
+    FTL_DEBUG("[ALLOC_HDR] Allocated obj_id=%d (max_obj_id=%d)\n", next_id, ftl->max_obj_id);
+    return next_id;
+}
+
+/**
  * eflash_ftl_obj_get_header: Read object header by obj_id
  * @ftl: FTL instance
  * @obj_id: Object ID (0-2087)
@@ -437,6 +483,13 @@ not_found:
  */
 int eflash_ftl_obj_get_header(eflash_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr) {
     if (!ftl || !hdr) return -1;
+
+    // Boundary check: obj_id must be <= max_obj_id (allocated)
+    if (obj_id > ftl->max_obj_id) {
+        FTL_DEBUG("[OBJ_GET] ERROR: obj_id=%d exceeds max_obj_id=%d (not allocated)\n", 
+                  obj_id, ftl->max_obj_id);
+        return -1;
+    }
 
     uint16_t lpn, offset;  // LPN: Logical Page Number
     if (get_header_page_info(ftl, obj_id, &lpn, &offset) != 0) {
@@ -766,6 +819,59 @@ static void scan_and_rebuild_ext_headers(eflash_ftl_t *ftl) {
     FTL_DEBUG("[INIT] Extension scan complete. Total levels: %d\n", level);
 }
 
+/**
+ * scan_and_rebuild_max_obj_id: Scan object headers to find max allocated obj_id
+ * @ftl: FTL instance
+ *
+ * Description:
+ *   Scans base area and extension areas sequentially to count valid object headers.
+ *   Stops at first invalid header or LINK object.
+ *   This implements recovery scheme A: traverse all headers on power-up.
+ */
+static void scan_and_rebuild_max_obj_id(eflash_ftl_t *ftl) {
+    FTL_DEBUG("[INIT] Scanning object headers to rebuild max_obj_id...\n");
+
+    uint16_t obj_id = 0;
+    bool scanning = true;
+
+    while (scanning) {
+        // Get LPN and offset for current obj_id
+        uint16_t lpn, offset;
+        if (get_header_page_info(ftl, obj_id, &lpn, &offset) != 0) {
+            // Cannot map this obj_id (extension not allocated)
+            FTL_DEBUG("[INIT] Cannot map obj_id=%d, stopping scan\n", obj_id);
+            break;
+        }
+
+        // Read the page
+        uint8_t page_buf[USER_DATA_SIZE];
+        if (read_system_page(ftl, lpn, page_buf) != 0) {
+            FTL_DEBUG("[INIT] Failed to read LPN %d for obj_id=%d, stopping scan\n", lpn, obj_id);
+            break;
+        }
+
+        // Extract the object header
+        obj_header_t hdr;
+        memcpy(&hdr, page_buf + offset, sizeof(obj_header_t));
+
+        // Check if this is a valid (non-blank, non-LINK) header
+        // A blank header has pkg_id=0 (since we initialize with 0x00)
+        // A LINK header has type=OBJ_TYPE_LINK
+        if (hdr.pkg_id == 0 || hdr.type == OBJ_TYPE_LINK) {
+            FTL_DEBUG("[INIT] Found invalid/LINK header at obj_id=%d (pkg_id=0x%04X, type=0x%02X)\n",
+                     obj_id, hdr.pkg_id, hdr.type);
+            scanning = false;
+        } else {
+            // Valid header, continue to next
+            obj_id++;
+        }
+    }
+
+    // The last valid obj_id is obj_id - 1
+    ftl->max_obj_id = (obj_id > 0) ? (obj_id - 1) : 0;
+    FTL_DEBUG("[INIT] max_obj_id rebuilt: %d\n", ftl->max_obj_id);
+}
+
 
 // --- FTL Initialization and Pre-allocation ---
 
@@ -785,6 +891,7 @@ int eflash_ftl_init(eflash_ftl_t *ftl) {
     ftl->current_epoch = 0;
     ftl->active_txn_id = TXN_ID_NONE;
     ftl->is_initialized = true;
+    ftl->max_obj_id = 0xFFFF;  // Will be set during init or recovery
     
     // Initialize GC head/tail pointers to physical page 0
     // Physical pages are NOT pre-reserved for system areas!
@@ -870,6 +977,9 @@ int eflash_ftl_init(eflash_ftl_t *ftl) {
 
         // Scan and rebuild extension header addresses from existing data
         scan_and_rebuild_ext_headers(ftl);
+
+        // Scan and rebuild max_obj_id by traversing valid object headers
+        scan_and_rebuild_max_obj_id(ftl);
 
         // Check if free list contains at least one valid node
         bool free_list_initialized = eflash_mgr_check_initialized(&ftl->spc_mgr);
@@ -975,6 +1085,11 @@ int eflash_ftl_init(eflash_ftl_t *ftl) {
         }
         ftl->spc_mgr.free_node_pages[0] = phys_page;
         FTL_DEBUG("[INIT] Updated LPN %d -> PPN %d (free_node[0])\n", SYS_FREE_LIST_BASE_LPN, phys_page);
+
+        // Initialize max_obj_id to 0xFFFF (no objects allocated yet)
+        // The first call to alloc_header will return 0
+        ftl->max_obj_id = 0xFFFF;
+        FTL_DEBUG("[INIT] max_obj_id initialized to 0xFFFF (fresh initialization)\n");
     } else {
         // System already initialized - still need to query Radix Tree for physical page mappings
         FTL_DEBUG("[INIT] System already initialized, querying Radix Tree for physical page mappings...\n");
