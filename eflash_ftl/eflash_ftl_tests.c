@@ -350,18 +350,26 @@ int test_object_headers(void) {
     assert(read_hdr.body_size == 128);
     printf("  [PASS] Base zone header read/write\n");
 
-    // Test 3b: Multiple headers in base zone
-    for (int i = 0; i < 50; i++) {
+    // Test 3b: Multiple headers in base zone (must write sequentially!)
+    // Write all 250 objects first to ensure extended zones are allocated
+    for (int i = 0; i < 250; i++) {
         hdr.pkg_id = (uint16_t)(0x3000 + i);
         hdr.body_size = (uint32_t)(i * 10);
         eflash_ftl_obj_set_header(&ftl, (uint16_t)i, &hdr);
     }
 
-    for (int i = 0; i < 50; i++) {
+    // Then verify all 250 objects
+    for (int i = 0; i < 250; i++) {
         eflash_ftl_obj_get_header(&ftl, (uint16_t)i, &read_hdr);
+        if (read_hdr.pkg_id != (uint16_t)(0x3000 + i)) {
+            printf("  [ERROR] obj_id=%d: expected pkg_id=0x%04X, got 0x%04X\n", 
+                   i, (uint16_t)(0x3000 + i), read_hdr.pkg_id);
+            printf("         class_id=0x%04X, type=0x%02X, body_size=%u\n",
+                   read_hdr.class_id, read_hdr.type, read_hdr.body_size);
+        }
         assert(read_hdr.pkg_id == (uint16_t)(0x3000 + i));
     }
-    printf("  [PASS] Multiple base zone headers\n");
+    printf("  [PASS] Multiple base zone headers (250 objects)\n");
 
     // Test 3c: Extended zone headers (ID >= 232)
     hdr.pkg_id = 0x9999;
@@ -606,6 +614,7 @@ int test_power_failure(void) {
 // ============================================================================
 int test_space_management(void) {
     eflash_ftl_t ftl;
+    memset(&ftl, 0, sizeof(ftl));  // 重要：清零结构体
     uint16_t page;
     uint16_t offset;
 
