@@ -32,7 +32,7 @@
 //
 // When disabled, all FTL_DEBUG() calls compile to no-op (zero overhead)
 #ifndef FTL_DEBUG_ENABLE
-#define FTL_DEBUG_ENABLE 1  // Temporarily enable for debugging word update issue
+#define FTL_DEBUG_ENABLE 0  // Default: OFF for better test performance
 #endif
 
 #if FTL_DEBUG_ENABLE
@@ -192,6 +192,9 @@ static bool is_blank_page(uint16_t page) {
     return true; // Is a blank page
 }
 
+// --- Forward Declarations for Internal Functions ---
+static int get_header_page_info(eflash_ftl_t *ftl, uint16_t obj_id, uint16_t *out_log_page, uint16_t *out_offset);
+
 // --- System Page Read/Write Functions ---
 
 /**
@@ -200,12 +203,12 @@ static bool is_blank_page(uint16_t page) {
  * @lpn: Logical Page Number (used directly as sector_id)
  * @data: User data to write (USER_DATA_SIZE bytes)
  * @return: 0 on success, -1 on failure
- * 
+ *
  * Description:
  *   System pages (object headers, free list) use their LPN directly as sector_id.
  *   They go through Radix Tree mapping just like user data pages,
  *   ensuring wear leveling across all Flash pages.
- *   
+ *
  *   Note: For extended object headers, the LPN is dynamically allocated by
  *   eflash_mgr_alloc, so it can be any value (e.g., 100-103, 200-203, etc.)
  */
@@ -385,7 +388,7 @@ static int trace_path(eflash_ftl_t *ftl, uint16_t base_root, uint16_t sector, ft
             }
 
             FTL_DEBUG("[TRACE] Follow alt[%d]=%d\n", depth, next_ppn);
-            
+
             // Read next node's metadata
             if (eflash_hw_read(next_ppn, meta_buf) != 0) {
                 FTL_DEBUG("[TRACE] ERROR: Failed to read next PPN %d\n", next_ppn);
@@ -396,7 +399,7 @@ static int trace_path(eflash_ftl_t *ftl, uint16_t base_root, uint16_t sector, ft
                 return -1;
             }
             memcpy(&cur_meta, meta_buf + META_OFFSET, META_SIZE);
-            
+
             current = next_ppn;
         } else {
             // Bits same: inherit alt pointer from current node
@@ -435,27 +438,99 @@ not_found:
  */
 int eflash_ftl_obj_get_header(eflash_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr) {
     if (!ftl || !hdr) return -1;
-    
+
     uint16_t lpn, offset;  // LPN: Logical Page Number
     if (get_header_page_info(ftl, obj_id, &lpn, &offset) != 0) {
         FTL_DEBUG("[OBJ_GET] ERROR: Invalid obj_id=%d\n", obj_id);
         return -1;
     }
-    
+
     // Read the entire system page through FTL layer (wear leveling enabled)
     uint8_t page_buf[USER_DATA_SIZE];  // System pages only contain user data area
     if (read_system_page(ftl, lpn, page_buf) != 0) {
         FTL_DEBUG("[OBJ_GET] ERROR: Failed to read system LPN %d\n", lpn);
         return -1;
     }
-    
+
     // Extract the specific object header from the page
     memcpy(hdr, page_buf + offset, sizeof(obj_header_t));
-    
-    FTL_DEBUG("[OBJ_GET] obj_id=%d, type=0x%02X, body_addr=%d from LPN %d\n", 
+
+    FTL_DEBUG("[OBJ_GET] obj_id=%d, type=0x%02X, body_addr=%d from LPN %d\n",
               obj_id, hdr->type, hdr->body_addr, lpn);
-    
+
     return 0;
+}
+
+/**
+ * find_phys_page_by_sector: Find physical page number by sector_id (LPN) through Radix Tree traversal
+ * @ftl: FTL instance
+ * @sector: Sector ID (Logical Page Number)
+ * @return: Physical page number, PAGE_NONE if not found
+ */
+static uint16_t find_phys_page_by_sector(eflash_ftl_t *ftl, uint16_t sector) {
+    if (ftl->root_page == PAGE_NONE) {
+        FTL_DEBUG("[FIND_PHYS] ERROR: No root page\n");
+        return PAGE_NONE;
+    }
+
+    uint8_t meta_buf[EFLASH_PAGE_SIZE];
+    ftl_meta_t cur_meta;
+    int depth = 0;
+    uint16_t current = ftl->root_page;
+
+    // Read root node metadata
+    if (eflash_hw_read(current, meta_buf) != 0) {
+        FTL_DEBUG("[FIND_PHYS] ERROR: Failed to read root page %d\n", current);
+        return PAGE_NONE;
+    }
+    if (verify_and_correct_page(meta_buf) != 0) {
+        FTL_DEBUG("[FIND_PHYS] ERROR: Root page verification failed\n");
+        return PAGE_NONE;
+    }
+    memcpy(&cur_meta, meta_buf + META_OFFSET, META_SIZE);
+
+    // Traverse radix tree
+    while (depth < RADIX_DEPTH) {
+        // Check if current node matches the target sector
+        if (cur_meta.sector_id == sector) {
+            FTL_DEBUG("[FIND_PHYS] Found sector %d at physical page %d (depth=%d)\n",
+                     sector, current, depth);
+            return current;
+        }
+
+        // Calculate bit at current depth (for reference, not used in traversal)
+        uint16_t bit_mask = 1 << (RADIX_DEPTH - 1 - depth);
+#if FTL_DEBUG_ENABLE
+        int target_bit = (sector & bit_mask) ? 1 : 0;
+        (void)target_bit;  // Used for debugging only
+#endif
+        (void)bit_mask;  // Suppress unused variable warning
+
+        // Follow the alt pointer for this bit
+        uint16_t next_ppn = cur_meta.alt[depth];
+        if (next_ppn == PAGE_NONE) {
+            FTL_DEBUG("[FIND_PHYS] Sector %d not found (alt[%d]=NONE)\n", sector, depth);
+            return PAGE_NONE;
+        }
+
+        // Read next node
+        if (eflash_hw_read(next_ppn, meta_buf) != 0) {
+            FTL_DEBUG("[FIND_PHYS] ERROR: Failed to read PPN %d\n", next_ppn);
+            return PAGE_NONE;
+        }
+        if (verify_and_correct_page(meta_buf) != 0) {
+            FTL_DEBUG("[FIND_PHYS] ERROR: Page verification failed at PPN %d\n", next_ppn);
+            return PAGE_NONE;
+        }
+        memcpy(&cur_meta, meta_buf + META_OFFSET, META_SIZE);
+
+        current = next_ppn;
+        depth++;
+    }
+
+    // Reached maximum depth without finding exact match
+    FTL_DEBUG("[FIND_PHYS] Sector %d not found after full traversal\n", sector);
+    return PAGE_NONE;
 }
 
 /**
@@ -464,38 +539,38 @@ int eflash_ftl_obj_get_header(eflash_ftl_t *ftl, uint16_t obj_id, obj_header_t *
  * @obj_id: Object ID (0-2087)
  * @hdr: Object header to write
  * @return: 0 on success, -1 on failure
- * 
+ *
  * Note: This function performs read-modify-write on the entire page
  * to maintain data integrity and ECC consistency.
  */
 int eflash_ftl_obj_set_header(eflash_ftl_t *ftl, uint16_t obj_id, const obj_header_t *hdr) {
     if (!ftl || !hdr) return -1;
-    
+
     uint16_t lpn, offset;  // LPN: Logical Page Number
     if (get_header_page_info(ftl, obj_id, &lpn, &offset) != 0) {
         FTL_DEBUG("[OBJ_SET] ERROR: Invalid obj_id=%d\n", obj_id);
         return -1;
     }
-    
+
     // Step 1: Read the entire system page through FTL layer
     uint8_t page_buf[USER_DATA_SIZE];  // System pages only contain user data area
     if (read_system_page(ftl, lpn, page_buf) != 0) {
         FTL_DEBUG("[OBJ_SET] ERROR: Failed to read system LPN %d\n", lpn);
         return -1;
     }
-    
+
     // Step 2: Modify the specific object header in buffer
     memcpy(page_buf + offset, hdr, sizeof(obj_header_t));
-    
+
     // Step 3: Write the entire page back through FTL layer (wear leveling enabled)
     if (write_system_page(ftl, lpn, page_buf) != 0) {
         FTL_DEBUG("[OBJ_SET] ERROR: Failed to write system LPN %d\n", lpn);
         return -1;
     }
-    
-    FTL_DEBUG("[OBJ_SET] obj_id=%d, type=0x%02X, body_addr=%d -> LPN %d\n", 
+
+    FTL_DEBUG("[OBJ_SET] obj_id=%d, type=0x%02X, body_addr=%d -> LPN %d\n",
               obj_id, hdr->type, hdr->body_addr, lpn);
-    
+
     return 0;
 }
 
@@ -571,16 +646,16 @@ static int extend_headers(eflash_ftl_t *ftl) {
         }
     }
 
-    FTL_DEBUG("[EXTEND] Extension level %d allocated at LPN %d-%d\n", 
+    FTL_DEBUG("[EXTEND] Extension level %d allocated at LPN %d-%d\n",
               level, new_ext_lpn, new_ext_lpn + EXT_HEADER_PAGES_UNIT - 1);
-    
+
     return 0;
 }
 
 /**
  * scan_and_rebuild_ext_headers: Scan object header chain and rebuild ext_hdr_addrs array
  * @ftl: FTL instance
- * 
+ *
  * Description:
  *   Scans the base area and extension areas to find all LINK headers,
  *   then rebuilds the ext_hdr_addrs array based on the link chain.
@@ -588,41 +663,40 @@ static int extend_headers(eflash_ftl_t *ftl) {
  */
 static void scan_and_rebuild_ext_headers(eflash_ftl_t *ftl) {
     FTL_DEBUG("[INIT] Scanning object header extension chain...\n");
-    
+
     // Initialize all entries to PAGE_NONE
     for (int i = 0; i < MAX_EXT_LEVELS; i++) {
         ftl->ext_hdr_addrs[i] = PAGE_NONE;
     }
-    
+
     int level = 0;
     uint16_t current_scan_lpn;  // Current scan Logical Page Number
-    
+
     // Start from base area's last page (LPN 7 for fixed system pages)
     current_scan_lpn = ftl->base_hdr_addr + BASE_HEADER_PAGES - 1;
-    
     FTL_DEBUG("[INIT] Starting scan from base area LPN %d\n", current_scan_lpn);
-    
+
     // Traverse the extension chain
     while (level < MAX_EXT_LEVELS) {
         // Read the last object header of current level through FTL
         obj_header_t link_hdr;
         uint16_t offset = (OBJ_HEADERS_PER_PAGE - 1) * sizeof(obj_header_t);
-        
+
         uint8_t page_buf[USER_DATA_SIZE];  // System pages only contain user data
         if (read_system_page(ftl, current_scan_lpn, page_buf) != 0) {
             FTL_DEBUG("[INIT] ERROR: Failed to read system LPN %d for link scan\n", current_scan_lpn);
             break;
         }
-        
+
         // Extract the last object header from the page
         memcpy(&link_hdr, page_buf + offset, sizeof(obj_header_t));
-        
+
         // Check if this is a valid LINK header
         if (link_hdr.type == OBJ_TYPE_LINK && link_hdr.body_addr != PAGE_NONE) {
             // Found a valid extension link
             ftl->ext_hdr_addrs[level] = (uint16_t)link_hdr.body_addr;
             FTL_DEBUG("[INIT] Found extension level %d at LPN %d\n", level, ftl->ext_hdr_addrs[level]);
-            
+
             // Move to next level's last page (extension LPNs are dynamically allocated)
             level++;
             if (level < MAX_EXT_LEVELS) {
@@ -634,15 +708,17 @@ static void scan_and_rebuild_ext_headers(eflash_ftl_t *ftl) {
             break;
         }
     }
-    
+
     FTL_DEBUG("[INIT] Extension scan complete. Total levels: %d\n", level);
 }
+
 
 // --- FTL Initialization and Pre-allocation ---
 
 int eflash_ftl_init(eflash_ftl_t *ftl) {
     FTL_DEBUG("[INIT] Starting eflash_ftl_init\n");
 
+    // Step 1: Initialize space manager (memory-only, no Flash writes)
     eflash_mgr_init(&ftl->spc_mgr, EFLASH_TOTAL_PAGES);
 
     ftl_meta_t meta;
@@ -656,56 +732,16 @@ int eflash_ftl_init(eflash_ftl_t *ftl) {
     ftl->active_txn_id = TXN_ID_NONE;
     ftl->is_initialized = true;
 
-    // Initialize system area: Fixed system pages use LPN 0-11
-    // Extended object headers will be dynamically allocated later
+    // Initialize system area logical page numbers
     ftl->base_hdr_addr = SYS_OBJ_HEADER_BASE_LPN;  // LPN 0
     ftl->free_list_addr = SYS_FREE_LIST_BASE_LPN;  // LPN 8
-    
+
     // Initialize ext_hdr_addrs to PAGE_NONE (will be rebuilt by scanning)
     for (int i = 0; i < MAX_EXT_LEVELS; i++) {
         ftl->ext_hdr_addrs[i] = PAGE_NONE;
     }
-    
-    // Scan and rebuild extension header addresses from existing data
-    scan_and_rebuild_ext_headers(ftl);
 
-    // Initialize GC related fields (following Dhara Head/Tail model)
-    // User data starts from LPN 12 (after system reserved areas)
-    ftl->total_user_pages = EFLASH_TOTAL_PAGES - SYS_RESERVED_LPN_COUNT;
-    ftl->gc_threshold = ftl->total_user_pages / 5; // 20% threshold
-
-    // Head and Tail start from first user page (LPN 12)
-    ftl->gc_head_page = SYS_RESERVED_LPN_COUNT;  // = 12
-    ftl->gc_tail_page = SYS_RESERVED_LPN_COUNT;  // = 12
-    ftl->gc_in_progress = false;  // Initialize GC flag
-
-    FTL_DEBUG("[INIT] GC initialized: total_user_pages=%d, threshold=%d, head_page=%d, tail_page=%d\n",
-              ftl->total_user_pages, ftl->gc_threshold, ftl->gc_head_page, ftl->gc_tail_page);
-
-    // Pre-allocate fixed system pages through FTL (ensures they are in Radix Tree)
-    FTL_DEBUG("[INIT] Pre-allocating fixed system pages LPN 0-11...\n");
-    uint8_t empty_page[USER_DATA_SIZE];
-    memset(empty_page, 0xFF, USER_DATA_SIZE);
-    
-    // Allocate base object header pages (LPN 0-7)
-    for (uint16_t lpn = SYS_OBJ_HEADER_BASE_LPN; lpn < SYS_OBJ_HEADER_BASE_LPN + SYS_OBJ_HEADER_PAGES; lpn++) {
-        if (write_system_page(ftl, lpn, empty_page) != 0) {
-            FTL_DEBUG("[INIT] ERROR: Failed to pre-allocate system LPN %d\n", lpn);
-            return -1;
-        }
-    }
-    
-    // Allocate free list pages (LPN 8-11)
-    for (uint16_t lpn = SYS_FREE_LIST_BASE_LPN; lpn < SYS_FREE_LIST_BASE_LPN + SYS_FREE_LIST_PAGES; lpn++) {
-        if (write_system_page(ftl, lpn, empty_page) != 0) {
-            FTL_DEBUG("[INIT] ERROR: Failed to pre-allocate system LPN %d\n", lpn);
-            return -1;
-        }
-    }
-    
-    FTL_DEBUG("[INIT] Fixed system pages pre-allocated successfully\n");
-
-    // Scan entire chip to find latest COMMITTED page as Root
+    // Step 2: Scan entire chip to find latest COMMITTED page as Root
     FTL_DEBUG("[INIT] Scanning %d pages for valid root...\n", EFLASH_TOTAL_PAGES);
     for (int i = 0; i < EFLASH_TOTAL_PAGES; i++) {
         if (is_valid_page(i, &meta) && meta.status == TXN_STATUS_COMMITTED) {
@@ -716,7 +752,8 @@ int eflash_ftl_init(eflash_ftl_t *ftl) {
                 ftl->root_page = i;
                 ftl->next_count = max_count + 1;
                 ftl->current_epoch = max_epoch;
-                FTL_DEBUG("[INIT] Found valid root at page %d, count=%d\n", i, max_count);
+                FTL_DEBUG("[INIT] Found valid root at page %d, epoch=%d, count=%d\n",
+                         i, max_epoch, max_count);
             }
         }
 
@@ -726,18 +763,149 @@ int eflash_ftl_init(eflash_ftl_t *ftl) {
         }
     }
 
-    FTL_DEBUG("[INIT] Scan complete. Root page: %d, next_count: %d\n", ftl->root_page, ftl->next_count);
+    FTL_DEBUG("[INIT] Scan complete. Root page: %d, next_count: %d, epoch: %d\n",
+             ftl->root_page, ftl->next_count, ftl->current_epoch);
 
-    // If valid Root found, set gc_tail_page to position after Root
-    // This avoids immediately recycling recently written data
-    if (ftl->root_page != PAGE_NONE) {
-        ftl->gc_tail_page = ftl->root_page + 1;
-        if (ftl->gc_tail_page >= EFLASH_TOTAL_PAGES) {
-            ftl->gc_tail_page = SYS_RESERVED_LPN_COUNT;
+    // Step 3: Determine if initialization is needed
+    bool need_init = false;
+
+    if (ftl->root_page == PAGE_NONE) {
+        // No root found - first power-on or corrupted
+        FTL_DEBUG("[INIT] No root page found - performing full initialization\n");
+        need_init = true;
+    } else {
+        // Root found - check if free list is initialized
+        FTL_DEBUG("[INIT] Root found, checking free list initialization...\n");
+
+        // Scan and rebuild extension header addresses from existing data
+        scan_and_rebuild_ext_headers(ftl);
+
+        // Check if free list contains at least one valid node
+        bool free_list_initialized = eflash_mgr_check_initialized(&ftl->spc_mgr);
+
+        if (!free_list_initialized) {
+            FTL_DEBUG("[INIT] Free list not initialized - performing re-initialization\n");
+            need_init = true;
+        } else {
+            FTL_DEBUG("[INIT] System already initialized, skipping initialization\n");
         }
-        FTL_DEBUG("[GC] GC tail_page adjusted to %d (after root)\n", ftl->gc_tail_page);
     }
 
+    // Step 4: Perform initialization if needed (Strategy B: Minimal Initialization)
+    if (need_init) {
+        FTL_DEBUG("[INIT] === Starting minimal system initialization (Strategy B) ===\n");
+
+        // Strategy B: Only initialize LPN 8 (first free list page)
+        // Object header pages (LPN 0-7) will be written on-demand before access
+        // Free list pages (LPN 9-11) will be allocated on-demand when list grows
+        FTL_DEBUG("[INIT] Initializing only LPN 8 (free list head)...\n");
+
+        uint8_t empty_page[USER_DATA_SIZE];
+        memset(empty_page, 0xFF, USER_DATA_SIZE);
+
+        // Write LPN 8 through FTL layer (ensures Radix Tree mapping)
+        if (write_system_page(ftl, SYS_FREE_LIST_BASE_LPN, empty_page) != 0) {
+            FTL_DEBUG("[INIT] ERROR: Failed to initialize system LPN %d\n", SYS_FREE_LIST_BASE_LPN);
+            return -1;
+        }
+        FTL_DEBUG("[INIT] System LPN %d initialized successfully\n", SYS_FREE_LIST_BASE_LPN);
+
+        // Query Radix Tree for physical page of LPN 8
+        FTL_DEBUG("[INIT] Querying Radix Tree for LPN 8 physical mapping...\n");
+        uint16_t phys_page = find_phys_page_by_sector(ftl, SYS_FREE_LIST_BASE_LPN);
+        if (phys_page == PAGE_NONE) {
+            FTL_DEBUG("[INIT] ERROR: Failed to find physical page for LPN %d\n", SYS_FREE_LIST_BASE_LPN);
+            return -1;
+        }
+        ftl->spc_mgr.free_node_pages[0] = phys_page;
+        FTL_DEBUG("[INIT] LPN %d -> PPN %d (free_node[0])\n", SYS_FREE_LIST_BASE_LPN, phys_page);
+
+        // Set remaining system pages to PAGE_NONE (will be allocated on-demand)
+        for (int i = 1; i < FREE_NODE_PAGE_COUNT; i++) {
+            ftl->spc_mgr.free_node_pages[i] = PAGE_NONE;
+        }
+        for (int i = 0; i < BASE_HEADER_PAGES; i++) {
+            ftl->spc_mgr.header_pages[i] = PAGE_NONE;
+        }
+        FTL_DEBUG("[INIT] Remaining system pages set to PAGE_NONE (on-demand allocation)\n");
+
+        // Initialize free list with one large node
+        // Node addr = LPN 12 * USER_DATA_SIZE (first available user data page)
+        // Node size = (EFLASH_TOTAL_PAGES - 12) * USER_DATA_SIZE
+        FTL_DEBUG("[INIT] Initializing free list with single node (addr=LPN12, size=%d pages)...\n",
+                 EFLASH_TOTAL_PAGES - SYS_RESERVED_LPN_COUNT);
+        if (eflash_mgr_init_free_list(&ftl->spc_mgr, EFLASH_TOTAL_PAGES, SYS_RESERVED_LPN_COUNT) != 0) {
+            FTL_DEBUG("[INIT] ERROR: Failed to initialize free list!\n");
+            return -1;
+        }
+
+        FTL_DEBUG("[INIT] === Minimal initialization completed ===\n");
+
+        // Write initial free node data through FTL layer
+        // Prepare the free list page data (count + node structure)
+        FTL_DEBUG("[INIT] Writing initial free node to LPN %d via FTL...\n", SYS_FREE_LIST_BASE_LPN);
+
+        uint8_t free_list_page[USER_DATA_SIZE];
+        memset(free_list_page, 0xFF, USER_DATA_SIZE);
+
+        // Set count = 1 at offset META_SIZE (within user data region)
+        uint16_t count_offset = META_SIZE;
+        free_list_page[count_offset] = 1 & 0xFF;
+        free_list_page[count_offset + 1] = (1 >> 8) & 0xFF;
+
+        // Create initial free node
+        free_node_t initial_node;
+        initial_node.addr = (uint32_t)SYS_RESERVED_LPN_COUNT * USER_DATA_SIZE;  // Start from LPN 12
+        initial_node.size = (uint32_t)(EFLASH_TOTAL_PAGES - SYS_RESERVED_LPN_COUNT) * USER_DATA_SIZE;
+
+        FTL_DEBUG("[INIT] Initial free node: addr=0x%08X, size=%u bytes\n",
+                 initial_node.addr, initial_node.size);
+
+        // Write node data after count header
+        uint16_t node_offset = META_SIZE + FREE_NODE_HEADER_SIZE;
+        memcpy(free_list_page + node_offset, &initial_node, sizeof(free_node_t));
+
+        // Calculate ECC for the page
+        size_t protected_len = USER_DATA_SIZE + META_SIZE - 5;
+        uint8_t ecc_buf[5];
+        bch_generate(&bch_3bit, free_list_page, protected_len, ecc_buf);
+        memcpy(free_list_page + USER_DATA_SIZE + META_SIZE - 5, ecc_buf, 5);
+
+        // Write through FTL (this will update Radix Tree)
+        if (write_system_page(ftl, SYS_FREE_LIST_BASE_LPN, free_list_page) != 0) {
+            FTL_DEBUG("[INIT] ERROR: Failed to write initial free node!\n");
+            return -1;
+        }
+
+        FTL_DEBUG("[INIT] Initial free node written successfully\n");
+
+        FTL_DEBUG("[INIT] === Minimal initialization completed ===\n");
+    } else {
+        // System already initialized - still need to query Radix Tree for physical page mappings
+        FTL_DEBUG("[INIT] System already initialized, querying Radix Tree for physical page mappings...\n");
+
+        // Find physical page for free list (ONLY LPN 8)
+        uint16_t phys_page = find_phys_page_by_sector(ftl, SYS_FREE_LIST_BASE_LPN);
+        if (phys_page == PAGE_NONE) {
+            FTL_DEBUG("[INIT] ERROR: Failed to find physical page for LPN %d\n", SYS_FREE_LIST_BASE_LPN);
+            return -1;
+        }
+
+        ftl->spc_mgr.free_node_pages[0] = phys_page;
+        FTL_DEBUG("[INIT] LPN %d -> PPN %d (free_node[0])\n", SYS_FREE_LIST_BASE_LPN, phys_page);
+
+        // Set remaining free_node_pages and all header_pages to PAGE_NONE
+        // They will be allocated on-demand when needed
+        for (int i = 1; i < FREE_NODE_PAGE_COUNT; i++) {
+            ftl->spc_mgr.free_node_pages[i] = PAGE_NONE;
+        }
+        for (int i = 0; i < BASE_HEADER_PAGES; i++) {
+            ftl->spc_mgr.header_pages[i] = PAGE_NONE;
+        }
+        FTL_DEBUG("[INIT] Remaining system pages set to PAGE_NONE (will be restored on-demand)\n");
+    }
+
+    FTL_DEBUG("[INIT] Initialization complete\n");
     return 0;
 }
 
@@ -770,11 +938,12 @@ int eflash_ftl_obj_write_body(eflash_ftl_t *ftl, uint16_t obj_id, const uint8_t 
 int eflash_ftl_write(eflash_ftl_t *ftl, uint16_t sector_id, const uint8_t *data) {
     if (!ftl->is_initialized) return -1;
 
-    // Before allocating space, check if GC needs to be triggered
-    if (eflash_ftl_gc_trigger(ftl) != 0) {
-        FTL_DEBUG("[WRITE] ERROR: GC trigger failed, no space available\n");
-        return -1;
-    }
+    // TODO: GC should be triggered manually or based on specific conditions (e.g., low space threshold)
+    // Not on every write operation to avoid circular dependency during initialization
+    // if (eflash_ftl_gc_trigger(ftl) != 0) {
+    //     FTL_DEBUG("[WRITE] ERROR: GC trigger failed, no space available\n");
+    //     return -1;
+    // }
 
     FTL_DEBUG("[WRITE] sector_id=%d\n", sector_id);
 
@@ -903,48 +1072,142 @@ int eflash_ftl_read(eflash_ftl_t *ftl, uint16_t sector_id, uint8_t *data) {
 /**
  * eflash_ftl_write_logical: Write interface based on logical address
  * @ftl: FTL instance
- * @logical_addr: 24-bit logical address
+ * @logical_addr: 24-bit logical address (byte offset)
  * @data: Data pointer
+ * @size: Number of bytes to write (must be > 0)
  * @return: 0 success, -1 failure
  *
- * Description: Extract sector_id from logical address, then call eflash_ftl_write
+ * Description:
+ *   - Calculate LPN from logical_addr using USER_DATA_SIZE alignment
+ *   - Support arbitrary position and length write across multiple logical pages
+ *   - Use read-modify-write strategy for partial page updates
+ *   - Automatically split cross-page writes into multiple single-page operations
  */
-int eflash_ftl_write_logical(eflash_ftl_t *ftl, uint32_t logical_addr, const uint8_t *data) {
+int eflash_ftl_write_logical(eflash_ftl_t *ftl, uint32_t logical_addr, const uint8_t *data, int16_t size) {
     if (!ftl->is_initialized) return -1;
-
-    // Extract sector_id from logical address
-    uint16_t sector_id = (uint16_t)(logical_addr / EFLASH_PAGE_SIZE);
-
-    FTL_DEBUG("[WRITE_LOGICAL] logical_addr=0x%06X -> sector_id=%d\n", logical_addr, sector_id);
-
-    return eflash_ftl_write(ftl, sector_id, data);
+    
+    // Validate size parameter
+    if (size <= 0) {
+        FTL_DEBUG("[WRITE_LOGICAL] ERROR: Invalid size=%d (must be > 0)\n", size);
+        return -1;
+    }
+    
+    FTL_DEBUG("[WRITE_LOGICAL] Start: logical_addr=0x%06X, size=%d\n", logical_addr, size);
+    
+    uint32_t remaining = size;
+    uint32_t current_addr = logical_addr;
+    const uint8_t *current_data = data;
+    
+    // Loop to handle cross-page writes
+    while (remaining > 0) {
+        // Calculate current logical page number (LPN) and offset within page
+        uint16_t lpn = (uint16_t)(current_addr / USER_DATA_SIZE);
+        uint16_t page_offset = (uint16_t)(current_addr % USER_DATA_SIZE);
+        
+        // Calculate how many bytes can be written in this page
+        uint32_t bytes_in_this_page = USER_DATA_SIZE - page_offset;
+        uint32_t write_size = (remaining < bytes_in_this_page) ? remaining : bytes_in_this_page;
+        
+        FTL_DEBUG("[WRITE_LOGICAL] Processing LPN=%d, offset=%d, write_size=%u, remaining=%u\n",
+                 lpn, page_offset, write_size, remaining);
+        
+        // Read current page data first (read-modify-write strategy)
+        uint8_t page_data[USER_DATA_SIZE];
+        int ret = eflash_ftl_read(ftl, lpn, page_data);
+        if (ret != 0) {
+            // If page doesn't exist yet, initialize with 0xFF
+            FTL_DEBUG("[WRITE_LOGICAL] Page %d not found, initializing with 0xFF\n", lpn);
+            memset(page_data, 0xFF, USER_DATA_SIZE);
+        }
+        
+        // Update only the specified portion of the page
+        memcpy(page_data + page_offset, current_data, write_size);
+        
+        // Write back the modified page
+        ret = eflash_ftl_write(ftl, lpn, page_data);
+        if (ret != 0) {
+            FTL_DEBUG("[WRITE_LOGICAL] ERROR: Failed to write LPN=%d\n", lpn);
+            return -1;
+        }
+        
+        // Move to next chunk
+        remaining -= write_size;
+        current_addr += write_size;
+        current_data += write_size;
+    }
+    
+    FTL_DEBUG("[WRITE_LOGICAL] Success: wrote %d bytes starting from 0x%06X\n", size, logical_addr);
+    return 0;
 }
 
 /**
  * eflash_ftl_read_logical: Read interface based on logical address
  * @ftl: FTL instance
- * @logical_addr: 24-bit logical address
+ * @logical_addr: 24-bit logical address (byte offset)
  * @data: Data output buffer
+ * @size: Number of bytes to read (must be > 0)
  * @return: 0 success, -1 failure
  *
- * Description: Extract sector_id from logical address, then call eflash_ftl_read
+ * Description:
+ *   - Calculate LPN from logical_addr using USER_DATA_SIZE alignment
+ *   - Support arbitrary position and length read across multiple logical pages
+ *   - Automatically split cross-page reads into multiple single-page operations
  */
-int eflash_ftl_read_logical(eflash_ftl_t *ftl, uint32_t logical_addr, uint8_t *data) {
+int eflash_ftl_read_logical(eflash_ftl_t *ftl, uint32_t logical_addr, uint8_t *data, int16_t size) {
     if (!ftl->is_initialized) return -1;
-
-    // Extract sector_id from logical address
-    uint16_t sector_id = (uint16_t)(logical_addr / EFLASH_PAGE_SIZE);
-
-    FTL_DEBUG("[READ_LOGICAL] logical_addr=0x%06X -> sector_id=%d\n", logical_addr, sector_id);
-
-    return eflash_ftl_read(ftl, sector_id, data);
+    
+    // Validate size parameter
+    if (size <= 0) {
+        FTL_DEBUG("[READ_LOGICAL] ERROR: Invalid size=%d (must be > 0)\n", size);
+        return -1;
+    }
+    
+    FTL_DEBUG("[READ_LOGICAL] Start: logical_addr=0x%06X, size=%d\n", logical_addr, size);
+    
+    uint32_t remaining = size;
+    uint32_t current_addr = logical_addr;
+    uint8_t *current_data = data;
+    
+    // Loop to handle cross-page reads
+    while (remaining > 0) {
+        // Calculate current logical page number (LPN) and offset within page
+        uint16_t lpn = (uint16_t)(current_addr / USER_DATA_SIZE);
+        uint16_t page_offset = (uint16_t)(current_addr % USER_DATA_SIZE);
+        
+        // Calculate how many bytes can be read from this page
+        uint32_t bytes_in_this_page = USER_DATA_SIZE - page_offset;
+        uint32_t read_size = (remaining < bytes_in_this_page) ? remaining : bytes_in_this_page;
+        
+        FTL_DEBUG("[READ_LOGICAL] Processing LPN=%d, offset=%d, read_size=%u, remaining=%u\n",
+                 lpn, page_offset, read_size, remaining);
+        
+        // Read entire logical page
+        uint8_t page_data[USER_DATA_SIZE];
+        int ret = eflash_ftl_read(ftl, lpn, page_data);
+        if (ret != 0) {
+            FTL_DEBUG("[READ_LOGICAL] ERROR: Failed to read LPN=%d\n", lpn);
+            return -1;
+        }
+        
+        // Copy only the requested portion
+        memcpy(current_data, page_data + page_offset, read_size);
+        
+        // Move to next chunk
+        remaining -= read_size;
+        current_addr += read_size;
+        current_data += read_size;
+    }
+    
+    FTL_DEBUG("[READ_LOGICAL] Success: read %d bytes starting from 0x%06X, first byte=0x%02X\n",
+              size, logical_addr, data[0]);
+    return 0;
 }
 
 /**
  * eflash_ftl_txn_begin: Begin a new transaction
  * @ftl: FTL instance
  *
- * Description: 
+ * Description:
  *   1. Trigger GC to ensure sufficient free space before transaction starts
  *   2. Set transaction ID and shadow root for atomic operations
  */
@@ -957,8 +1220,8 @@ void eflash_ftl_txn_begin(eflash_ftl_t *ftl) {
 
     ftl->active_txn_id = (uint16_t)(ftl->next_count & 0xFFFF);
     ftl->shadow_root = ftl->root_page; // Shadow tree initially points to current stable root
-    
-    FTL_DEBUG("[TXN_BEGIN] Transaction started: txn_id=%d, shadow_root=%d\n", 
+
+    FTL_DEBUG("[TXN_BEGIN] Transaction started: txn_id=%d, shadow_root=%d\n",
               ftl->active_txn_id, ftl->shadow_root);
 }
 
@@ -1239,9 +1502,11 @@ static int gc_migrate_page(eflash_ftl_t *ftl, uint16_t src_page) {
     memcpy(user_data, full_page, USER_DATA_SIZE);
 
     // [DEBUG] Record state before migration
+#if FTL_DEBUG_ENABLE
     uint32_t free_before = eflash_ftl_get_free_pages(ftl);
     FTL_DEBUG("[GC_MIGRATE] Before migration: head=%d, tail=%d, free=%d\n",
              ftl->gc_head_page, ftl->gc_tail_page, free_before);
+#endif
 
     // 3. Use normal write flow to rewrite data (this triggers trace_path, allocates new page, updates root)
     //    Note: Only pass user data, let eflash_ftl_write automatically create new metadata
@@ -1251,9 +1516,11 @@ static int gc_migrate_page(eflash_ftl_t *ftl, uint16_t src_page) {
     }
 
     // [DEBUG] Record state after migration
+#if FTL_DEBUG_ENABLE
     uint32_t free_after = eflash_ftl_get_free_pages(ftl);
     FTL_DEBUG("[GC_MIGRATE] After migration: head=%d, tail=%d, free=%d (delta=%d)\n",
              ftl->gc_head_page, ftl->gc_tail_page, free_after, (int32_t)(free_after - free_before));
+#endif
 
     FTL_DEBUG("[GC_MIGRATE] Success: migrated sector %d from page %d\n",
              meta->sector_id, src_page);
@@ -1323,11 +1590,15 @@ int eflash_ftl_gc_collect(eflash_ftl_t *ftl, uint16_t pages_to_free) {
 
     FTL_DEBUG("[GC] ========== Starting collection ==========\n");
     FTL_DEBUG("[GC] Need to free %d pages\n", pages_to_free);
+#if FTL_DEBUG_ENABLE
     FTL_DEBUG("[GC] Initial state: head=%d, tail=%d, free=%d\n",
               ftl->gc_head_page, ftl->gc_tail_page, eflash_ftl_get_free_pages(ftl));
+#endif
 
     uint16_t pages_freed = 0;
+#if FTL_DEBUG_ENABLE
     uint16_t start_tail = ftl->gc_tail_page;
+#endif
     uint16_t first_user_page = FREE_NODE_PAGE_COUNT + BASE_HEADER_PAGES;
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
 
@@ -1382,10 +1653,12 @@ int eflash_ftl_gc_collect(eflash_ftl_t *ftl, uint16_t pages_to_free) {
         FTL_DEBUG("[GC] WARNING: Reached max iterations (%d), stopping\n", max_iterations);
     }
 
+#if FTL_DEBUG_ENABLE
     FTL_DEBUG("[GC] ========== Collection complete ==========\n");
     FTL_DEBUG("[GC] Final state: freed %d pages (tail: %d -> %d, iterations=%d)\n",
               pages_freed, start_tail, ftl->gc_tail_page, iterations);
     FTL_DEBUG("[GC] Final free pages: %d\n", eflash_ftl_get_free_pages(ftl));
+#endif
 
     return pages_freed;
 }
@@ -1396,7 +1669,7 @@ int eflash_ftl_gc_collect(eflash_ftl_t *ftl, uint16_t pages_to_free) {
  * @return: 0 no GC needed or GC successful, -1 GC failed
  *
  * Trigger condition: free pages < gc_threshold
- * 
+ *
  * IMPORTANT: GC is NOT allowed during transaction to maintain atomicity.
  * If a transaction is active, this function returns immediately without triggering GC.
  */
@@ -1409,7 +1682,7 @@ int eflash_ftl_gc_trigger(eflash_ftl_t *ftl) {
     // CRITICAL: Do NOT trigger GC during transaction
     // Transaction requires atomic operations, and GC could interfere with shadow tree consistency
     if (ftl->active_txn_id != TXN_ID_NONE) {
-        FTL_DEBUG("[GC_TRIGGER] SKIPPED: GC not allowed during transaction (txn_id=%d)\n", 
+        FTL_DEBUG("[GC_TRIGGER] SKIPPED: GC not allowed during transaction (txn_id=%d)\n",
                   ftl->active_txn_id);
         return 0;
     }

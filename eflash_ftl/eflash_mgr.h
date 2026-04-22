@@ -43,7 +43,7 @@ typedef struct {
 } eflash_mgr_t;
 
 /**
- * eflash_mgr_init: Initialize space manager
+ * eflash_mgr_init: Initialize space manager (memory-only, no Flash writes)
  * @mgr: Space manager instance
  * @total_pages: Total Flash pages
  */
@@ -67,16 +67,32 @@ int eflash_mgr_alloc(eflash_mgr_t *mgr, uint32_t size, uint32_t *out_logical_add
 void eflash_mgr_free(eflash_mgr_t *mgr, uint32_t logical_addr, uint32_t size);
 
 /**
- * eflash_mgr_sync: Sync free_node table to Flash
+ * eflash_mgr_sync: Sync free_node table to Flash (batch sync optimization)
  * @mgr: Space manager instance
  */
 void eflash_mgr_sync(eflash_mgr_t *mgr);
 
 /**
- * eflash_mgr_get_free_bytes: Get remaining free bytes
+ * eflash_mgr_get_free_bytes: Get remaining available bytes
  * @mgr: Space manager instance
- * @return: Number of free bytes
+ * @return: Total free bytes
  */
 uint32_t eflash_mgr_get_free_bytes(eflash_mgr_t *mgr);
 
-#endif // EFLASH_MGR_H
+/**
+ * eflash_mgr_check_initialized: Check if space manager has been initialized
+ * @mgr: Space manager instance
+ * @return: true if initialized (free list contains at least one valid node), false otherwise
+ */
+bool eflash_mgr_check_initialized(eflash_mgr_t *mgr);
+
+/**
+ * eflash_mgr_init_free_list: Initialize free list with one large node (called by FTL after system pages allocated)
+ * @mgr: Space manager instance
+ * @total_pages: Total Flash pages
+ * @reserved_logic_pages: Number of reserved logical pages (default 12)
+ * @return: 0 success, -1 failure
+ */
+int eflash_mgr_init_free_list(eflash_mgr_t *mgr, uint16_t total_pages, uint16_t reserved_logic_pages);
+
+#endif

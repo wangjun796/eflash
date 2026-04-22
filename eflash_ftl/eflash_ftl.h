@@ -122,8 +122,8 @@ int  eflash_ftl_write(eflash_ftl_t *ftl, uint16_t sector_id, const uint8_t *data
 int  eflash_ftl_read(eflash_ftl_t *ftl, uint16_t sector_id, uint8_t *data);
 
 // Read/write interface based on logical address (optional)
-int  eflash_ftl_write_logical(eflash_ftl_t *ftl, uint32_t logical_addr, const uint8_t *data);
-int  eflash_ftl_read_logical(eflash_ftl_t *ftl, uint32_t logical_addr, uint8_t *data);
+int  eflash_ftl_write_logical(eflash_ftl_t *ftl, uint32_t logical_addr, const uint8_t *data, int16_t size);
+int  eflash_ftl_read_logical(eflash_ftl_t *ftl, uint32_t logical_addr, uint8_t *data, int16_t size);
 
 void eflash_ftl_txn_begin(eflash_ftl_t *ftl);
 int  eflash_ftl_txn_commit(eflash_ftl_t *ftl);  // Universal version (full page rewrite)
