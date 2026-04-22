@@ -52,6 +52,13 @@
 #define OBJ_TYPE_NORMAL     0x00    // Normal object header
 #define OBJ_TYPE_LINK       0xFF    // Extension link object (points to next extension level)
 
+// --- LINK Object Magic Numbers (for reliable detection during recovery) ---
+#define LINK_OBJ_MAGIC_PKG_ID     0x5F54  // "FT" - Flash Translation
+#define LINK_OBJ_MAGIC_CLASS_ID   0x4C4E  // "LN" - LiNk
+#define LINK_OBJ_MAGIC_RESERVED0  0xAD    // Additional magic byte 0
+#define LINK_OBJ_MAGIC_RESERVED1  0xDE    // Additional magic byte 1
+// Usage: When writing LINK object, set these fields to enable fast region-skip during max_obj_id recovery
+
 // --- Object Header Structure (16 bytes) ---
 PACKED_STRUCT
 typedef struct {

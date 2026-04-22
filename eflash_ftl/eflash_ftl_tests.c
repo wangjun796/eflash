@@ -377,11 +377,17 @@ int test_object_headers(void) {
     }
     printf("  [PASS] Sequential allocation test (250 objects)\n");
 
-    // Test 3c: Extended zone headers (automatically extended at obj_id=232)
-    // obj_id=250 should already be allocated in the loop above
-    eflash_ftl_obj_get_header(&ftl, 250, &read_hdr);
-    assert(read_hdr.pkg_id == 0x30F9);  // 0x3000 + 250
-    printf("  [PASS] Extended zone header verified (obj_id=250)\n");
+    // Test 3c: Extended zone headers - allocate one more to reach obj_id=250
+    uint16_t obj_id_250 = eflash_ftl_obj_alloc_header(&ftl);
+    assert(obj_id_250 == 250);  // Should be the next sequential ID
+    hdr.pkg_id = 0x9999;
+    hdr.body_size = 256;
+    eflash_ftl_obj_set_header(&ftl, obj_id_250, &hdr);
+    
+    eflash_ftl_obj_get_header(&ftl, obj_id_250, &read_hdr);
+    assert(read_hdr.pkg_id == 0x9999);
+    assert(read_hdr.body_size == 256);
+    printf("  [PASS] Extended zone header verified (obj_id=%d)\n", obj_id_250);
 
     // Test 3d: Boundary check - try to read unallocated object
     int ret = eflash_ftl_obj_get_header(&ftl, 251, &read_hdr);

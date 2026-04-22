@@ -729,15 +729,25 @@ static int extend_headers(eflash_ftl_t *ftl) {
     }
     uint16_t new_ext_lpn = (uint16_t)(new_ext_logical_addr / EFLASH_PAGE_SIZE);  // Logical Page Number
 
-    // 3. Update pointer at end of previous level
+    // 3. Update pointer at end of previous level with Magic Numbers
     obj_header_t link_hdr;
     memset(&link_hdr, 0, sizeof(link_hdr));
-    link_hdr.type = OBJ_TYPE_LINK; // Mark as extension link object
+    
+    // Set Magic Numbers for reliable LINK object detection
+    link_hdr.pkg_id = LINK_OBJ_MAGIC_PKG_ID;        // "FT" - Flash Translation
+    link_hdr.class_id = LINK_OBJ_MAGIC_CLASS_ID;      // "LN" - LiNk
+    link_hdr.type = OBJ_TYPE_LINK;   // Link type
+    link_hdr.reserved[0] = LINK_OBJ_MAGIC_RESERVED0;     // Additional magic
+    link_hdr.reserved[1] = LINK_OBJ_MAGIC_RESERVED1;     // Additional magic
     link_hdr.body_addr = new_ext_lpn;
-    link_hdr.body_size = EXT_HEADER_PAGES_UNIT * USER_DATA_SIZE; // Total size of extension area
+    link_hdr.body_size = EXT_HEADER_PAGES_UNIT * USER_DATA_SIZE;
 
     // Write link info to end of previous level
-    eflash_ftl_obj_set_header(ftl, (level == 0 ? BASE_HEADER_CAPACITY - 1 : (level * EXT_HEADER_CAPACITY + BASE_HEADER_CAPACITY - 1)), &link_hdr);
+    uint16_t link_obj_id = (level == 0) ? (BASE_HEADER_CAPACITY - 1) : 
+                           (level * EXT_HEADER_CAPACITY + BASE_HEADER_CAPACITY - 1);
+    FTL_DEBUG("[EXTEND] Writing LINK object at obj_id=%d (magic: 0x%04X/0x%04X)\n",
+             link_obj_id, link_hdr.pkg_id, link_hdr.class_id);
+    eflash_ftl_obj_set_header(ftl, link_obj_id, &link_hdr);
 
     // 4. Record new extension address (dynamically allocated LPN)
     ftl->ext_hdr_addrs[level] = new_ext_lpn;
@@ -820,23 +830,113 @@ static void scan_and_rebuild_ext_headers(eflash_ftl_t *ftl) {
 }
 
 /**
- * scan_and_rebuild_max_obj_id: Scan object headers to find max allocated obj_id
+ * is_link_object: Check if an object header is a LINK object with magic numbers
+ * @hdr: Object header to check
+ * @return: true if it's a valid LINK object, false otherwise
+ *
+ * Magic numbers:
+ *   - pkg_id = 0x5F54 ("FT" - Flash Translation)
+ *   - class_id = 0x4C4E ("LN" - LiNk)
+ *   - type = OBJ_TYPE_LINK
+ *   - reserved[0] = 0xAD, reserved[1] = 0xDE
+ */
+static bool is_link_object(const obj_header_t *hdr) {
+    return (hdr->type == OBJ_TYPE_LINK &&
+            hdr->pkg_id == LINK_OBJ_MAGIC_PKG_ID &&
+            hdr->class_id == LINK_OBJ_MAGIC_CLASS_ID &&
+            hdr->reserved[0] == LINK_OBJ_MAGIC_RESERVED0 &&
+            hdr->reserved[1] == LINK_OBJ_MAGIC_RESERVED1);
+}
+
+/**
+ * scan_and_rebuild_max_obj_id: Optimized scan to find max allocated obj_id
  * @ftl: FTL instance
  *
  * Description:
- *   Scans base area and extension areas sequentially to count valid object headers.
- *   Stops at first invalid header or LINK object.
- *   This implements recovery scheme A: traverse all headers on power-up.
+ *   Optimization strategy:
+ *   1. Check last obj of each region (base/ext levels) for LINK object
+ *   2. If LINK found, skip entire region (it's full)
+ *   3. Start detailed scan from first non-full region
+ *   4. This reduces scan time from O(N) to O(R + M) where R=regions, M=objs in last region
  */
 static void scan_and_rebuild_max_obj_id(eflash_ftl_t *ftl) {
-    FTL_DEBUG("[INIT] Scanning object headers to rebuild max_obj_id...\n");
+    FTL_DEBUG("[INIT] Scanning object headers to rebuild max_obj_id (optimized)...\n");
 
-    uint16_t obj_id = 0;
+    uint16_t max_obj_id = 0;
+    bool found_first_non_full = false;
+
+    // Step 1: Check base zone and extension zones for LINK objects
+    // This helps us skip full regions quickly
+    
+    // Check base zone last obj (obj_id = BASE_HEADER_CAPACITY - 1 = 231)
+    uint16_t check_obj_id = BASE_HEADER_CAPACITY - 1;
+    uint16_t lpn, offset;
+    
+    if (get_header_page_info(ftl, check_obj_id, &lpn, &offset) == 0) {
+        uint8_t page_buf[USER_DATA_SIZE];
+        if (read_system_page(ftl, lpn, page_buf) == 0) {
+            obj_header_t hdr;
+            memcpy(&hdr, page_buf + offset, sizeof(obj_header_t));
+            
+            if (is_link_object(&hdr)) {
+                // Base zone is full, max_obj_id >= 231
+                max_obj_id = check_obj_id;
+                FTL_DEBUG("[INIT] Base zone full (LINK at obj_id=%d), checking extensions...\n", check_obj_id);
+                
+                // Check extension levels
+                for (int level = 0; level < MAX_EXT_LEVELS; level++) {
+                    if (ftl->ext_hdr_addrs[level] == PAGE_NONE) {
+                        // No more extensions
+                        FTL_DEBUG("[INIT] Extension level %d not allocated, stopping region check\n", level);
+                        break;
+                    }
+                    
+                    // Calculate last obj_id of this extension level
+                    check_obj_id = BASE_HEADER_CAPACITY + (level + 1) * EXT_HEADER_CAPACITY - 1;
+                    
+                    if (get_header_page_info(ftl, check_obj_id, &lpn, &offset) != 0) {
+                        FTL_DEBUG("[INIT] Cannot map obj_id=%d, stopping region check\n", check_obj_id);
+                        break;
+                    }
+                    
+                    if (read_system_page(ftl, lpn, page_buf) != 0) {
+                        FTL_DEBUG("[INIT] Failed to read LPN %d, stopping region check\n", lpn);
+                        break;
+                    }
+                    
+                    memcpy(&hdr, page_buf + offset, sizeof(obj_header_t));
+                    
+                    if (is_link_object(&hdr)) {
+                        // This extension level is also full
+                        max_obj_id = check_obj_id;
+                        FTL_DEBUG("[INIT] Extension level %d full (LINK at obj_id=%d)\n", level + 1, check_obj_id);
+                    } else {
+                        // Found first non-full region
+                        FTL_DEBUG("[INIT] Extension level %d not full, will scan from obj_id=%d\n", 
+                                 level + 1, BASE_HEADER_CAPACITY + level * EXT_HEADER_CAPACITY);
+                        found_first_non_full = true;
+                        // Start scanning from the first obj of this level
+                        max_obj_id = BASE_HEADER_CAPACITY + level * EXT_HEADER_CAPACITY - 1;
+                        break;
+                    }
+                }
+            } else {
+                // Base zone not full, start scanning from beginning
+                FTL_DEBUG("[INIT] Base zone not full, scanning from obj_id=0\n");
+                max_obj_id = 0;
+            }
+        }
+    }
+
+    // Step 2: Detailed scan from max_obj_id + 1
+    uint16_t scan_start = max_obj_id + 1;
+    FTL_DEBUG("[INIT] Starting detailed scan from obj_id=%d\n", scan_start);
+    
+    uint16_t obj_id = scan_start;
     bool scanning = true;
 
     while (scanning) {
         // Get LPN and offset for current obj_id
-        uint16_t lpn, offset;
         if (get_header_page_info(ftl, obj_id, &lpn, &offset) != 0) {
             // Cannot map this obj_id (extension not allocated)
             FTL_DEBUG("[INIT] Cannot map obj_id=%d, stopping scan\n", obj_id);
@@ -855,21 +955,18 @@ static void scan_and_rebuild_max_obj_id(eflash_ftl_t *ftl) {
         memcpy(&hdr, page_buf + offset, sizeof(obj_header_t));
 
         // Check if this is a valid (non-blank, non-LINK) header
-        // A blank header has pkg_id=0 (since we initialize with 0x00)
-        // A LINK header has type=OBJ_TYPE_LINK
-        if (hdr.pkg_id == 0 || hdr.type == OBJ_TYPE_LINK) {
-            FTL_DEBUG("[INIT] Found invalid/LINK header at obj_id=%d (pkg_id=0x%04X, type=0x%02X)\n",
-                     obj_id, hdr.pkg_id, hdr.type);
+        if (hdr.pkg_id == 0 || is_link_object(&hdr)) {
+            FTL_DEBUG("[INIT] Found invalid/LINK header at obj_id=%d, stopping scan\n", obj_id);
             scanning = false;
         } else {
             // Valid header, continue to next
+            max_obj_id = obj_id;
             obj_id++;
         }
     }
 
-    // The last valid obj_id is obj_id - 1
-    ftl->max_obj_id = (obj_id > 0) ? (obj_id - 1) : 0;
-    FTL_DEBUG("[INIT] max_obj_id rebuilt: %d\n", ftl->max_obj_id);
+    ftl->max_obj_id = max_obj_id;
+    FTL_DEBUG("[INIT] max_obj_id rebuilt: %d (scan started from %d)\n", ftl->max_obj_id, scan_start);
 }
 
 
