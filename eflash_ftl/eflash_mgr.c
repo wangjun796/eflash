@@ -4,6 +4,9 @@
 #include <string.h>
 #include <stdio.h>
 
+// External declaration of global FTL instance (defined in eflash_ftl.c)
+extern eflash_ftl_t g_ftl_instance;
+
 #ifndef FTL_DEBUG
 #define FTL_DEBUG(...) do {} while(0)  // Disable debug output
 #endif
@@ -367,7 +370,7 @@ int eflash_mgr_init_free_list(eflash_mgr_t *mgr, uint16_t total_pages, uint16_t 
     return 0;
 }
 
-int eflash_mgr_alloc(eflash_mgr_t *mgr, uint32_t size, uint32_t *out_logical_addr) {
+int eflash_mgr_alloc(uint32_t size, uint32_t *out_logical_addr) {
     eflash_mgr_t *mgr = &g_ftl_instance.spc_mgr;
     // Traverse all free_node pages, find first node that satisfies size requirement
     for (int i = 0; i < FREE_NODE_PAGE_COUNT; i++) {

@@ -64,13 +64,13 @@ int main() {
     hdr.type = OBJ_TYPE_NORMAL;
     hdr.body_size = 128;
     
-    if (eflash_ftl_obj_set_header(ftl, 0, &hdr) == 0) {
+    if (eflash_ftl_obj_set_header(0, &hdr) == 0) {
         printf("   Set header for ID 0 (Base Level)\n");
     }
     
     // Write extended area object header (ID: 250 -> triggers first level extension)
     hdr.pkg_id = 0x9999;
-    if (eflash_ftl_obj_set_header(ftl, 250, &hdr) == 0) {
+    if (eflash_ftl_obj_set_header(250, &hdr) == 0) {
         printf("   Set header for ID 250 (Extended Level 1)\n");
     }
     
@@ -85,7 +85,7 @@ int main() {
     memset(test_data, 0xAA, USER_DATA_SIZE);
     
     eflash_ftl_txn_begin(ftl);
-    if (eflash_ftl_write(ftl, 100, test_data) != 0) {
+    if (eflash_ftl_write( 100, test_data) != 0) {
         printf("   ERROR: Write failed\n");
         eflash_ftl_txn_abort(ftl);
         eflash_deinit();
@@ -100,7 +100,7 @@ int main() {
     memset(test_data, 0xBB, USER_DATA_SIZE);
     
     eflash_ftl_txn_begin(ftl);
-    if (eflash_ftl_write(ftl, 101, test_data) != 0) {
+    if (eflash_ftl_write( 101, test_data) != 0) {
         printf("   ERROR: Write failed\n");
         eflash_ftl_txn_abort(ftl);
         eflash_deinit();
@@ -123,7 +123,7 @@ int main() {
     
     // Verify object headers
     obj_header_t read_hdr;
-    if (eflash_ftl_obj_get_header(ftl, 250, &read_hdr) == 0) {
+    if (eflash_ftl_obj_get_header( 250, &read_hdr) == 0) {
         printf("   Read ID 250: PkgID=0x%04X, ClassID=0x%04X\n", 
                read_hdr.pkg_id, read_hdr.class_id);
     } else {
@@ -132,11 +132,11 @@ int main() {
     
     // Verify transaction data
     uint8_t read_data[USER_DATA_SIZE];
-    if (eflash_ftl_read(ftl, 100, read_data) == 0) {
+    if (eflash_ftl_read( 100, read_data) == 0) {
         printf("   Read sector 100: first byte=0x%02X (expected 0xAA) %s\n", 
                read_data[0], (read_data[0] == 0xAA) ? "✓" : "✗");
     }
-    if (eflash_ftl_read(ftl, 101, read_data) == 0) {
+    if (eflash_ftl_read( 101, read_data) == 0) {
         printf("   Read sector 101: first byte=0x%02X (expected 0xBB) %s\n", 
                read_data[0], (read_data[0] == 0xBB) ? "✓" : "✗");
     }
@@ -157,13 +157,13 @@ int main() {
     
     // Read again after reboot
     printf("\n7. After Reboot Verification\n");
-    if (eflash_ftl_obj_get_header(ftl, 250, &read_hdr) == 0) {
+    if (eflash_ftl_obj_get_header( 250, &read_hdr) == 0) {
         printf("   After Reboot - Read ID 250: PkgID=0x%04X ✓\n", read_hdr.pkg_id);
     } else {
         printf("   After Reboot - Failed to read ID 250 ✗\n");
     }
     
-    if (eflash_ftl_read(ftl, 100, read_data) == 0) {
+    if (eflash_ftl_read( 100, read_data) == 0) {
         printf("   After Reboot - Read sector 100: 0x%02X %s\n", 
                read_data[0], (read_data[0] == 0xAA) ? "✓" : "✗");
     }

@@ -6,9 +6,6 @@
 #include "ecc/bch.h"
 #include "eflash_mgr.h"
 
-// If eflash.h is already included, skip the type definition
-#ifndef EFLASH_H
-
 // --- Cross-platform packed structure support ---
 #ifdef _MSC_VER
     #define PACKED_STRUCT __pragma(pack(push, 1))
@@ -124,30 +121,29 @@ typedef struct {
     uint32_t      total_user_pages; // Total user-available pages (excluding system reserved area)
     bool          gc_in_progress;   // GC in progress flag, prevents recursive GC triggering
 } eflash_ftl_t;
-#endif // EFLASH_H
 
 // --- Interface Functions ---
-int  eflash_ftl_init(eflash_ftl_t *ftl);
-uint16_t eflash_ftl_obj_alloc_header(eflash_ftl_t *ftl);  // Allocate next object header ID
-int  eflash_ftl_obj_get_header(eflash_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr);
-int  eflash_ftl_obj_set_header(eflash_ftl_t *ftl, uint16_t obj_id, const obj_header_t *hdr);
+int  eflash_ftl_init(void);
+uint16_t eflash_ftl_obj_alloc_header(void);  // Allocate next object header ID
+int  eflash_ftl_obj_get_header(uint16_t obj_id, obj_header_t *hdr);
+int  eflash_ftl_obj_set_header(uint16_t obj_id, const obj_header_t *hdr);
 
 // Read/write interface based on sector_id (recommended)
-int  eflash_ftl_write(eflash_ftl_t *ftl, uint16_t sector_id, const uint8_t *data);
-int  eflash_ftl_read(eflash_ftl_t *ftl, uint16_t sector_id, uint8_t *data);
+int  eflash_ftl_write(uint16_t sector_id, const uint8_t *data);
+int  eflash_ftl_read(uint16_t sector_id, uint8_t *data);
 
 // Read/write interface based on logical address (optional)
-int  eflash_ftl_write_logical(eflash_ftl_t *ftl, uint32_t logical_addr, const uint8_t *data, int16_t size);
-int  eflash_ftl_read_logical(eflash_ftl_t *ftl, uint32_t logical_addr, uint8_t *data, int16_t size);
+int  eflash_ftl_write_logical(uint32_t logical_addr, const uint8_t *data, int16_t size);
+int  eflash_ftl_read_logical(uint32_t logical_addr, uint8_t *data, int16_t size);
 
-void eflash_ftl_txn_begin(eflash_ftl_t *ftl);
-int  eflash_ftl_txn_commit(eflash_ftl_t *ftl);  // Universal version (full page rewrite)
-int  eflash_ftl_txn_commit_with_update(eflash_ftl_t *ftl);  // Optimized version (word update, requires hardware support)
-void eflash_ftl_txn_abort(eflash_ftl_t *ftl);
+void eflash_ftl_txn_begin(void);
+int  eflash_ftl_txn_commit(void);  // Universal version (full page rewrite)
+int  eflash_ftl_txn_commit_with_update(void);  // Optimized version (word update, requires hardware support)
+void eflash_ftl_txn_abort(void);
 
 // --- GC Interface Functions ---
-int  eflash_ftl_gc_trigger(eflash_ftl_t *ftl);  // Manually trigger GC
-int  eflash_ftl_gc_collect(eflash_ftl_t *ftl, uint16_t pages_to_free); // Reclaim specified number of pages
-uint32_t eflash_ftl_get_free_pages(eflash_ftl_t *ftl); // Get current number of free pages
+int  eflash_ftl_gc_trigger(void);  // Manually trigger GC
+int  eflash_ftl_gc_collect(uint16_t pages_to_free); // Reclaim specified number of pages
+uint32_t eflash_ftl_get_free_pages(void); // Get current number of free pages
 
 #endif

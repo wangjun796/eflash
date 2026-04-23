@@ -51,20 +51,18 @@ void eflash_mgr_init(eflash_mgr_t *mgr, uint16_t total_pages);
 
 /**
  * eflash_mgr_alloc: Allocate specified size of logical address space
- * @mgr: Space manager instance
  * @size: Requested size in bytes
  * @out_logical_addr: Output allocated starting logical address (24-bit)
  * @return: 0 success, -1 failure (insufficient space)
  */
-int eflash_mgr_alloc_internal(eflash_mgr_t *mgr, uint32_t size, uint32_t *out_logical_addr);
+int eflash_mgr_alloc(uint32_t size, uint32_t *out_logical_addr);
 
 /**
  * eflash_mgr_free: Free specified logical address space and merge adjacent free blocks
- * @mgr: Space manager instance
  * @logical_addr: Starting logical address to free (24-bit)
  * @size: Size in bytes to free
  */
-void eflash_mgr_free_internal(eflash_mgr_t *mgr, uint32_t logical_addr, uint32_t size);
+void eflash_mgr_free(uint32_t logical_addr, uint32_t size);
 
 /**
  * eflash_mgr_sync: Sync free_node table to Flash (batch sync optimization)
@@ -74,10 +72,9 @@ void eflash_mgr_sync(eflash_mgr_t *mgr);
 
 /**
  * eflash_mgr_get_free_bytes: Get remaining available bytes
- * @mgr: Space manager instance
  * @return: Total free bytes
  */
-uint32_t eflash_mgr_get_free_bytes_internal(eflash_mgr_t *mgr);
+uint32_t eflash_mgr_get_free_bytes(void);
 
 /**
  * eflash_mgr_check_initialized: Check if space manager has been initialized

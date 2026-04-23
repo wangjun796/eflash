@@ -30,6 +30,9 @@
 #include "eflash_mgr.h"
 #include "eflash_sim.h"
 
+// External declaration of global FTL instance (defined in eflash_ftl.c)
+extern eflash_ftl_t g_ftl_instance;
+
 // Then include public API header
 #include "eflash.h"
 
@@ -237,24 +240,22 @@ static int verify_test_pattern(const uint8_t *buf, size_t size, uint8_t seed) {
 // Test 1: Initialization and Recovery
 // ============================================================================
 int test_init_recovery(void) {
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));  // 重要：清零结构体
     uint8_t test_data[USER_DATA_SIZE];
 
     printf("[TEST] test_init_recovery: Starting...\n");
 
     // Test 1a: Fresh initialization
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
 
-    assert(ftl.root_page != PAGE_NONE);  // Modified: root should be set after init
-    assert(ftl.next_count > 1);          // Modified: next_count incremented during init
-    assert(ftl.is_initialized == true);
-    printf("  [PASS] Fresh initialization (root_page=%d, next_count=%d)\n", ftl.root_page, ftl.next_count);
+    assert(g_ftl_instance.root_page != PAGE_NONE);  // Modified: root should be set after init
+    assert(g_ftl_instance.next_count > 1);          // Modified: next_count incremented during init
+    assert(g_ftl_instance.is_initialized == true);
+    printf("  [PASS] Fresh initialization (root_page=%d, next_count=%d)\n", g_ftl_instance.root_page, g_ftl_instance.next_count);
 
     // Test 1b: Write data and verify recovery
     create_test_pattern(test_data, USER_DATA_SIZE, 0xAA);
-    eflash_ftl_write(&ftl, 100, test_data);
+    eflash_ftl_write(100, test_data);
 
     eflash_deinit();
 
@@ -262,14 +263,14 @@ int test_init_recovery(void) {
     // Note: Don't delete file - we want to test recovery from existing data
     int ret = eflash_init(TEST_FLASH_FILE);
     FORCE_ASSERT(ret == 0, "Failed to reinitialize flash for recovery test");
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
 
-    assert(ftl.root_page != PAGE_NONE);
-    assert(ftl.next_count > 1);
+    assert(g_ftl_instance.root_page != PAGE_NONE);
+    assert(g_ftl_instance.next_count > 1);
 
     // Verify data persistence
     uint8_t read_data[USER_DATA_SIZE];
-    eflash_ftl_read(&ftl, 100, read_data);
+    eflash_ftl_read(100, read_data);
     FORCE_ASSERT(verify_test_pattern(read_data, USER_DATA_SIZE, 0xAA) == 0,
                  "Data verification failed after recovery - read data does not match written pattern");
     printf("  [PASS] Recovery after write\n");
@@ -283,22 +284,20 @@ int test_init_recovery(void) {
 // Test 2: Basic Read/Write Operations
 // ============================================================================
 int test_basic_read_write(void) {
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));  // 重要：清零结构体
     uint8_t write_buf[USER_DATA_SIZE];
     uint8_t read_buf[USER_DATA_SIZE];
 
     printf("[TEST] test_basic_read_write: Starting...\n");
 
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
 
     // Test 2a: Single page write/read
     create_test_pattern(write_buf, USER_DATA_SIZE, 0x11);
-    eflash_ftl_write(&ftl, 0, write_buf);
+    eflash_ftl_write(0, write_buf);
 
     memset(read_buf, 0, USER_DATA_SIZE);
-    eflash_ftl_read(&ftl, 0, read_buf);
+    eflash_ftl_read(0, read_buf);
     FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0x11) == 0,
                  "Single page read verification failed - expected pattern 0x11");
     printf("  [PASS] Single page write/read\n");
@@ -306,11 +305,11 @@ int test_basic_read_write(void) {
     // Test 2b: Multiple pages
     for (int i = 0; i < 10; i++) {
         create_test_pattern(write_buf, USER_DATA_SIZE, (uint8_t)(i + 0x20));
-        eflash_ftl_write(&ftl, (uint16_t)(i * 50), write_buf);
+        eflash_ftl_write((uint16_t)(i * 50), write_buf);
     }
 
     for (int i = 0; i < 10; i++) {
-        eflash_ftl_read(&ftl, (uint16_t)(i * 50), read_buf);
+        eflash_ftl_read((uint16_t)(i * 50), read_buf);
         FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, (uint8_t)(i + 0x20)) == 0,
                      "Multiple pages verification failed");
     }
@@ -318,9 +317,9 @@ int test_basic_read_write(void) {
 
     // Test 2c: Overwrite and verify old data is invisible
     create_test_pattern(write_buf, USER_DATA_SIZE, 0xFF);
-    eflash_ftl_write(&ftl, 0, write_buf);
+    eflash_ftl_write(0, write_buf);
 
-    eflash_ftl_read(&ftl, 0, read_buf);
+    eflash_ftl_read(0, read_buf);
     FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xFF) == 0,
                  "Overwrite verification failed - expected pattern 0xFF");
     printf("  [PASS] Overwrite visibility\n");
@@ -334,15 +333,13 @@ int test_basic_read_write(void) {
 // Test 3: Object Header Management
 // ============================================================================
 int test_object_headers(void) {
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));  // 重要：清零结构体
     obj_header_t hdr;
     obj_header_t read_hdr;
 
     printf("[TEST] test_object_headers: Starting...\n");
 
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
 
     // Test 3a: Basic header operations using alloc API
     memset(&hdr, 0, sizeof(hdr));
@@ -351,11 +348,11 @@ int test_object_headers(void) {
     hdr.type = 1;
     hdr.body_size = 128;
 
-    uint16_t obj_id_0 = eflash_ftl_obj_alloc_header(&ftl);
+    uint16_t obj_id_0 = eflash_ftl_obj_alloc_header();
     assert(obj_id_0 == 0);  // First allocation should be 0
-    eflash_ftl_obj_set_header(&ftl, obj_id_0, &hdr);
+    eflash_ftl_obj_set_header(obj_id_0, &hdr);
     
-    eflash_ftl_obj_get_header(&ftl, obj_id_0, &read_hdr);
+    eflash_ftl_obj_get_header(obj_id_0, &read_hdr);
     assert(read_hdr.pkg_id == 0x1001);
     assert(read_hdr.class_id == 0x2001);
     assert(read_hdr.body_size == 128);
@@ -368,7 +365,7 @@ int test_object_headers(void) {
     int expected_next_id = 1;
     
     for (int i = 1; allocated_count < 250; i++) {
-        uint16_t obj_id = eflash_ftl_obj_alloc_header(&ftl);
+        uint16_t obj_id = eflash_ftl_obj_alloc_header();
         
         // Skip LINK position at obj_id=231
         if (expected_next_id == BASE_HEADER_CAPACITY - 1) {
@@ -381,12 +378,12 @@ int test_object_headers(void) {
         
         hdr.pkg_id = (uint16_t)(0x3000 + obj_id);
         hdr.body_size = (uint32_t)(obj_id * 10);
-        eflash_ftl_obj_set_header(&ftl, obj_id, &hdr);
+        eflash_ftl_obj_set_header(obj_id, &hdr);
     }
 
     // Then verify all 250 objects
     for (int i = 1; i < 250; i++) {
-        eflash_ftl_obj_get_header(&ftl, (uint16_t)i, &read_hdr);
+        eflash_ftl_obj_get_header((uint16_t)i, &read_hdr);
         if (read_hdr.pkg_id != (uint16_t)(0x3000 + i)) {
             printf("  [ERROR] obj_id=%d: expected pkg_id=0x%04X, got 0x%04X\n", 
                    i, (uint16_t)(0x3000 + i), read_hdr.pkg_id);
@@ -399,7 +396,7 @@ int test_object_headers(void) {
     printf("  [PASS] Sequential allocation test (250 objects)\n");
 
     // Test 3c: Extended zone headers - allocate one more to reach next obj_id
-    uint16_t next_obj_id = eflash_ftl_obj_alloc_header(&ftl);
+    uint16_t next_obj_id = eflash_ftl_obj_alloc_header();
     
     // Skip LINK position if needed
     if (expected_next_id == BASE_HEADER_CAPACITY - 1) {
@@ -410,15 +407,15 @@ int test_object_headers(void) {
     
     hdr.pkg_id = 0x9999;
     hdr.body_size = 256;
-    eflash_ftl_obj_set_header(&ftl, next_obj_id, &hdr);
+    eflash_ftl_obj_set_header(next_obj_id, &hdr);
     
-    eflash_ftl_obj_get_header(&ftl, next_obj_id, &read_hdr);
+    eflash_ftl_obj_get_header(next_obj_id, &read_hdr);
     assert(read_hdr.pkg_id == 0x9999);
     assert(read_hdr.body_size == 256);
     printf("  [PASS] Extended zone header verified (obj_id=%d)\n", next_obj_id);
 
     // Test 3d: Boundary check - try to read unallocated object
-    int ret = eflash_ftl_obj_get_header(&ftl, (uint16_t)(expected_next_id + 1), &read_hdr);
+    int ret = eflash_ftl_obj_get_header((uint16_t)(expected_next_id + 1), &read_hdr);
     assert(ret == -1);  // Should fail (not allocated yet)
     printf("  [PASS] Boundary check: cannot read unallocated obj_id=%d\n", expected_next_id + 1);
 
@@ -431,51 +428,49 @@ int test_object_headers(void) {
 // Test 4: Transaction Management
 // ============================================================================
 int test_transactions(void) {
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));  // 重要：清零结构体
     uint8_t write_buf[USER_DATA_SIZE];
     uint8_t read_buf[USER_DATA_SIZE];
 
     printf("[TEST] test_transactions: Starting...\n");
 
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
 
     // Test 4a: Normal transaction commit
     create_test_pattern(write_buf, USER_DATA_SIZE, 0xA1);
-    eflash_ftl_write(&ftl, 10, write_buf);
+    eflash_ftl_write(10, write_buf);
 
-    eflash_ftl_txn_begin(&ftl);
+    eflash_ftl_txn_begin();
     create_test_pattern(write_buf, USER_DATA_SIZE, 0xB1);
-    eflash_ftl_write(&ftl, 10, write_buf);
-    eflash_ftl_txn_commit(&ftl);
+    eflash_ftl_write(10, write_buf);
+    eflash_ftl_txn_commit();
 
-    eflash_ftl_read(&ftl, 10, read_buf);
+    eflash_ftl_read(10, read_buf);
     FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xB1) == 0,
                  "Transaction commit verification failed");
     printf("  [PASS] Transaction commit\n");
 
     // Test 4b: Transaction abort
-    eflash_ftl_txn_begin(&ftl);
+    eflash_ftl_txn_begin();
     create_test_pattern(write_buf, USER_DATA_SIZE, 0xC1);
-    eflash_ftl_write(&ftl, 10, write_buf);
-    eflash_ftl_txn_abort(&ftl);
+    eflash_ftl_write(10, write_buf);
+    eflash_ftl_txn_abort();
 
-    eflash_ftl_read(&ftl, 10, read_buf);
+    eflash_ftl_read(10, read_buf);
     FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xB1) == 0,
                  "Transaction abort verification failed - data should be rolled back");
     printf("  [PASS] Transaction abort (rollback)\n");
 
     // Test 4c: Multiple operations in one transaction
-    eflash_ftl_txn_begin(&ftl);
+    eflash_ftl_txn_begin();
     for (int i = 0; i < 5; i++) {
         create_test_pattern(write_buf, USER_DATA_SIZE, (uint8_t)(0xD0 + i));
-        eflash_ftl_write(&ftl, (uint16_t)(100 + i), write_buf);
+        eflash_ftl_write((uint16_t)(100 + i), write_buf);
     }
-    eflash_ftl_txn_commit(&ftl);
+    eflash_ftl_txn_commit();
 
     for (int i = 0; i < 5; i++) {
-        eflash_ftl_read(&ftl, (uint16_t)(100 + i), read_buf);
+        eflash_ftl_read((uint16_t)(100 + i), read_buf);
         FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, (uint8_t)(0xD0 + i)) == 0,
                      "Multi-operation transaction verification failed");
     }
@@ -490,8 +485,6 @@ int test_transactions(void) {
 // Test 4b: Transactions with Word Update (Optimized Commit)
 // ============================================================================
 int test_transactions_with_update(void) {
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));  // Important: zero out structure
     uint8_t write_buf[USER_DATA_SIZE];
     uint8_t read_buf[USER_DATA_SIZE];
 
@@ -499,47 +492,47 @@ int test_transactions_with_update(void) {
     printf("  [INFO] Using eflash_ftl_txn_commit_with_update() for optimized commit\n");
 
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
 
     // Test 5a: Normal transaction commit with word update
     create_test_pattern(write_buf, USER_DATA_SIZE, 0xA2);
-    eflash_ftl_write(&ftl, 10, write_buf);
+    eflash_ftl_write(10, write_buf);
 
-    eflash_ftl_txn_begin(&ftl);
+    eflash_ftl_txn_begin();
     create_test_pattern(write_buf, USER_DATA_SIZE, 0xB2);
-    eflash_ftl_write(&ftl, 10, write_buf);
+    eflash_ftl_write(10, write_buf);
     
     // Use optimized commit with word update instead of full page rewrite
-    int ret = eflash_ftl_txn_commit_with_update(&ftl);
+    int ret = eflash_ftl_txn_commit_with_update();
     FORCE_ASSERT(ret == 0, "Transaction commit with update failed");
 
-    eflash_ftl_read(&ftl, 10, read_buf);
+    eflash_ftl_read(10, read_buf);
     FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xB2) == 0,
                  "Transaction commit with update verification failed");
     printf("  [PASS] Transaction commit with word update\n");
 
     // Test 5b: Transaction abort (should work same as normal commit)
-    eflash_ftl_txn_begin(&ftl);
+    eflash_ftl_txn_begin();
     create_test_pattern(write_buf, USER_DATA_SIZE, 0xC2);
-    eflash_ftl_write(&ftl, 10, write_buf);
-    eflash_ftl_txn_abort(&ftl);
+    eflash_ftl_write(10, write_buf);
+    eflash_ftl_txn_abort();
 
-    eflash_ftl_read(&ftl, 10, read_buf);
+    eflash_ftl_read(10, read_buf);
     FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xB2) == 0,
                  "Transaction abort verification failed - data should be rolled back");
     printf("  [PASS] Transaction abort with word update mode (rollback)\n");
 
     // Test 5c: Multiple operations in one transaction with word update
-    eflash_ftl_txn_begin(&ftl);
+    eflash_ftl_txn_begin();
     for (int i = 0; i < 5; i++) {
         create_test_pattern(write_buf, USER_DATA_SIZE, (uint8_t)(0xD2 + i));
-        eflash_ftl_write(&ftl, (uint16_t)(110 + i), write_buf);
+        eflash_ftl_write((uint16_t)(110 + i), write_buf);
     }
-    ret = eflash_ftl_txn_commit_with_update(&ftl);
+    ret = eflash_ftl_txn_commit_with_update();
     FORCE_ASSERT(ret == 0, "Multi-operation transaction commit with update failed");
 
     for (int i = 0; i < 5; i++) {
-        eflash_ftl_read(&ftl, (uint16_t)(110 + i), read_buf);
+        eflash_ftl_read((uint16_t)(110 + i), read_buf);
         FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, (uint8_t)(0xD2 + i)) == 0,
                      "Multi-operation transaction with update verification failed");
     }
@@ -547,37 +540,37 @@ int test_transactions_with_update(void) {
 
     // Test 5d: Sequential transactions with word update
     for (int txn = 0; txn < 3; txn++) {
-        eflash_ftl_txn_begin(&ftl);
+        eflash_ftl_txn_begin();
         create_test_pattern(write_buf, USER_DATA_SIZE, (uint8_t)(0xE0 + txn));
-        eflash_ftl_write(&ftl, (uint16_t)(200 + txn), write_buf);
+        eflash_ftl_write((uint16_t)(200 + txn), write_buf);
         
-        ret = eflash_ftl_txn_commit_with_update(&ftl);
+        ret = eflash_ftl_txn_commit_with_update();
         FORCE_ASSERT(ret == 0, "Sequential transaction commit failed");
         
-        eflash_ftl_read(&ftl, (uint16_t)(200 + txn), read_buf);
+        eflash_ftl_read((uint16_t)(200 + txn), read_buf);
         FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, (uint8_t)(0xE0 + txn)) == 0,
                      "Sequential transaction verification failed");
     }
     printf("  [PASS] Sequential transactions with word update (3 consecutive)\n");
 
     // Test 5e: Mixed commit methods (some with update, some without)
-    eflash_ftl_txn_begin(&ftl);
+    eflash_ftl_txn_begin();
     create_test_pattern(write_buf, USER_DATA_SIZE, 0xF2);
-    eflash_ftl_write(&ftl, 300, write_buf);
-    ret = eflash_ftl_txn_commit_with_update(&ftl);
+    eflash_ftl_write(300, write_buf);
+    ret = eflash_ftl_txn_commit_with_update();
     FORCE_ASSERT(ret == 0, "Mixed commit method 1 failed");
 
-    eflash_ftl_txn_begin(&ftl);
+    eflash_ftl_txn_begin();
     create_test_pattern(write_buf, USER_DATA_SIZE, 0xF3);
-    eflash_ftl_write(&ftl, 301, write_buf);
-    ret = eflash_ftl_txn_commit(&ftl);  // Use normal commit
+    eflash_ftl_write(301, write_buf);
+    ret = eflash_ftl_txn_commit();  // Use normal commit
     FORCE_ASSERT(ret == 0, "Mixed commit method 2 failed");
 
     // Verify both commits succeeded
-    eflash_ftl_read(&ftl, 300, read_buf);
+    eflash_ftl_read(300, read_buf);
     FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xF2) == 0,
                  "Mixed commit verification 1 failed");
-    eflash_ftl_read(&ftl, 301, read_buf);
+    eflash_ftl_read(301, read_buf);
     FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xF3) == 0,
                  "Mixed commit verification 2 failed");
     printf("  [PASS] Mixed commit methods (update + normal)\n");
@@ -593,48 +586,46 @@ int test_transactions_with_update(void) {
 // Test 5: Power Failure Simulation
 // ============================================================================
 int test_power_failure(void) {
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));  // 重要：清零结构体
     uint8_t write_buf[USER_DATA_SIZE];
     uint8_t read_buf[USER_DATA_SIZE];
 
     printf("[TEST] test_power_failure: Starting...\n");
 
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
 
     // Write initial committed data
     create_test_pattern(write_buf, USER_DATA_SIZE, 0xE1);
-    eflash_ftl_write(&ftl, 20, write_buf);
+    eflash_ftl_write(20, write_buf);
 
     // Simulate power failure during transaction (no commit)
-    eflash_ftl_txn_begin(&ftl);
+    eflash_ftl_txn_begin();
     create_test_pattern(write_buf, USER_DATA_SIZE, 0xF1);
-    eflash_ftl_write(&ftl, 20, write_buf);
+    eflash_ftl_write(20, write_buf);
 
     // Simulate power loss by not committing
     eflash_deinit();
 
     // Restart - should see old data
     eflash_init(TEST_FLASH_FILE);
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
 
-    eflash_ftl_read(&ftl, 20, read_buf);
+    eflash_ftl_read(20, read_buf);
     FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xE1) == 0,
                  "Power failure recovery verification failed - should see old data");
     printf("  [PASS] Recovery from incomplete transaction\n");
 
     // Test 5b: Commit then power failure
-    eflash_ftl_txn_begin(&ftl);
+    eflash_ftl_txn_begin();
     create_test_pattern(write_buf, USER_DATA_SIZE, 0xF2);
-    eflash_ftl_write(&ftl, 20, write_buf);
-    eflash_ftl_txn_commit(&ftl);
+    eflash_ftl_write(20, write_buf);
+    eflash_ftl_txn_commit();
 
     eflash_deinit();
     eflash_init(TEST_FLASH_FILE);
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
 
-    eflash_ftl_read(&ftl, 20, read_buf);
+    eflash_ftl_read(20, read_buf);
     FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, 0xF2) == 0,
                  "Committed transaction recovery verification failed");
     printf("  [PASS] Recovery after committed transaction\n");
@@ -648,8 +639,6 @@ int test_power_failure(void) {
 // Test 6: Space Management
 // ============================================================================
 int test_space_management(void) {
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));  // 重要：清零结构体
     uint16_t page;
     uint16_t offset;
 
@@ -659,35 +648,35 @@ int test_space_management(void) {
     init_test_flash();
     
     // Initialize FTL first (this will allocate system pages and set up space manager)
-    int ret = eflash_ftl_init(&ftl);
+    int ret = eflash_ftl_init();
     FORCE_ASSERT(ret == 0, "Failed to initialize FTL");
     printf("  [INFO] FTL initialized successfully\n");
 
     // Test 6a: Basic allocation through FTL's space manager
     uint32_t logical_addr;
-    ret = eflash_mgr_alloc_internal(&ftl.spc_mgr, 10, &logical_addr);
+    ret = eflash_mgr_alloc(10, &logical_addr);
     assert(ret == 0);
     printf("  [PASS] Basic allocation (logical_addr=0x%06X)\n", logical_addr);
 
     // Test 6b: Multiple allocations
     uint32_t addrs[10];
     for (int i = 0; i < 10; i++) {
-        ret = eflash_mgr_alloc_internal(&ftl.spc_mgr, 4, &addrs[i]);
+        ret = eflash_mgr_alloc(4, &addrs[i]);
         assert(ret == 0);
     }
     printf("  [PASS] Multiple allocations\n");
 
     // Test 6c: Free and reallocate
-    eflash_mgr_free_internal(&ftl.spc_mgr, addrs[0], 4);
+    eflash_mgr_free(addrs[0], 4);
     uint32_t realloc_addr;
-    ret = eflash_mgr_alloc_internal(&ftl.spc_mgr, 4, &realloc_addr);
+    ret = eflash_mgr_alloc(4, &realloc_addr);
     assert(ret == 0);
     assert(realloc_addr == addrs[0]);
     printf("  [PASS] Free and reallocate\n");
 
     // Test 6d: Small object allocation
     uint32_t small_addr;
-    ret = eflash_mgr_alloc_internal(&ftl.spc_mgr, 2, &small_addr);
+    ret = eflash_mgr_alloc(2, &small_addr);
     assert(ret == 0);
     printf("  [PASS] Minimum size allocation (2 bytes, logical_addr=0x%06X)\n", small_addr);
 
@@ -846,10 +835,8 @@ int test_ecc_correction(void) {
     // ========================================================================
     printf("\n  [TEST] Real FTL read/write ECC scenario...\n");
 
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
 
     // 写入数据
     uint8_t write_buf[USER_DATA_SIZE];
@@ -857,11 +844,11 @@ int test_ecc_correction(void) {
         write_buf[i] = (uint8_t)((i * 7 + 13) & 0xFF); // 伪随机模式
     }
 
-    ASSERT(eflash_ftl_write(&ftl, 100, write_buf) == 0, "write for ECC test");
+    ASSERT(eflash_ftl_write(100, write_buf) == 0, "write for ECC test");
 
     // 读取并验证
     uint8_t read_buf[USER_DATA_SIZE];
-    ASSERT(eflash_ftl_read(&ftl, 100, read_buf) == 0, "read for ECC test");
+    ASSERT(eflash_ftl_read(100, read_buf) == 0, "read for ECC test");
     ASSERT(memcmp(write_buf, read_buf, USER_DATA_SIZE) == 0,
            "data integrity after FTL write/read");
     printf("  [PASS] FTL write/read preserves data integrity\n");
@@ -869,8 +856,10 @@ int test_ecc_correction(void) {
     cleanup_test_flash();
 
     printf("\n[PASS] test_ecc_correction: Completed successfully\n");
+    fflush(stdout);
     printf("  Summary: Tested meta-only ECC, full-page ECC (507 bytes),\n");
     printf("           1/2/3-bit corrections, mixed errors, and real FTL scenario\n");
+    fflush(stdout);
     return 0;
 }
 
@@ -878,45 +867,77 @@ int test_ecc_correction(void) {
 // Test 8: Radix Tree Operations
 // ============================================================================
 int test_radix_tree(void) {
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));  // 重要：清零结构体
     uint8_t write_buf[USER_DATA_SIZE];
     uint8_t read_buf[USER_DATA_SIZE];
 
     printf("[TEST] test_radix_tree: Starting...\n");
+    fflush(stdout);
 
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    printf("  [DEBUG] After init_test_flash\n");
+    fflush(stdout);
+    eflash_ftl_init();
+    printf("  [DEBUG] After eflash_ftl_init\n");
+    fflush(stdout);
 
     // Test 8a: Sequential writes build correct tree
+    printf("  [DEBUG] Starting sequential writes loop\n");
+    fflush(stdout);
     for (int i = 0; i < 20; i++) {
         create_test_pattern(write_buf, USER_DATA_SIZE, (uint8_t)(i + 0x50));
-        eflash_ftl_write(&ftl, (uint16_t)(i * 100), write_buf);
+        if (i % 5 == 0) {
+            printf("  [DEBUG] Writing sector %d...\n", i * 100);
+            fflush(stdout);
+        }
+        eflash_ftl_write((uint16_t)(i * 100), write_buf);
     }
+    printf("  [DEBUG] Sequential writes completed\n");
+    fflush(stdout);
 
     // Verify all data accessible via tree
+    printf("  [DEBUG] Starting verification loop\n");
+    fflush(stdout);
     for (int i = 0; i < 20; i++) {
-        eflash_ftl_read(&ftl, (uint16_t)(i * 100), read_buf);
+        if (i % 5 == 0) {
+            printf("  [DEBUG] Reading sector %d...\n", i * 100);
+            fflush(stdout);
+        }
+        eflash_ftl_read((uint16_t)(i * 100), read_buf);
         FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, (uint8_t)(i + 0x50)) == 0,
                      "Sequential writes tree verification failed");
     }
+    printf("  [DEBUG] Verification completed\n");
+    fflush(stdout);
     printf("  [PASS] Sequential writes tree integrity\n");
 
     // Test 8b: Random access pattern
+    printf("  [DEBUG] Starting random access writes\n");
+    fflush(stdout);
     for (int i = 19; i >= 0; i--) {
         create_test_pattern(write_buf, USER_DATA_SIZE, (uint8_t)(i + 0x70));
-        eflash_ftl_write(&ftl, (uint16_t)(i * 100), write_buf);
+        eflash_ftl_write((uint16_t)(i * 100), write_buf);
     }
+    printf("  [DEBUG] Random access writes completed\n");
+    fflush(stdout);
 
+    printf("  [DEBUG] Starting random access verification\n");
+    fflush(stdout);
     for (int i = 0; i < 20; i++) {
-        eflash_ftl_read(&ftl, (uint16_t)(i * 100), read_buf);
+        if (i % 5 == 0) {
+            printf("  [DEBUG] Reading sector %d...\n", i * 100);
+            fflush(stdout);
+        }
+        eflash_ftl_read((uint16_t)(i * 100), read_buf);
         FORCE_ASSERT(verify_test_pattern(read_buf, USER_DATA_SIZE, (uint8_t)(i + 0x70)) == 0,
                      "Random access tree verification failed");
     }
+    printf("  [DEBUG] Random access verification completed\n");
+    fflush(stdout);
     printf("  [PASS] Random access tree integrity\n");
 
     cleanup_test_flash();
     printf("[PASS] test_radix_tree: Completed successfully\n");
+    fflush(stdout);
     return 0;
 }
 
@@ -924,37 +945,48 @@ int test_radix_tree(void) {
 // Test 9: Stress Test
 // ============================================================================
 int test_stress(void) {
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));  // 重要：清零结构体
     uint8_t write_buf[USER_DATA_SIZE];
     uint8_t read_buf[USER_DATA_SIZE];
 
     printf("[TEST] test_stress: Starting...\n");
+    fflush(stdout);
 
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    printf("  [DEBUG] test_stress: After init_test_flash\n");
+    fflush(stdout);
+    eflash_ftl_init();
+    printf("  [DEBUG] test_stress: After eflash_ftl_init\n");
+    fflush(stdout);
 
     // Test 9a: Continuous writes
+    printf("  [DEBUG] Starting continuous writes loop\n");
+    fflush(stdout);
     for (int i = 0; i < 50; i++) {
         create_test_pattern(write_buf, USER_DATA_SIZE, (uint8_t)(i & 0xFF));
-        eflash_ftl_write(&ftl, (uint16_t)(i % 30), write_buf);
+        eflash_ftl_write((uint16_t)(i % 30), write_buf);
     }
+    printf("  [DEBUG] Continuous writes completed\n");
+    fflush(stdout);
     printf("  [PASS] 50 continuous writes\n");
 
     // Test 9b: Mixed transactions
+    printf("  [DEBUG] Starting mixed transactions loop\n");
+    fflush(stdout);
     for (int i = 0; i < 10; i++) {
-        eflash_ftl_txn_begin(&ftl);
+        eflash_ftl_txn_begin();
         for (int j = 0; j < 5; j++) {
             create_test_pattern(write_buf, USER_DATA_SIZE, (uint8_t)(i * 10 + j));
-            eflash_ftl_write(&ftl, (uint16_t)(200 + j), write_buf);
+            eflash_ftl_write((uint16_t)(200 + j), write_buf);
         }
 
         if (i % 2 == 0) {
-            eflash_ftl_txn_commit(&ftl);
+            eflash_ftl_txn_commit();
         } else {
-            eflash_ftl_txn_abort(&ftl);
+            eflash_ftl_txn_abort();
         }
     }
+    printf("  [DEBUG] Mixed transactions completed\n");
+    fflush(stdout);
     printf("  [PASS] Mixed transaction commit/abort\n");
 
     // Test 9c: Object header stress
@@ -963,7 +995,7 @@ int test_stress(void) {
         memset(&hdr, 0, sizeof(hdr));
         hdr.pkg_id = (uint16_t)(0x4000 + i);
         hdr.body_size = (uint32_t)(i * 5);
-        eflash_ftl_obj_set_header(&ftl, (uint16_t)i, &hdr);
+        eflash_ftl_obj_set_header((uint16_t)i, &hdr);
     }
     printf("  [PASS] 100 object headers\n");
 
@@ -1037,7 +1069,8 @@ int main(void) {
  */
 
 // Helper: Print radix tree structure (text-based visualization)
-static void print_radix_tree_node(eflash_ftl_t *ftl, uint16_t page, int depth, int max_depth) {
+static void print_radix_tree_node(uint16_t page, int depth, int max_depth) {
+    eflash_ftl_t *ftl = &g_ftl_instance;
     if (page == PAGE_NONE || depth > max_depth) return;
 
     ftl_meta_t meta;
@@ -1063,17 +1096,19 @@ static void print_radix_tree_node(eflash_ftl_t *ftl, uint16_t page, int depth, i
     }
 }
 
-static void print_radix_tree(eflash_ftl_t *ftl) {
+static void print_radix_tree(void) {
+    eflash_ftl_t *ftl = &g_ftl_instance;
     printf("\n=== Radix Tree Structure ===\n");
     printf("Root page: %d\n", ftl->root_page);
     if (ftl->root_page != PAGE_NONE) {
-        print_radix_tree_node(ftl, ftl->root_page, 0, 4);
+        print_radix_tree_node(ftl->root_page, 0, 4);
     }
     printf("===========================\n\n");
 }
 
 // Helper: Verify tree integrity by checking all alt pointers form valid paths
-static int verify_tree_integrity(eflash_ftl_t *ftl) {
+static int verify_tree_integrity(void) {
+    eflash_ftl_t *ftl = &g_ftl_instance;
     if (ftl->root_page == PAGE_NONE) return 0; // Empty tree is valid
 
     // Check that root page is valid
@@ -1128,10 +1163,8 @@ static int verify_tree_integrity(eflash_ftl_t *ftl) {
 static int test_radix_tree_single_sector_updates(void) {
     TEST(test_radix_tree_single_sector_updates);
 
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));  // 重要：清零结构体
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
 
     const uint16_t test_sector = 42;
     uint8_t write_data[USER_DATA_SIZE];
@@ -1145,11 +1178,11 @@ static int test_radix_tree_single_sector_updates(void) {
         memset(write_data, i, USER_DATA_SIZE);
 
         // Write to same logical sector
-        int ret = eflash_ftl_write(&ftl, test_sector, write_data);
+        int ret = eflash_ftl_write(test_sector, write_data);
         ASSERT(ret == 0, "write should succeed");
 
         // Immediately read back and verify
-        ret = eflash_ftl_read(&ftl, test_sector, read_data);
+        ret = eflash_ftl_read(test_sector, read_data);
         ASSERT(ret == 0, "read should succeed");
         ASSERT(memcmp(write_data, read_data, USER_DATA_SIZE) == 0,
                "data should match after write");
@@ -1157,21 +1190,21 @@ static int test_radix_tree_single_sector_updates(void) {
         // Every 50 writes, print tree structure
         if ((i + 1) % 50 == 0) {
             printf("    After %d writes: root=%d, next_count=%d\n",
-                   i + 1, ftl.root_page, ftl.next_count);
+                   i + 1, g_ftl_instance.root_page, g_ftl_instance.next_count);
         }
     }
 
     // Final verification
     memset(write_data, 249, USER_DATA_SIZE);
-    eflash_ftl_read(&ftl, test_sector, read_data);
+    eflash_ftl_read(test_sector, read_data);
     ASSERT(memcmp(write_data, read_data, USER_DATA_SIZE) == 0,
            "final data should be pattern 249");
 
     // Verify tree integrity
-    ASSERT(verify_tree_integrity(&ftl) == 0, "tree integrity check");
+    ASSERT(verify_tree_integrity() == 0, "tree integrity check");
 
     // Print final tree structure
-    print_radix_tree(&ftl);
+    print_radix_tree();
 
     cleanup_test_flash();
     PASS();
@@ -1180,10 +1213,8 @@ static int test_radix_tree_single_sector_updates(void) {
 static int test_radix_tree_multiple_sectors(void) {
     TEST(test_radix_tree_multiple_sectors);
 
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));  // 重要：清零结构体
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
 
     const int num_sectors = 16;
     uint16_t sectors[] = {0, 1, 2, 3, 7, 8, 15, 16, 31, 32, 63, 64, 127, 128, 255, 256};
@@ -1195,37 +1226,37 @@ static int test_radix_tree_multiple_sectors(void) {
     // Phase 1: Write each sector once
     for (int i = 0; i < num_sectors; i++) {
         memset(write_data, i + 10, USER_DATA_SIZE);
-        ASSERT(eflash_ftl_write(&ftl, sectors[i], write_data) == 0, "initial write");
+        ASSERT(eflash_ftl_write(sectors[i], write_data) == 0, "initial write");
     }
 
     // Verify all sectors
     for (int i = 0; i < num_sectors; i++) {
-        ASSERT(eflash_ftl_read(&ftl, sectors[i], read_data) == 0, "read after initial write");
+        ASSERT(eflash_ftl_read(sectors[i], read_data) == 0, "read after initial write");
         memset(write_data, i + 10, USER_DATA_SIZE);
         ASSERT(memcmp(write_data, read_data, USER_DATA_SIZE) == 0, "data matches");
     }
 
     printf("    Phase 1 complete: all %d sectors written and verified\n", num_sectors);
-    print_radix_tree(&ftl);
+    print_radix_tree();
 
     // Phase 2: Update sectors in reverse order
     for (int i = num_sectors - 1; i >= 0; i--) {
         memset(write_data, i + 100, USER_DATA_SIZE);
-        ASSERT(eflash_ftl_write(&ftl, sectors[i], write_data) == 0, "update write");
+        ASSERT(eflash_ftl_write(sectors[i], write_data) == 0, "update write");
     }
 
     // Verify updated data
     for (int i = 0; i < num_sectors; i++) {
-        ASSERT(eflash_ftl_read(&ftl, sectors[i], read_data) == 0, "read after update");
+        ASSERT(eflash_ftl_read(sectors[i], read_data) == 0, "read after update");
         memset(write_data, i + 100, USER_DATA_SIZE);
         ASSERT(memcmp(write_data, read_data, USER_DATA_SIZE) == 0, "updated data matches");
     }
 
     printf("    Phase 2 complete: all sectors updated and verified\n");
-    print_radix_tree(&ftl);
+    print_radix_tree();
 
     // Verify tree integrity
-    ASSERT(verify_tree_integrity(&ftl) == 0, "tree integrity after updates");
+    ASSERT(verify_tree_integrity() == 0, "tree integrity after updates");
 
     cleanup_test_flash();
     PASS();
@@ -1234,10 +1265,8 @@ static int test_radix_tree_multiple_sectors(void) {
 static int test_radix_tree_path_correctness(void) {
     TEST(test_radix_tree_path_correctness);
 
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));  // 重要：清零结构体
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
 
     // Write sectors with specific bit patterns to test path tracing
     // Sector 0:   0b0000000000000000
@@ -1250,19 +1279,19 @@ static int test_radix_tree_path_correctness(void) {
 
     for (int i = 0; i < 4; i++) {
         memset(data, i + 1, USER_DATA_SIZE);
-        ASSERT(eflash_ftl_write(&ftl, test_sectors[i], data) == 0, "write test sector");
+        ASSERT(eflash_ftl_write(test_sectors[i], data) == 0, "write test sector");
     }
 
     // Verify each sector can be read correctly
     for (int i = 0; i < 4; i++) {
-        ASSERT(eflash_ftl_read(&ftl, test_sectors[i], data) == 0, "read test sector");
+        ASSERT(eflash_ftl_read(test_sectors[i], data) == 0, "read test sector");
         ASSERT(data[0] == (uint8_t)(i + 1), "correct data for sector");
     }
 
     printf("    Path correctness verified for sectors: 0, 1, 2, 32768\n");
-    print_radix_tree(&ftl);
+    print_radix_tree();
 
-    ASSERT(verify_tree_integrity(&ftl) == 0, "tree integrity");
+    ASSERT(verify_tree_integrity() == 0, "tree integrity");
 
     cleanup_test_flash();
     PASS();
@@ -1271,10 +1300,8 @@ static int test_radix_tree_path_correctness(void) {
 static int test_radix_tree_stress_random_access(void) {
     TEST(test_radix_tree_stress_random_access);
 
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));  // 重要：清零结构体
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
 
     const int num_operations = 100;
     uint8_t last_written[256]; // Track last written value for each sector (use uint8_t to match write_val)
@@ -1296,16 +1323,16 @@ static int test_radix_tree_stress_random_access(void) {
 
         if (sector == 0) {
             printf("  [DIAG] Write #%d: sector=0, val=0x%02X, root_page=%d\n",
-                   i, write_val, ftl.root_page);
+                   i, write_val, g_ftl_instance.root_page);
         }
 
-        ASSERT(eflash_ftl_write(&ftl, sector, write_data) == 0, "random write");
+        ASSERT(eflash_ftl_write(sector, write_data) == 0, "random write");
         last_written[sector] = write_val;
         write_count[sector]++;
 
         // Read back and verify
         uint8_t read_data[USER_DATA_SIZE];
-        ASSERT(eflash_ftl_read(&ftl, sector, read_data) == 0, "random read");
+        ASSERT(eflash_ftl_read(sector, read_data) == 0, "random read");
         ASSERT(read_data[0] == write_val, "random read data matches");
     }
 
@@ -1317,9 +1344,9 @@ static int test_radix_tree_stress_random_access(void) {
 
     // First, print the final radix tree structure
     printf("\n=== Final Radix Tree Structure ===\n");
-    printf("Root page: %d\n", ftl.root_page);
-    if (ftl.root_page != PAGE_NONE) {
-        print_radix_tree(&ftl);
+    printf("Root page: %d\n", g_ftl_instance.root_page);
+    if (g_ftl_instance.root_page != PAGE_NONE) {
+        print_radix_tree();
     }
     printf("==================================\n\n");
 
@@ -1330,7 +1357,7 @@ static int test_radix_tree_stress_random_access(void) {
                        i, last_written[i], write_count[i]);
             }
             uint8_t read_data[USER_DATA_SIZE];
-            int ret = eflash_ftl_read(&ftl, i, read_data);
+            int ret = eflash_ftl_read(i, read_data);
             if (ret != 0) {
                 printf("    [ERROR] Failed to read sector %d (expected value: 0x%02X)\n",
                        i, last_written[i]);
@@ -1363,7 +1390,7 @@ static int test_radix_tree_stress_random_access(void) {
     }
 
     printf("    Verified %d unique sectors\n", verified_count);
-    ASSERT(verify_tree_integrity(&ftl) == 0, "tree integrity after stress test");
+    ASSERT(verify_tree_integrity() == 0, "tree integrity after stress test");
 
     cleanup_test_flash();
     PASS();
@@ -1383,10 +1410,10 @@ int test_gc_basic() {
     printf("[TEST] test_gc_basic: Starting...\n");
 
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
 
-    printf("  [GC] Initial free pages: %d\n", eflash_ftl_get_free_pages(&ftl));
-    printf("  [GC] GC threshold: %d pages\n", ftl.gc_threshold);
+    printf("  [GC] Initial free pages: %d\n", eflash_ftl_get_free_pages());
+    printf("  [GC] GC threshold: %d pages\n", g_ftl_instance.gc_threshold);
 
     // 阶段1：写入数据直到触发 GC
     int write_count = 0;
@@ -1403,9 +1430,9 @@ int test_gc_basic() {
         uint8_t write_data[USER_DATA_SIZE];
         memset(write_data, write_val, USER_DATA_SIZE);
 
-        uint32_t free_before = eflash_ftl_get_free_pages(&ftl);
+        uint32_t free_before = eflash_ftl_get_free_pages();
 
-        if (eflash_ftl_write(&ftl, sector, write_data) != 0) {
+        if (eflash_ftl_write(sector, write_data) != 0) {
             printf("  [GC] Write failed at iteration %d (space exhausted)\n", i);
             break;
         }
@@ -1413,7 +1440,7 @@ int test_gc_basic() {
         last_written[sector] = write_val;
         write_count++;
 
-        uint32_t free_after = eflash_ftl_get_free_pages(&ftl);
+        uint32_t free_after = eflash_ftl_get_free_pages();
 
         // 检测是否触发了 GC（空闲页数突然增加）
         if (free_after > free_before + 10) {
@@ -1430,7 +1457,7 @@ int test_gc_basic() {
 
     printf("  [GC] Phase 1 complete: wrote %d pages, GC triggered %d times\n",
            write_count, gc_triggered);
-    printf("  [GC] Final free pages: %d\n", eflash_ftl_get_free_pages(&ftl));
+    printf("  [GC] Final free pages: %d\n", eflash_ftl_get_free_pages());
 
     // 阶段2：验证所有写入的数据仍可读取
     printf("  [GC] Phase 2: Verifying data integrity after GC...\n");
@@ -1439,7 +1466,7 @@ int test_gc_basic() {
     for (int i = 0; i < 200; i++) {
         if (last_written[i] != 0xFF) {
             uint8_t read_data[USER_DATA_SIZE];
-            if (eflash_ftl_read(&ftl, i, read_data) == 0) {
+            if (eflash_ftl_read(i, read_data) == 0) {
                 ASSERT_FMT(read_data[0] == last_written[i],
                           "data mismatch after GC for sector %d", i);
                 verified_count++;
@@ -1455,14 +1482,14 @@ int test_gc_basic() {
     // 阶段3：手动触发 GC 并验证
     printf("  [GC] Phase 3: Manual GC trigger test...\n");
 
-    uint32_t free_before_manual_gc = eflash_ftl_get_free_pages(&ftl);
+    uint32_t free_before_manual_gc = eflash_ftl_get_free_pages();
     printf("  [GC] Free pages before manual GC: %d\n", free_before_manual_gc);
 
     // 手动触发 GC，尝试回收 50 页
-    int freed = eflash_ftl_gc_collect(&ftl, 50);
+    int freed = eflash_ftl_gc_collect(50);
     printf("  [GC] Manual GC freed %d pages\n", freed);
 
-    uint32_t free_after_manual_gc = eflash_ftl_get_free_pages(&ftl);
+    uint32_t free_after_manual_gc = eflash_ftl_get_free_pages();
     printf("  [GC] Free pages after manual GC: %d\n", free_after_manual_gc);
 
     ASSERT(free_after_manual_gc >= free_before_manual_gc,
@@ -1474,7 +1501,7 @@ int test_gc_basic() {
     for (int i = 0; i < 200; i++) {
         if (last_written[i] != 0xFF) {
             uint8_t read_data[USER_DATA_SIZE];
-            if (eflash_ftl_read(&ftl, i, read_data) == 0) {
+            if (eflash_ftl_read(i, read_data) == 0) {
                 ASSERT_FMT(read_data[0] == last_written[i],
                           "data mismatch after manual GC for sector %d", i);
             } else {
@@ -1507,13 +1534,13 @@ int test_gc_round_wrap() {
     printf("[TEST] test_gc_round_wrap: Starting...\n");
 
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
 
     printf("  [WRAP] Testing GC round-wrap with REAL writes...\n");
-    printf("  [WRAP] Total user pages: %d\n", ftl.total_user_pages);
-    printf("  [WRAP] Initial tail_page: %d\n", ftl.gc_tail_page);
+    printf("  [WRAP] Total user pages: %d\n", g_ftl_instance.total_user_pages);
+    printf("  [WRAP] Initial tail_page: %d\n", g_ftl_instance.gc_tail_page);
     printf("  [WRAP] GC threshold: %d pages (%.1f%%)\n",
-           ftl.gc_threshold, (float)ftl.gc_threshold / ftl.total_user_pages * 100);
+           g_ftl_instance.gc_threshold, (float)g_ftl_instance.gc_threshold / g_ftl_instance.total_user_pages * 100);
 
     // 阶段1：计算需要写入的页数，使 tail 自然移动到接近末尾
     printf("\n  [WRAP] Phase 1: Calculating write strategy...\n");
@@ -1524,7 +1551,7 @@ int test_gc_round_wrap() {
 
     // 关键修正：为了触发 GC，需要让空闲空间低于阈值
     // 当前阈值是 20% (1636 页)，所以需要写入至少 (总容量 - 阈值 + 余量) 页
-    int min_writes_to_trigger_gc = ftl.total_user_pages - ftl.gc_threshold + 200;
+    int min_writes_to_trigger_gc = g_ftl_instance.total_user_pages - g_ftl_instance.gc_threshold + 200;
 
     // 策略：写入足够多的唯一 sector，直到触发 GC
     // 为了让 tail 移动到 75% 位置，需要写入约 75% 的用户区页数
@@ -1544,7 +1571,7 @@ int test_gc_round_wrap() {
 
     int total_writes = 0;
     int gc_triggers = 0;
-    uint16_t last_tail_before_wrap = ftl.gc_tail_page;
+    uint16_t last_tail_before_wrap = g_ftl_instance.gc_tail_page;
     bool wrap_detected = false;
     bool gc_triggered = false;
 
@@ -1553,10 +1580,10 @@ int test_gc_round_wrap() {
         uint8_t write_data[USER_DATA_SIZE];
         memset(write_data, (uint8_t)(i & 0xFF), USER_DATA_SIZE);
 
-        uint16_t tail_before = ftl.gc_tail_page;
-        uint32_t free_before = eflash_ftl_get_free_pages(&ftl);
+        uint16_t tail_before = g_ftl_instance.gc_tail_page;
+        uint32_t free_before = eflash_ftl_get_free_pages();
 
-        if (eflash_ftl_write(&ftl, sector, write_data) != 0) {
+        if (eflash_ftl_write(sector, write_data) != 0) {
             printf("  [WRAP] Write failed at iteration %d (space exhausted)\n", i);
             printf("  [WRAP] This is EXPECTED if flash is full\n");
             break;
@@ -1564,8 +1591,8 @@ int test_gc_round_wrap() {
 
         total_writes++;
 
-        uint16_t tail_after = ftl.gc_tail_page;
-        uint32_t free_after = eflash_ftl_get_free_pages(&ftl);
+        uint16_t tail_after = g_ftl_instance.gc_tail_page;
+        uint32_t free_after = eflash_ftl_get_free_pages();
 
         // 检测 GC 触发（空闲空间突然增加）
         if (free_after > free_before + 5) {
@@ -1590,7 +1617,7 @@ int test_gc_round_wrap() {
         // 每 1000 次输出状态
         if (i % 1000 == 0) {
             printf("  [WRAP] Write #%d: tail=%d, free=%d, GCs=%d%s\n",
-                   i, ftl.gc_tail_page, free_after, gc_triggers,
+                   i, g_ftl_instance.gc_tail_page, free_after, gc_triggers,
                    gc_triggered ? " [GC ACTIVE]" : "");
         }
 
@@ -1610,7 +1637,7 @@ int test_gc_round_wrap() {
     printf("\n  [WRAP] Phase 2 complete:\n");
     printf("  [WRAP]   Total writes: %d\n", total_writes);
     printf("  [WRAP]   GC triggers: %d %s\n", gc_triggers, gc_triggered ? "✓" : "✗");
-    printf("  [WRAP]   Final tail_page: %d\n", ftl.gc_tail_page);
+    printf("  [WRAP]   Final tail_page: %d\n", g_ftl_instance.gc_tail_page);
     printf("  [WRAP]   Round-wrap detected: %s\n", wrap_detected ? "YES ✓" : "NO ✗");
 
     // 验证 GC 是否真正被触发
@@ -1618,7 +1645,7 @@ int test_gc_round_wrap() {
         printf("\n  [WRAP] ERROR: GC was NEVER triggered!\n");
         printf("  [WRAP] This means the test did not verify actual GC behavior.\n");
         printf("  [WRAP] Current free space: %d pages (threshold: %d)\n",
-               eflash_ftl_get_free_pages(&ftl), ftl.gc_threshold);
+               eflash_ftl_get_free_pages(), g_ftl_instance.gc_threshold);
         ASSERT(gc_triggered, "GC must be triggered to validate GC mechanism");
     }
 
@@ -1629,16 +1656,16 @@ int test_gc_round_wrap() {
         printf("  [WRAP] Forcing tail to near end for wrap verification...\n");
 
         // 降级方案：手动设置 tail 到末尾附近
-        ftl.gc_tail_page = last_user_page - 10;
-        printf("  [WRAP] Set tail_page to %d (manual fallback)\n", ftl.gc_tail_page);
+        g_ftl_instance.gc_tail_page = last_user_page - 10;
+        printf("  [WRAP] Set tail_page to %d (manual fallback)\n", g_ftl_instance.gc_tail_page);
     }
 
     // 阶段3：执行一次 GC 确认回绕行为
     printf("\n  [WRAP] Phase 3: Triggering GC to confirm wrap behavior...\n");
 
-    uint16_t tail_before_gc = ftl.gc_tail_page;
-    int freed = eflash_ftl_gc_collect(&ftl, 20); // 回收 20 页
-    uint16_t tail_after_gc = ftl.gc_tail_page;
+    uint16_t tail_before_gc = g_ftl_instance.gc_tail_page;
+    int freed = eflash_ftl_gc_collect(20); // 回收 20 页
+    uint16_t tail_after_gc = g_ftl_instance.gc_tail_page;
 
     printf("  [WRAP] GC freed %d pages\n", freed);
     printf("  [WRAP] Tail moved: %d -> %d\n", tail_before_gc, tail_after_gc);
@@ -1659,7 +1686,7 @@ int test_gc_round_wrap() {
         uint8_t write_data[USER_DATA_SIZE];
         memset(write_data, (uint8_t)(0xA0 + (i % 96)), USER_DATA_SIZE);
 
-        if (eflash_ftl_write(&ftl, sector, write_data) == 0) {
+        if (eflash_ftl_write(sector, write_data) == 0) {
             post_wrap_writes++;
         } else {
             printf("  [WRAP] Write failed at post-wrap iteration %d\n", i);
@@ -1681,7 +1708,7 @@ int test_gc_round_wrap() {
         uint16_t sector = (uint16_t)(rand() % total_writes);
         uint8_t read_data[USER_DATA_SIZE];
 
-        if (eflash_ftl_read(&ftl, sector, read_data) == 0) {
+        if (eflash_ftl_read(sector, read_data) == 0) {
             verified_count++;
         } else {
             read_errors++;
@@ -1717,21 +1744,21 @@ int test_gc_stress() {
     printf("[TEST] test_gc_stress: Starting...\n");
 
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
 
     printf("  [STRESS] Starting GC stress test...\n");
-    printf("  [STRESS] Total capacity: %d pages\n", ftl.total_user_pages);
+    printf("  [STRESS] Total capacity: %d pages\n", g_ftl_instance.total_user_pages);
 
     // 阶段1：激进写入，快速消耗空间直到触发 GC
     printf("  [STRESS] Phase 1: Aggressive writing until GC triggers...\n");
 
     int total_writes = 0;
     int gc_count = 0;
-    uint32_t last_free = eflash_ftl_get_free_pages(&ftl);
+    uint32_t last_free = eflash_ftl_get_free_pages();
     bool gc_triggered = false;
 
     // 计算需要写入的最小页数以触发 GC
-    int min_writes_for_gc = ftl.total_user_pages - ftl.gc_threshold + 100;
+    int min_writes_for_gc = g_ftl_instance.total_user_pages - g_ftl_instance.gc_threshold + 100;
     int max_iterations = min_writes_for_gc + 500; // 额外多写一些确保触发
 
     printf("  [STRESS] Min writes to trigger GC: %d\n", min_writes_for_gc);
@@ -1742,16 +1769,16 @@ int test_gc_stress() {
         uint8_t write_data[USER_DATA_SIZE];
         memset(write_data, (uint8_t)(i & 0xFF), USER_DATA_SIZE);
 
-        uint32_t free_before = eflash_ftl_get_free_pages(&ftl);
+        uint32_t free_before = eflash_ftl_get_free_pages();
 
-        if (eflash_ftl_write(&ftl, sector, write_data) != 0) {
+        if (eflash_ftl_write(sector, write_data) != 0) {
             printf("  [STRESS] Write failed at iteration %d (space exhausted)\n", i);
             break;
         }
 
         total_writes++;
 
-        uint32_t free_after = eflash_ftl_get_free_pages(&ftl);
+        uint32_t free_after = eflash_ftl_get_free_pages();
 
         // 检测 GC 触发（空闲空间突然增加）
         if (free_after > free_before + 5) {
@@ -1781,7 +1808,7 @@ int test_gc_stress() {
     printf("  [STRESS] Phase 1 complete: %d writes, %d GCs triggered %s\n",
            total_writes, gc_count, gc_triggered ? "✓" : "✗");
     printf("  [STRESS] Final free space: %d pages (%.1f%%)\n",
-           last_free, (float)last_free / ftl.total_user_pages * 100);
+           last_free, (float)last_free / g_ftl_instance.total_user_pages * 100);
 
     // 验证 GC 是否真正被触发
     ASSERT(gc_triggered, "GC must be triggered in stress test to validate GC mechanism");
@@ -1794,7 +1821,7 @@ int test_gc_stress() {
         uint16_t sector = (uint16_t)(rand() % 150);
         uint8_t read_data[USER_DATA_SIZE];
 
-        if (eflash_ftl_read(&ftl, sector, read_data) != 0) {
+        if (eflash_ftl_read(sector, read_data) != 0) {
             printf("  [STRESS] ERROR: Read failed for sector %d\n", sector);
             errors++;
         }
@@ -1809,7 +1836,7 @@ int test_gc_stress() {
     int readable_count = 0;
     for (int i = 0; i < 150; i++) {
         uint8_t read_data[USER_DATA_SIZE];
-        if (eflash_ftl_read(&ftl, (uint16_t)i, read_data) == 0) {
+        if (eflash_ftl_read((uint16_t)i, read_data) == 0) {
             readable_count++;
         }
     }
@@ -1835,7 +1862,7 @@ static int test_logical_address_interface(void) {
     init_test_flash();
 
     eflash_ftl_t ftl;
-    ASSERT(eflash_ftl_init(&ftl) == 0, "FTL initialization");
+    ASSERT(eflash_ftl_init() == 0, "FTL initialization");
 
     printf("  [LOGICAL] Testing logical address allocation and I/O...\n");
 
@@ -1843,15 +1870,15 @@ static int test_logical_address_interface(void) {
     uint32_t logical_addr1, logical_addr2, logical_addr3;
 
     // 分配USER_DATA_SIZE字节的空间（一个完整的页数据）
-    ASSERT(eflash_mgr_alloc_internal(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr1) == 0,
+    ASSERT(eflash_mgr_alloc(USER_DATA_SIZE, &logical_addr1) == 0,
            "allocate first logical address");
     printf("  [LOGICAL] Allocated logical_addr1 = 0x%06X (byte offset)\n", logical_addr1);
 
-    ASSERT(eflash_mgr_alloc_internal(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr2) == 0,
+    ASSERT(eflash_mgr_alloc(USER_DATA_SIZE, &logical_addr2) == 0,
            "allocate second logical address");
     printf("  [LOGICAL] Allocated logical_addr2 = 0x%06X (byte offset)\n", logical_addr2);
 
-    ASSERT(eflash_mgr_alloc_internal(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr3) == 0,
+    ASSERT(eflash_mgr_alloc(USER_DATA_SIZE, &logical_addr3) == 0,
            "allocate third logical address");
     printf("  [LOGICAL] Allocated logical_addr3 = 0x%06X (byte offset)\n", logical_addr3);
 
@@ -1878,28 +1905,28 @@ static int test_logical_address_interface(void) {
     }
 
     printf("  [LOGICAL] Writing data using sector_ids...\n");
-    ASSERT(eflash_ftl_write(&ftl, sector_id1, write_data1) == 0, "write to sector_id1");
-    ASSERT(eflash_ftl_write(&ftl, sector_id2, write_data2) == 0, "write to sector_id2");
-    ASSERT(eflash_ftl_write(&ftl, sector_id3, write_data3) == 0, "write to sector_id3");
+    ASSERT(eflash_ftl_write(sector_id1, write_data1) == 0, "write to sector_id1");
+    ASSERT(eflash_ftl_write(sector_id2, write_data2) == 0, "write to sector_id2");
+    ASSERT(eflash_ftl_write(sector_id3, write_data3) == 0, "write to sector_id3");
 
     // 测试3：读取数据并验证
     uint8_t read_data[USER_DATA_SIZE];
 
     printf("  [LOGICAL] Reading data using sector_ids...\n");
-    ASSERT(eflash_ftl_read(&ftl, sector_id1, read_data) == 0, "read from sector_id1");
+    ASSERT(eflash_ftl_read(sector_id1, read_data) == 0, "read from sector_id1");
     ASSERT(memcmp(read_data, write_data1, USER_DATA_SIZE) == 0, "data matches for sector_id1");
 
-    ASSERT(eflash_ftl_read(&ftl, sector_id2, read_data) == 0, "read from sector_id2");
+    ASSERT(eflash_ftl_read(sector_id2, read_data) == 0, "read from sector_id2");
     ASSERT(memcmp(read_data, write_data2, USER_DATA_SIZE) == 0, "data matches for sector_id2");
 
-    ASSERT(eflash_ftl_read(&ftl, sector_id3, read_data) == 0, "read from sector_id3");
+    ASSERT(eflash_ftl_read(sector_id3, read_data) == 0, "read from sector_id3");
     ASSERT(memcmp(read_data, write_data3, USER_DATA_SIZE) == 0, "data matches for sector_id3");
 
     // 测试4：测试新的逻辑地址接口
     printf("  [LOGICAL] Testing eflash_ftl_write_logical/read_logical interfaces...\n");
 
     uint32_t logical_addr4;
-    ASSERT(eflash_mgr_alloc_internal(&ftl.spc_mgr, USER_DATA_SIZE, &logical_addr4) == 0,
+    ASSERT(eflash_mgr_alloc(USER_DATA_SIZE, &logical_addr4) == 0,
            "allocate fourth logical address");
 
     uint8_t write_data4[USER_DATA_SIZE];
@@ -1908,12 +1935,12 @@ static int test_logical_address_interface(void) {
     }
 
     // 使用新的逻辑地址接口写入（内部会自动转换为sector_id）
-    ASSERT(eflash_ftl_write_logical(&ftl, logical_addr4, write_data4, USER_DATA_SIZE) == 0,
+    ASSERT(eflash_ftl_write_logical(logical_addr4, write_data4, USER_DATA_SIZE) == 0,
            "write using eflash_ftl_write_logical");
 
     // 使用新的逻辑地址接口读取
     uint8_t read_data4[USER_DATA_SIZE];
-    ASSERT(eflash_ftl_read_logical(&ftl, logical_addr4, read_data4, USER_DATA_SIZE) == 0,
+    ASSERT(eflash_ftl_read_logical(logical_addr4, read_data4, USER_DATA_SIZE) == 0,
            "read using eflash_ftl_read_logical");
     ASSERT(memcmp(read_data4, write_data4, USER_DATA_SIZE) == 0,
            "data matches for logical_addr4 using new interface");
@@ -1923,11 +1950,11 @@ static int test_logical_address_interface(void) {
 
     // 测试5：释放逻辑地址空间
     printf("  [LOGICAL] Testing eflash_mgr_free...\n");
-    eflash_mgr_free_internal(&ftl.spc_mgr, logical_addr1, USER_DATA_SIZE);
-    eflash_mgr_free_internal(&ftl.spc_mgr, logical_addr2, USER_DATA_SIZE);
+    eflash_mgr_free(logical_addr1, USER_DATA_SIZE);
+    eflash_mgr_free(logical_addr2, USER_DATA_SIZE);
 
     // 验证剩余空闲空间
-    uint32_t free_bytes = eflash_mgr_get_free_bytes_internal(&ftl.spc_mgr);
+    uint32_t free_bytes = eflash_mgr_get_free_bytes();
     printf("  [LOGICAL] Free bytes after freeing 2 pages: %u\n", free_bytes);
 
     cleanup_test_flash();
@@ -1939,44 +1966,42 @@ static int test_logical_address_interface(void) {
 // ============================================================================
 static int test_gc_manual_trigger(void) {
     TEST(gc_manual_trigger);
-    
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));
+
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
     
     uint8_t write_buf[USER_DATA_SIZE];
     uint8_t read_buf[USER_DATA_SIZE];
     
     printf("  [GC_TRIGGER] Testing manual GC trigger...\n");
-    printf("  [GC_TRIGGER] Initial free pages: %d\n", eflash_ftl_get_free_pages(&ftl));
+    printf("  [GC_TRIGGER] Initial free pages: %d\n", eflash_ftl_get_free_pages());
     
     // Write data to create invalid pages
     for (int i = 0; i < 50; i++) {
         memset(write_buf, (uint8_t)(i & 0xFF), USER_DATA_SIZE);
-        ASSERT(eflash_ftl_write(&ftl, (uint16_t)i, write_buf) == 0, "initial write");
+        ASSERT(eflash_ftl_write((uint16_t)i, write_buf) == 0, "initial write");
     }
     
     // Overwrite to create invalid pages
     for (int i = 0; i < 30; i++) {
         memset(write_buf, 0xFF, USER_DATA_SIZE);
-        ASSERT(eflash_ftl_write(&ftl, (uint16_t)i, write_buf) == 0, "overwrite");
+        ASSERT(eflash_ftl_write((uint16_t)i, write_buf) == 0, "overwrite");
     }
     
-    uint32_t free_before_gc = eflash_ftl_get_free_pages(&ftl);
+    uint32_t free_before_gc = eflash_ftl_get_free_pages();
     printf("  [GC_TRIGGER] Free pages before manual GC: %d\n", free_before_gc);
     
     // Manually trigger GC
-    int ret = eflash_ftl_gc_trigger(&ftl);
+    int ret = eflash_ftl_gc_trigger();
     printf("  [GC_TRIGGER] eflash_ftl_gc_trigger() returned: %d\n", ret);
     
-    uint32_t free_after_gc = eflash_ftl_get_free_pages(&ftl);
+    uint32_t free_after_gc = eflash_ftl_get_free_pages();
     printf("  [GC_TRIGGER] Free pages after manual GC: %d\n", free_after_gc);
     
     // Verify data integrity
     int verified = 0;
     for (int i = 30; i < 50; i++) {
-        ASSERT(eflash_ftl_read(&ftl, (uint16_t)i, read_buf) == 0, "read after GC");
+        ASSERT(eflash_ftl_read((uint16_t)i, read_buf) == 0, "read after GC");
         if (read_buf[0] == (uint8_t)(i & 0xFF)) {
             verified++;
         }
@@ -1994,18 +2019,16 @@ static int test_gc_manual_trigger(void) {
 // ============================================================================
 static int test_read_unwritten_sector(void) {
     TEST(read_unwritten_sector);
-    
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));
+
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
     
     uint8_t read_buf[USER_DATA_SIZE];
     
     printf("  [UNWRITTEN] Testing read of unwritten sector...\n");
     
     // Read an unwritten sector
-    int ret = eflash_ftl_read(&ftl, 9999, read_buf);
+    int ret = eflash_ftl_read(9999, read_buf);
     
     if (ret != 0) {
         printf("  [PASS] Correctly returned error for unwritten sector: %d\n", ret);
@@ -2036,11 +2059,9 @@ static int test_read_unwritten_sector(void) {
 // ============================================================================
 static int test_object_header_extension(void) {
     TEST(object_header_extension);
-    
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));
+
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
     
     obj_header_t hdr;
     obj_header_t read_hdr;
@@ -2054,7 +2075,7 @@ static int test_object_header_extension(void) {
     printf("  [OBJ_EXT] Allocating %d object headers...\n", test_count);
     
     for (int i = 0; i < test_count; i++) {
-        uint16_t obj_id = eflash_ftl_obj_alloc_header(&ftl);
+        uint16_t obj_id = eflash_ftl_obj_alloc_header();
         
         // obj_id should be sequential but skip LINK positions
         // LINK positions: 231, 347, 463, etc.
@@ -2069,7 +2090,7 @@ static int test_object_header_extension(void) {
         hdr.class_id = (uint16_t)(0x2000 + i);
         hdr.body_size = (uint32_t)(i * 100);
         
-        ASSERT(eflash_ftl_obj_set_header(&ftl, obj_id, &hdr) == 0, "set extended header");
+        ASSERT(eflash_ftl_obj_set_header(obj_id, &hdr) == 0, "set extended header");
     }
     
     printf("  [OBJ_EXT] Allocated %d object headers (including %d extended)\n", 
@@ -2079,8 +2100,8 @@ static int test_object_header_extension(void) {
     int verified = 0;
     int data_index = 0;  // Track the data index (not obj_id)
     
-    for (uint16_t obj_id = 0; obj_id <= ftl.max_obj_id && data_index < test_count; obj_id++) {
-        ASSERT(eflash_ftl_obj_get_header(&ftl, obj_id, &read_hdr) == 0, "get extended header");
+    for (uint16_t obj_id = 0; obj_id <= g_ftl_instance.max_obj_id && data_index < test_count; obj_id++) {
+        ASSERT(eflash_ftl_obj_get_header(obj_id, &read_hdr) == 0, "get extended header");
         
         // Skip LINK objects (they have different content)
         if (read_hdr.type != OBJ_TYPE_LINK) {
@@ -2112,11 +2133,9 @@ static int test_object_header_extension(void) {
 // ============================================================================
 static int test_txn_abort_without_begin(void) {
     TEST(txn_abort_without_begin);
-    
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));
+
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
     
     uint8_t write_buf[USER_DATA_SIZE];
     uint8_t read_buf[USER_DATA_SIZE];
@@ -2125,13 +2144,13 @@ static int test_txn_abort_without_begin(void) {
     
     // Write committed data first
     memset(write_buf, 0xAA, USER_DATA_SIZE);
-    ASSERT(eflash_ftl_write(&ftl, 100, write_buf) == 0, "initial write");
+    ASSERT(eflash_ftl_write(100, write_buf) == 0, "initial write");
     
     // Call abort without begin (should not corrupt data)
-    eflash_ftl_txn_abort(&ftl);
+    eflash_ftl_txn_abort();
     
     // Verify data is still readable
-    ASSERT(eflash_ftl_read(&ftl, 100, read_buf) == 0, "read after abort without begin");
+    ASSERT(eflash_ftl_read(100, read_buf) == 0, "read after abort without begin");
     ASSERT(memcmp(read_buf, write_buf, USER_DATA_SIZE) == 0, "data should be unchanged");
     
     printf("  [PASS] Abort without begin handled correctly\n");
@@ -2145,11 +2164,9 @@ static int test_txn_abort_without_begin(void) {
 // ============================================================================
 static int test_multiple_sequential_commits(void) {
     TEST(multiple_sequential_commits);
-    
-    eflash_ftl_t ftl;
-    memset(&ftl, 0, sizeof(ftl));
+
     init_test_flash();
-    eflash_ftl_init(&ftl);
+    eflash_ftl_init();
     
     uint8_t write_buf[USER_DATA_SIZE];
     uint8_t read_buf[USER_DATA_SIZE];
@@ -2158,18 +2175,18 @@ static int test_multiple_sequential_commits(void) {
     
     // Execute 10 consecutive transaction commits
     for (int txn = 0; txn < 10; txn++) {
-        eflash_ftl_txn_begin(&ftl);
+        eflash_ftl_txn_begin();
         
         memset(write_buf, (uint8_t)(txn + 0x10), USER_DATA_SIZE);
-        ASSERT(eflash_ftl_write(&ftl, (uint16_t)txn, write_buf) == 0, "write in transaction");
+        ASSERT(eflash_ftl_write((uint16_t)txn, write_buf) == 0, "write in transaction");
         
-        ASSERT(eflash_ftl_txn_commit(&ftl) == 0, "commit transaction");
+        ASSERT(eflash_ftl_txn_commit() == 0, "commit transaction");
     }
     
     // Verify all data
     int verified = 0;
     for (int txn = 0; txn < 10; txn++) {
-        ASSERT(eflash_ftl_read(&ftl, (uint16_t)txn, read_buf) == 0, "read after commit");
+        ASSERT(eflash_ftl_read((uint16_t)txn, read_buf) == 0, "read after commit");
         if (read_buf[0] == (uint8_t)(txn + 0x10)) {
             verified++;
         }
@@ -2181,3 +2198,12 @@ static int test_multiple_sequential_commits(void) {
     cleanup_test_flash();
     PASS();
 }
+
+
+
+
+
+
+
+
+

@@ -189,10 +189,9 @@ int eflash_hw_is_blank(uint16_t page_addr);
  * Performs initialization or recovery based on flash state.
  * Must be called before any other FTL operations.
  * 
- * @param ftl Pointer to FTL context (must be allocated by caller)
  * @return 0 on success, negative error code on failure
  */
-int eflash_ftl_init(eflash_ftl_t *ftl);
+int eflash_ftl_init(void);
 
 /**
  * @brief Allocate a new object header ID
@@ -200,30 +199,27 @@ int eflash_ftl_init(eflash_ftl_t *ftl);
  * Allocates the next available object ID sequentially.
  * Automatically handles extension when base capacity is exceeded.
  * 
- * @param ftl FTL instance
  * @return Object ID (0 to max), or PAGE_NONE on failure
  */
-uint16_t eflash_ftl_obj_alloc_header(eflash_ftl_t *ftl);
+uint16_t eflash_ftl_obj_alloc_header(void);
 
 /**
  * @brief Read an object header by ID
  * 
- * @param ftl FTL instance
  * @param obj_id Object ID to read
  * @param hdr Output buffer for object header (must be at least sizeof(obj_header_t))
  * @return 0 on success, -1 if object not found or invalid
  */
-int eflash_ftl_obj_get_header(eflash_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr);
+int eflash_ftl_obj_get_header(uint16_t obj_id, obj_header_t *hdr);
 
 /**
  * @brief Write an object header by ID
  * 
- * @param ftl FTL instance
  * @param obj_id Object ID to write
  * @param hdr Object header data to write
  * @return 0 on success, -1 on failure
  */
-int eflash_ftl_obj_set_header(eflash_ftl_t *ftl, uint16_t obj_id, const obj_header_t *hdr);
+int eflash_ftl_obj_set_header(uint16_t obj_id, const obj_header_t *hdr);
 
 // ============================================================================
 // Data I/O Interface (Sector-based)
@@ -235,24 +231,22 @@ int eflash_ftl_obj_set_header(eflash_ftl_t *ftl, uint16_t obj_id, const obj_head
  * Writes USER_DATA_SIZE bytes to the specified sector.
  * The write is buffered until transaction commit.
  * 
- * @param ftl FTL instance
  * @param sector_id Logical sector ID
  * @param data Data to write (USER_DATA_SIZE bytes)
  * @return 0 on success, negative error code on failure
  */
-int eflash_ftl_write(eflash_ftl_t *ftl, uint16_t sector_id, const uint8_t *data);
+int eflash_ftl_write(uint16_t sector_id, const uint8_t *data);
 
 /**
  * @brief Read data from a logical sector
  * 
  * Reads USER_DATA_SIZE bytes from the specified sector.
  * 
- * @param ftl FTL instance
  * @param sector_id Logical sector ID
  * @param data Buffer to read into (USER_DATA_SIZE bytes)
  * @return 0 on success, negative error code on failure
  */
-int eflash_ftl_read(eflash_ftl_t *ftl, uint16_t sector_id, uint8_t *data);
+int eflash_ftl_read(uint16_t sector_id, uint8_t *data);
 
 // ============================================================================
 // Data I/O Interface (Byte-addressable)
@@ -263,24 +257,22 @@ int eflash_ftl_read(eflash_ftl_t *ftl, uint16_t sector_id, uint8_t *data);
  * 
  * Allocates space and writes data of arbitrary size.
  * 
- * @param ftl FTL instance
  * @param logical_addr Logical byte address (output from eflash_mgr_alloc)
  * @param data Data to write
  * @param size Number of bytes to write
  * @return 0 on success, negative error code on failure
  */
-int eflash_ftl_write_logical(eflash_ftl_t *ftl, uint32_t logical_addr, const uint8_t *data, int16_t size);
+int eflash_ftl_write_logical(uint32_t logical_addr, const uint8_t *data, int16_t size);
 
 /**
  * @brief Read data using byte-level logical address
  * 
- * @param ftl FTL instance
  * @param logical_addr Logical byte address
  * @param data Buffer to read into
  * @param size Number of bytes to read
  * @return 0 on success, negative error code on failure
  */
-int eflash_ftl_read_logical(eflash_ftl_t *ftl, uint32_t logical_addr, uint8_t *data, int16_t size);
+int eflash_ftl_read_logical(uint32_t logical_addr, uint8_t *data, int16_t size);
 
 // ============================================================================
 // Transaction Management
@@ -291,10 +283,8 @@ int eflash_ftl_read_logical(eflash_ftl_t *ftl, uint32_t logical_addr, uint8_t *d
  * 
  * All subsequent writes will be part of this transaction
  * until commit or abort is called.
- * 
- * @param ftl FTL instance
  */
-void eflash_ftl_txn_begin(eflash_ftl_t *ftl);
+void eflash_ftl_txn_begin(void);
 
 /**
  * @brief Commit the current transaction (universal method)
@@ -302,10 +292,9 @@ void eflash_ftl_txn_begin(eflash_ftl_t *ftl);
  * Commits all pending writes by rewriting full pages.
  * Works on all hardware but slower than word update.
  * 
- * @param ftl FTL instance
  * @return 0 on success, negative error code on failure
  */
-int eflash_ftl_txn_commit(eflash_ftl_t *ftl);
+int eflash_ftl_txn_commit(void);
 
 /**
  * @brief Commit the current transaction (optimized method)
@@ -313,19 +302,16 @@ int eflash_ftl_txn_commit(eflash_ftl_t *ftl);
  * Commits using word-level updates (1->0 bit transitions only).
  * Faster and extends flash lifespan, but requires hardware support.
  * 
- * @param ftl FTL instance
  * @return 0 on success, negative error code on failure
  */
-int eflash_ftl_txn_commit_with_update(eflash_ftl_t *ftl);
+int eflash_ftl_txn_commit_with_update(void);
 
 /**
  * @brief Abort the current transaction
  * 
  * Discards all pending writes and rolls back to previous state.
- * 
- * @param ftl FTL instance
  */
-void eflash_ftl_txn_abort(eflash_ftl_t *ftl);
+void eflash_ftl_txn_abort(void);
 
 // ============================================================================
 // Garbage Collection Interface
@@ -336,27 +322,24 @@ void eflash_ftl_txn_abort(eflash_ftl_t *ftl);
  * 
  * Triggers GC if free space is below threshold.
  * 
- * @param ftl FTL instance
  * @return 0 if GC was triggered or not needed, negative on error
  */
-int eflash_ftl_gc_trigger(eflash_ftl_t *ftl);
+int eflash_ftl_gc_trigger(void);
 
 /**
  * @brief Force garbage collection to free specific pages
  * 
- * @param ftl FTL instance
  * @param pages_to_free Minimum number of pages to reclaim
  * @return Number of pages actually freed, or negative on error
  */
-int eflash_ftl_gc_collect(eflash_ftl_t *ftl, uint16_t pages_to_free);
+int eflash_ftl_gc_collect(uint16_t pages_to_free);
 
 /**
  * @brief Get current number of free pages
  * 
- * @param ftl FTL instance
  * @return Number of free pages available
  */
-uint32_t eflash_ftl_get_free_pages(eflash_ftl_t *ftl);
+uint32_t eflash_ftl_get_free_pages(void);
 
 // ============================================================================
 // Space Manager Interface (Advanced)
