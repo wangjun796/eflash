@@ -17,7 +17,7 @@
 *✅ test_read_unwritten_sector - 读取未写入sector的边界测试
 *✅ test_object_header_extension - 对象头扩展机制测试（>232个对象）
 *✅ test_txn_abort_without_begin - 无begin调用abort的异常处理
-✅ test_multiple_sequential_commits - 多次连续提交测试
+*✅ test_multiple_sequential_commits - 多次连续提交测试
 */
 
 #include <stdio.h>

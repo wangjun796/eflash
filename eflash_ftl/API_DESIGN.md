@@ -41,29 +41,33 @@ typedef struct eflash_ftl eflash_ftl_t;
 
 ### ✅ 公共 API 函数
 ```c
-// 实例管理（静态分配 - 适合嵌入式系统）
-eflash_ftl_t* eflash_get_ftl(void);  // 获取全局 FTL 实例
-
-// 初始化
-int eflash_ftl_init(eflash_ftl_t *ftl);
+// 初始化（使用全局静态实例 g_ftl_instance）
+int eflash_ftl_init(void);
 
 // 数据 I/O
-int eflash_ftl_write(eflash_ftl_t *ftl, uint16_t sector_id, const uint8_t *data);
-int eflash_ftl_read(eflash_ftl_t *ftl, uint16_t sector_id, uint8_t *data);
+int eflash_ftl_write(uint16_t sector_id, const uint8_t *data);
+int eflash_ftl_read(uint16_t sector_id, uint8_t *data);
 
 // 事务管理
-void eflash_ftl_txn_begin(eflash_ftl_t *ftl);
-int eflash_ftl_txn_commit(eflash_ftl_t *ftl);
-void eflash_ftl_txn_abort(eflash_ftl_t *ftl);
+void eflash_ftl_txn_begin(void);
+int eflash_ftl_txn_commit(void);
+int eflash_ftl_txn_commit_with_update(void);  // 优化版本（需要硬件支持）
+void eflash_ftl_txn_abort(void);
 
 // 对象管理
-uint16_t eflash_ftl_obj_alloc_header(eflash_ftl_t *ftl);
-int eflash_ftl_obj_set_header(eflash_ftl_t *ftl, uint16_t obj_id, const obj_header_t *hdr);
-int eflash_ftl_obj_get_header(eflash_ftl_t *ftl, uint16_t obj_id, obj_header_t *hdr);
+uint16_t eflash_ftl_obj_alloc_header(void);
+int eflash_ftl_obj_set_header(uint16_t obj_id, const obj_header_t *hdr);
+int eflash_ftl_obj_get_header(uint16_t obj_id, obj_header_t *hdr);
 
 // GC 管理
-int eflash_ftl_gc_trigger(eflash_ftl_t *ftl);
-uint32_t eflash_ftl_get_free_pages(eflash_ftl_t *ftl);
+int eflash_ftl_gc_trigger(void);
+int eflash_ftl_gc_collect(uint16_t pages_to_free);
+uint32_t eflash_ftl_get_free_pages(void);
+
+// 空间管理
+int eflash_mgr_alloc(uint32_t size, uint32_t *out_logical_addr);
+void eflash_mgr_free(uint32_t logical_addr, uint32_t size);
+uint32_t eflash_mgr_get_free_bytes(void);
 
 // Flash 模拟（仅用于测试/开发）
 int eflash_init(const char *filename);
@@ -75,11 +79,18 @@ int eflash_hw_erase(uint16_t page_addr);
 ## ❌ eflash.h 不包含的内容
 
 - `ftl_meta_t` 结构（内部元数据格式）
-- `eflash_ftl_t` 的内部字段
-- `eflash_mgr_t` 结构
+- `eflash_ftl_t` 的内部字段（通过全局变量 `g_ftl_instance` 访问）
+- `eflash_mgr_t` 结构（通过宏 `MGR` 访问）
 - BCH/ECC 内部实现细节
 - Radix Tree 内部结构
 - 任何 `_internal` 或 `_private` 命名的函数
+
+**注意：** eflash.h 中定义了便捷宏：
+```c
+#define FTL (&g_ftl_instance)        // 访问全局 FTL 实例
+#define MGR (&g_ftl_instance.spc_mgr) // 访问空间管理器
+```
+这些宏简化了对全局实例的访问，但用户通常不需要直接使用它们。
 
 ## 使用方式
 
@@ -91,21 +102,19 @@ int eflash_hw_erase(uint16_t page_addr);
 #include "eflash.h"
 
 int main() {
-    // 创建 FTL 实例
-    eflash_ftl_t *ftl = eflash_ftl_create();
-    
-    // 初始化
+    // 初始化 Flash
     eflash_init("flash.bin");
-    eflash_ftl_init(ftl);
+    
+    // 初始化 FTL（使用全局静态实例）
+    eflash_ftl_init();
     
     // 使用公共 API
     uint8_t data[USER_DATA_SIZE];
-    eflash_ftl_txn_begin(ftl);
-    eflash_ftl_write(ftl, 100, data);
-    eflash_ftl_txn_commit(ftl);
+    eflash_ftl_txn_begin();
+    eflash_ftl_write(100, data);
+    eflash_ftl_txn_commit();
     
     // 清理
-    eflash_ftl_destroy(ftl);
     eflash_deinit();
     
     return 0;
@@ -113,7 +122,7 @@ int main() {
 ```
 
 **优点：**
-- ✅ 代码简洁
+- ✅ 代码简洁，无需管理 FTL 实例
 - ✅ 不依赖内部实现
 - ✅ 库升级时不受影响
 
@@ -131,14 +140,13 @@ int main() {
 #include "eflash.h"
 
 int main() {
-    // 现在可以访问内部结构
-    eflash_ftl_t ftl;  // 直接分配，而不是通过 create()
+    // 可以直接访问全局实例
+    printf("Root page: %d\n", FTL->root_page);
+    printf("GC head: %d\n", FTL->gc_head_page);
     
-    // 访问内部字段（仅用于调试/测试）
-    printf("Root page: %d\n", ftl.root_page);
-    printf("GC head: %d\n", ftl.gc_head_page);
-    
-    // ...
+    // ... 使用公共 API（不需要传递参数）
+    eflash_ftl_init();
+    eflash_ftl_write(100, data);
 }
 ```
 
@@ -170,25 +178,24 @@ int main() {
 
 ## 实例管理
 
-### 方法：使用 eflash_get_ftl()（唯一方式）
+### 全局静态实例（唯一方式）
 
 ```c
-// 获取全局 FTL 实例（静态分配，无需 malloc）
-eflash_ftl_t *ftl = eflash_get_ftl();
-
-// 初始化
-eflash_ftl_init(ftl);
+// 直接调用 API，无需获取实例
+eflash_ftl_init();
 
 // 使用...
+eflash_ftl_write(100, data);
 
-// 不需要 free/destroy - 使用静态分配
+// 如果需要访问内部字段，可以使用宏 FTL
+printf("Root page: %d\n", FTL->root_page);
 ```
 
 **优点：**
 - ✅ 无动态内存分配（适合嵌入式系统）
 - ✅ 无需管理生命周期
-- ✅ 线程安全（首次调用时初始化）
-- ✅ 零开销（全局静态变量）
+- ✅ 零开销（全局静态变量 `g_ftl_instance`）
+- ✅ 通过宏 `FTL` 和 `MGR` 简化访问
 
 **注意：**
 - ⚠️ 全局只有一个 FTL 实例
@@ -202,10 +209,8 @@ eflash_ftl_init(ftl);
    ```c
    #include "eflash.h"
    
-   eflash_ftl_t *ftl = eflash_get_ftl();  // 获取全局实例
-   eflash_ftl_init(ftl);
+   eflash_ftl_init();  // 直接使用，无需获取实例
    // ... 使用各种 API
-   // 不需要 destroy
    ```
    
    此示例演示了：
@@ -240,10 +245,10 @@ gcc your_app.c -leflash -lecc_lib -o your_app
    - 99% 的场景只需要 `eflash.h`
    - 避免依赖内部实现
 
-2. **使用 eflash_get_ftl() 获取实例**
-   - 无动态内存分配，适合嵌入式系统
-   - 无需管理生命周期
-   - 全局唯一实例
+2. **直接调用 API，无需管理实例**
+   - 所有 API 函数都不需要传递 `ftl` 或 `mgr` 参数
+   - 使用全局静态实例 `g_ftl_instance`
+   - 通过宏 `FTL` 和 `MGR` 访问内部字段（如需要）
 
 3. **仅在必要时包含内部头文件**
    - 测试代码
