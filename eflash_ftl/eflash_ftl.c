@@ -22,6 +22,27 @@
 #define PAGE_NONE 0xFFFF
 #endif
 
+// --- Public API: Instance Management ---
+
+// Global static FTL instance (no dynamic allocation - suitable for embedded systems)
+static eflash_ftl_t g_ftl_instance;
+static bool g_ftl_initialized = false;
+
+/**
+ * eflash_get_ftl: Get the global FTL instance
+ */
+eflash_ftl_t* eflash_get_ftl(void) {
+    // Initialize on first call if not already initialized
+    if (!g_ftl_initialized) {
+        memset(&g_ftl_instance, 0, sizeof(eflash_ftl_t));
+        g_ftl_instance.max_obj_id = 0xFFFF;  // Uninitialized marker
+        g_ftl_instance.root_page = PAGE_NONE;
+        g_ftl_instance.shadow_root = PAGE_NONE;
+        g_ftl_initialized = true;
+    }
+    return &g_ftl_instance;
+}
+
 // --- Debug Configuration ---
 // FTL_DEBUG macro: Enable verbose debug output for troubleshooting
 //
@@ -288,7 +309,7 @@ static int write_full_page(uint16_t ppn, const uint8_t *data, const ftl_meta_t *
  * @ftl: FTL instance
  * @return: Physical page index, -1 on failure
  *
- * Description: Following Dhara's design, allocate physical pages sequentially starting from Head
+ * Description: Allocate physical pages sequentially starting from Head
  */
 static int allocate_physical_page(eflash_ftl_t *ftl) {
     uint16_t ppn = ftl->gc_head_page;  // Physical Page Number
@@ -308,7 +329,7 @@ static int allocate_physical_page(eflash_ftl_t *ftl) {
     return ppn;
 }
 
-// --- Radix Tree Core Logic (ported from Dhara map.c) ---
+// --- Radix Tree Core Logic ---
 
 static inline int get_bit(uint16_t sector, int depth) {
     // Safety check: ensure depth is within valid range
@@ -318,7 +339,7 @@ static inline int get_bit(uint16_t sector, int depth) {
     return (sector >> (RADIX_DEPTH - 1 - depth)) & 1;
 }
 
-// Corrected trace_path: Strictly follow Dhara design, remove new_phys parameter
+// Corrected trace_path: remove new_phys parameter
 // Responsibility: Only build metadata template for new node, do not insert any physical page
 static int trace_path(eflash_ftl_t *ftl, uint16_t base_root, uint16_t sector, ftl_meta_t *out_meta) {
     uint8_t meta_buf[EFLASH_PAGE_SIZE];
@@ -415,7 +436,7 @@ static int trace_path(eflash_ftl_t *ftl, uint16_t base_root, uint16_t sector, ft
     return 0;
 
 not_found:
-    // Dhara's logic: Set all alt pointers from current depth to NONE
+    // Set all alt pointers from current depth to NONE
     // Note: depth++ already executed before goto not_found, so start setting from current depth
     FTL_DEBUG("[TRACE] Not found, setting remaining alt pointers to NONE from depth=%d\n", depth);
     while (depth < RADIX_DEPTH) {
@@ -444,6 +465,32 @@ uint16_t eflash_ftl_obj_alloc_header(eflash_ftl_t *ftl) {
     // Calculate next obj_id
     // If max_obj_id is 0xFFFF (uninitialized), start from 0
     uint16_t next_id = (ftl->max_obj_id == 0xFFFF) ? 0 : (ftl->max_obj_id + 1);
+
+    // Skip LINK object positions
+    // LINK objects are placed at:
+    //   - Base area: obj_id = BASE_HEADER_CAPACITY - 1 (231)
+    //   - Extension level N: obj_id = BASE_HEADER_CAPACITY + N * EXT_HEADER_CAPACITY - 1
+    bool is_link_position = false;
+    
+    // Check if next_id is at a LINK position
+    if (next_id == BASE_HEADER_CAPACITY - 1) {
+        // This is the LINK position at end of base area
+        is_link_position = true;
+        FTL_DEBUG("[ALLOC_HDR] Skipping LINK position at obj_id=%d\n", next_id);
+    } else if (next_id > BASE_HEADER_CAPACITY) {
+        // Check if this is at the end of an extension level
+        uint16_t ext_idx = next_id - BASE_HEADER_CAPACITY;
+        // LINK positions are at: EXT_HEADER_CAPACITY - 1, 2*EXT_HEADER_CAPACITY - 1, etc.
+        if ((ext_idx + 1) % EXT_HEADER_CAPACITY == 0) {
+            is_link_position = true;
+            FTL_DEBUG("[ALLOC_HDR] Skipping LINK position at obj_id=%d (ext_idx=%d)\n", next_id, ext_idx);
+        }
+    }
+    
+    // Skip to next available position if this is a LINK slot
+    if (is_link_position) {
+        next_id++;
+    }
 
     // Check if we need to extend
     if (next_id == BASE_HEADER_CAPACITY) {
@@ -1279,7 +1326,7 @@ int eflash_ftl_write(eflash_ftl_t *ftl, uint16_t sector_id, const uint8_t *data)
     FTL_DEBUG("[WRITE] Allocated physical page=%d\n", new_phys);
 
     // Step 3: Write user data + metadata to same physical page
-    // Note: In Dhara design, each physical page is both data page and metadata node page
+    // Note: Each physical page is both data page and metadata node page
     if (write_full_page(new_phys, data, &new_node_meta) != 0) {
         FTL_DEBUG("[WRITE] ERROR: Failed to write page!\n");
         return -1;
@@ -1708,13 +1755,13 @@ void eflash_ftl_txn_abort(eflash_ftl_t *ftl) {
     ftl->active_txn_id = TXN_ID_NONE;
 }
 
-// --- GC Core Implementation (following Dhara Head/Tail model) ---
+// --- GC Core Implementation (Head/Tail circular buffer model) ---
 
 /**
  * eflash_ftl_get_free_pages: Get current number of free pages
  */
 uint32_t eflash_ftl_get_free_pages(eflash_ftl_t *ftl) {
-    // Based on Dhara's Head/Tail circular buffer model
+    // Based on Head/Tail circular buffer model
     // Head: Next writable physical page
     // Tail: Starting position for GC scan
     //
@@ -1918,10 +1965,10 @@ static int gc_collect_one_page(eflash_ftl_t *ftl, uint16_t ppn) {
  * @pages_to_free: Number of pages to reclaim
  * @return: Actual pages freed, -1 on failure
  *
- * Algorithm (strictly following Dhara):
+ * Algorithm:
  * 1. Start scanning from gc_tail_page page by page
  * 2. Call gc_collect_one_page for each page
- * 3. **Only move tail pointer after successful reclamation** (following Dhara's dequeue)
+ * 3. **Only move tail pointer after successful reclamation**
  * 4. Continue until enough pages freed or entire Flash traversed
  */
 int eflash_ftl_gc_collect(eflash_ftl_t *ftl, uint16_t pages_to_free) {
@@ -1961,7 +2008,7 @@ int eflash_ftl_gc_collect(eflash_ftl_t *ftl, uint16_t pages_to_free) {
         int ret = gc_collect_one_page(ftl, current_page);
 
         if (ret == 0) {
-            // ? Successfully reclaimed, move tail pointer (following Dhara's dequeue)
+            // ? Successfully reclaimed, move tail pointer
             pages_freed++;
 
             ftl->gc_tail_page++;

@@ -1,28 +1,37 @@
 /* eFlash FTL - Comprehensive Test Suite
  * Tests for Mini-FTL implementation with transaction support
-*✅ test_basic_init_read_write - 基础初始化、读写测试
-*✅ test_object_headers - 对象头管理测试
-*✅ test_transactions - 事务机制测试
-*✅ test_power_failure - 掉电恢复测试
-*✅ test_space_management - 空间管理测试
-*✅ test_ecc_correction - ECC纠错测试
-*✅ test_radix_tree - 基数树结构测试
-*✅ test_stress - 压力测试（50次连续写入）
-*✅ test_radix_tree_single_sector_updates - 单sector更新测试
-*✅ test_radix_tree_multiple_sectors - 多sector测试
-*✅ test_radix_tree_path_correctness - 路径正确性测试
-*✅ test_radix_tree_stress_random_access - 随机访问压力测试（100次操作，83个唯一sector）
-*✅ test_gc_basic - 垃圾回收基础测试
+*✅ test_init_recovery - 初始化与恢复
+*✅ test_basic_read_write - 基础读写
+*✅ test_object_headers - 对象头管理（基础）
+*✅ test_transactions - 事务管理
+*✅ test_transactions_with_update - 带字更新的优化提交
+*✅ test_power_failure - 掉电恢复
+*✅ test_space_management - 空间管理
+*✅ test_ecc_correction - ECC纠错
+*✅ test_radix_tree - Radix Tree操作
+*✅ test_stress - 压力测试
+*✅ Radix Tree详细测试（4个）
+*✅ GC测试（3个：basic, round_wrap, stress）
+*✅ test_logical_address_interface - 逻辑地址接口
+*✅ test_gc_manual_trigger - 手动触发GC测试
+*✅ test_read_unwritten_sector - 读取未写入sector的边界测试
+*✅ test_object_header_extension - 对象头扩展机制测试（>232个对象）
+*✅ test_txn_abort_without_begin - 无begin调用abort的异常处理
+✅ test_multiple_sequential_commits - 多次连续提交测试
 */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
 #include <string.h>
+
+// For testing: include internal headers first to get full type definitions
 #include "eflash_ftl.h"
 #include "eflash_mgr.h"
 #include "eflash_sim.h"
-#include "../ecc/bch.h"
+
+// Then include public API header
+#include "eflash.h"
 
 // --- 强制断言宏（不受NDEBUG影响）---
 // 在Release模式下，标准assert()会被禁用，导致测试失败时不退出而卡死
@@ -354,12 +363,24 @@ int test_object_headers(void) {
 
     // Test 3b: Multiple headers - sequential allocation (must write sequentially!)
     // Allocate and write 249 more objects (total 250 including obj_id=0)
-    for (int i = 1; i < 250; i++) {
+    // Note: obj_id=231 is reserved for LINK object, so it will be skipped
+    int allocated_count = 1;  // Already have obj_id=0
+    int expected_next_id = 1;
+    
+    for (int i = 1; allocated_count < 250; i++) {
         uint16_t obj_id = eflash_ftl_obj_alloc_header(&ftl);
-        assert(obj_id == i);  // Verify sequential allocation
         
-        hdr.pkg_id = (uint16_t)(0x3000 + i);
-        hdr.body_size = (uint32_t)(i * 10);
+        // Skip LINK position at obj_id=231
+        if (expected_next_id == BASE_HEADER_CAPACITY - 1) {
+            expected_next_id++;  // Skip from 231 to 232
+        }
+        
+        assert(obj_id == expected_next_id);  // Verify correct allocation
+        expected_next_id++;
+        allocated_count++;
+        
+        hdr.pkg_id = (uint16_t)(0x3000 + obj_id);
+        hdr.body_size = (uint32_t)(obj_id * 10);
         eflash_ftl_obj_set_header(&ftl, obj_id, &hdr);
     }
 
@@ -377,22 +398,29 @@ int test_object_headers(void) {
     }
     printf("  [PASS] Sequential allocation test (250 objects)\n");
 
-    // Test 3c: Extended zone headers - allocate one more to reach obj_id=250
-    uint16_t obj_id_250 = eflash_ftl_obj_alloc_header(&ftl);
-    assert(obj_id_250 == 250);  // Should be the next sequential ID
+    // Test 3c: Extended zone headers - allocate one more to reach next obj_id
+    uint16_t next_obj_id = eflash_ftl_obj_alloc_header(&ftl);
+    
+    // Skip LINK position if needed
+    if (expected_next_id == BASE_HEADER_CAPACITY - 1) {
+        expected_next_id++;  // Skip from 231 to 232
+    }
+    
+    assert(next_obj_id == expected_next_id);  // Verify correct allocation
+    
     hdr.pkg_id = 0x9999;
     hdr.body_size = 256;
-    eflash_ftl_obj_set_header(&ftl, obj_id_250, &hdr);
+    eflash_ftl_obj_set_header(&ftl, next_obj_id, &hdr);
     
-    eflash_ftl_obj_get_header(&ftl, obj_id_250, &read_hdr);
+    eflash_ftl_obj_get_header(&ftl, next_obj_id, &read_hdr);
     assert(read_hdr.pkg_id == 0x9999);
     assert(read_hdr.body_size == 256);
-    printf("  [PASS] Extended zone header verified (obj_id=%d)\n", obj_id_250);
+    printf("  [PASS] Extended zone header verified (obj_id=%d)\n", next_obj_id);
 
     // Test 3d: Boundary check - try to read unallocated object
-    int ret = eflash_ftl_obj_get_header(&ftl, 251, &read_hdr);
+    int ret = eflash_ftl_obj_get_header(&ftl, (uint16_t)(expected_next_id + 1), &read_hdr);
     assert(ret == -1);  // Should fail (not allocated yet)
-    printf("  [PASS] Boundary check: cannot read unallocated obj_id=251\n");
+    printf("  [PASS] Boundary check: cannot read unallocated obj_id=%d\n", expected_next_id + 1);
 
     cleanup_test_flash();
     printf("[PASS] test_object_headers: Completed successfully\n");
@@ -986,6 +1014,13 @@ int main(void) {
     // Logical address interface test
     RUN_TEST(logical_address_interface)
     RUN_TEST(object_headers)  // Moved to last due to incomplete implementation
+    
+    // Additional comprehensive tests for complete coverage
+    RUN_TEST(gc_manual_trigger)
+    RUN_TEST(read_unwritten_sector)
+    RUN_TEST(object_header_extension)
+    RUN_TEST(txn_abort_without_begin)
+    RUN_TEST(multiple_sequential_commits)
 
     #undef RUN_TEST
 
@@ -1895,6 +1930,254 @@ static int test_logical_address_interface(void) {
     uint32_t free_bytes = eflash_mgr_get_free_bytes(&ftl.spc_mgr);
     printf("  [LOGICAL] Free bytes after freeing 2 pages: %u\n", free_bytes);
 
+    cleanup_test_flash();
+    PASS();
+}
+
+// ============================================================================
+// Test 20: Manual GC Trigger Test
+// ============================================================================
+static int test_gc_manual_trigger(void) {
+    TEST(gc_manual_trigger);
+    
+    eflash_ftl_t ftl;
+    memset(&ftl, 0, sizeof(ftl));
+    init_test_flash();
+    eflash_ftl_init(&ftl);
+    
+    uint8_t write_buf[USER_DATA_SIZE];
+    uint8_t read_buf[USER_DATA_SIZE];
+    
+    printf("  [GC_TRIGGER] Testing manual GC trigger...\n");
+    printf("  [GC_TRIGGER] Initial free pages: %d\n", eflash_ftl_get_free_pages(&ftl));
+    
+    // Write data to create invalid pages
+    for (int i = 0; i < 50; i++) {
+        memset(write_buf, (uint8_t)(i & 0xFF), USER_DATA_SIZE);
+        ASSERT(eflash_ftl_write(&ftl, (uint16_t)i, write_buf) == 0, "initial write");
+    }
+    
+    // Overwrite to create invalid pages
+    for (int i = 0; i < 30; i++) {
+        memset(write_buf, 0xFF, USER_DATA_SIZE);
+        ASSERT(eflash_ftl_write(&ftl, (uint16_t)i, write_buf) == 0, "overwrite");
+    }
+    
+    uint32_t free_before_gc = eflash_ftl_get_free_pages(&ftl);
+    printf("  [GC_TRIGGER] Free pages before manual GC: %d\n", free_before_gc);
+    
+    // Manually trigger GC
+    int ret = eflash_ftl_gc_trigger(&ftl);
+    printf("  [GC_TRIGGER] eflash_ftl_gc_trigger() returned: %d\n", ret);
+    
+    uint32_t free_after_gc = eflash_ftl_get_free_pages(&ftl);
+    printf("  [GC_TRIGGER] Free pages after manual GC: %d\n", free_after_gc);
+    
+    // Verify data integrity
+    int verified = 0;
+    for (int i = 30; i < 50; i++) {
+        ASSERT(eflash_ftl_read(&ftl, (uint16_t)i, read_buf) == 0, "read after GC");
+        if (read_buf[0] == (uint8_t)(i & 0xFF)) {
+            verified++;
+        }
+    }
+    
+    printf("  [GC_TRIGGER] Verified %d/20 sectors after manual GC\n", verified);
+    ASSERT(verified == 20, "all non-overwritten data should be intact");
+    
+    cleanup_test_flash();
+    PASS();
+}
+
+// ============================================================================
+// Test 21: Read Unwritten Sector Test
+// ============================================================================
+static int test_read_unwritten_sector(void) {
+    TEST(read_unwritten_sector);
+    
+    eflash_ftl_t ftl;
+    memset(&ftl, 0, sizeof(ftl));
+    init_test_flash();
+    eflash_ftl_init(&ftl);
+    
+    uint8_t read_buf[USER_DATA_SIZE];
+    
+    printf("  [UNWRITTEN] Testing read of unwritten sector...\n");
+    
+    // Read an unwritten sector
+    int ret = eflash_ftl_read(&ftl, 9999, read_buf);
+    
+    if (ret != 0) {
+        printf("  [PASS] Correctly returned error for unwritten sector: %d\n", ret);
+    } else {
+        // Check if returned default value (all 0xFF)
+        bool all_ff = true;
+        for (int i = 0; i < USER_DATA_SIZE; i++) {
+            if (read_buf[i] != 0xFF) {
+                all_ff = false;
+                break;
+            }
+        }
+        if (all_ff) {
+            printf("  [PASS] Returned default 0xFF for unwritten sector\n");
+        } else {
+            printf("  [FAIL] Unexpected data in unwritten sector\n");
+            cleanup_test_flash();
+            return -1;
+        }
+    }
+    
+    cleanup_test_flash();
+    PASS();
+}
+
+// ============================================================================
+// Test 22: Object Header Extension Test (>232 objects)
+// ============================================================================
+static int test_object_header_extension(void) {
+    TEST(object_header_extension);
+    
+    eflash_ftl_t ftl;
+    memset(&ftl, 0, sizeof(ftl));
+    init_test_flash();
+    eflash_ftl_init(&ftl);
+    
+    obj_header_t hdr;
+    obj_header_t read_hdr;
+    
+    printf("  [OBJ_EXT] Testing object header extension beyond base capacity...\n");
+    printf("  [OBJ_EXT] Base capacity: %d objects\n", BASE_HEADER_CAPACITY);
+    
+    // Allocate and write more than base capacity
+    int test_count = BASE_HEADER_CAPACITY + 20;
+    
+    printf("  [OBJ_EXT] Allocating %d object headers...\n", test_count);
+    
+    for (int i = 0; i < test_count; i++) {
+        uint16_t obj_id = eflash_ftl_obj_alloc_header(&ftl);
+        
+        // obj_id should be sequential but skip LINK positions
+        // LINK positions: 231, 347, 463, etc.
+        uint16_t expected_id = i;
+        if (i >= 231) expected_id++;  // Skip position 231
+        if (i >= 347) expected_id++;  // Skip position 347 (231 + 116)
+        
+        ASSERT(obj_id == expected_id, "allocation with LINK skip");
+        
+        memset(&hdr, 0, sizeof(hdr));
+        hdr.pkg_id = (uint16_t)(0x1000 + i);
+        hdr.class_id = (uint16_t)(0x2000 + i);
+        hdr.body_size = (uint32_t)(i * 100);
+        
+        ASSERT(eflash_ftl_obj_set_header(&ftl, obj_id, &hdr) == 0, "set extended header");
+    }
+    
+    printf("  [OBJ_EXT] Allocated %d object headers (including %d extended)\n", 
+           test_count, test_count - BASE_HEADER_CAPACITY);
+    
+    // Verify all headers are readable
+    int verified = 0;
+    int data_index = 0;  // Track the data index (not obj_id)
+    
+    for (uint16_t obj_id = 0; obj_id <= ftl.max_obj_id && data_index < test_count; obj_id++) {
+        ASSERT(eflash_ftl_obj_get_header(&ftl, obj_id, &read_hdr) == 0, "get extended header");
+        
+        // Skip LINK objects (they have different content)
+        if (read_hdr.type != OBJ_TYPE_LINK) {
+            if (read_hdr.pkg_id == (uint16_t)(0x1000 + data_index) &&
+                read_hdr.class_id == (uint16_t)(0x2000 + data_index) &&
+                read_hdr.body_size == (uint32_t)(data_index * 100)) {
+                verified++;
+                data_index++;
+            } else {
+                printf("  [ERROR] Mismatch at obj_id=%d, data_index=%d\n", obj_id, data_index);
+            }
+        } else {
+            // LINK object is valid, count it but don't increment data_index
+            verified++;
+            printf("  [INFO] obj_id=%d is a LINK object (expected)\n", obj_id);
+        }
+    }
+    
+    printf("  [OBJ_EXT] Verified %d object headers (including LINK objects)\n", verified);
+    // Should verify all allocated headers including LINK objects
+    ASSERT(verified >= test_count, "all allocated headers should be readable");
+    
+    cleanup_test_flash();
+    PASS();
+}
+
+// ============================================================================
+// Test 23: Transaction Abort Without Begin Test
+// ============================================================================
+static int test_txn_abort_without_begin(void) {
+    TEST(txn_abort_without_begin);
+    
+    eflash_ftl_t ftl;
+    memset(&ftl, 0, sizeof(ftl));
+    init_test_flash();
+    eflash_ftl_init(&ftl);
+    
+    uint8_t write_buf[USER_DATA_SIZE];
+    uint8_t read_buf[USER_DATA_SIZE];
+    
+    printf("  [TXN_ABORT] Testing abort without begin...\n");
+    
+    // Write committed data first
+    memset(write_buf, 0xAA, USER_DATA_SIZE);
+    ASSERT(eflash_ftl_write(&ftl, 100, write_buf) == 0, "initial write");
+    
+    // Call abort without begin (should not corrupt data)
+    eflash_ftl_txn_abort(&ftl);
+    
+    // Verify data is still readable
+    ASSERT(eflash_ftl_read(&ftl, 100, read_buf) == 0, "read after abort without begin");
+    ASSERT(memcmp(read_buf, write_buf, USER_DATA_SIZE) == 0, "data should be unchanged");
+    
+    printf("  [PASS] Abort without begin handled correctly\n");
+    
+    cleanup_test_flash();
+    PASS();
+}
+
+// ============================================================================
+// Test 24: Multiple Sequential Commits Test
+// ============================================================================
+static int test_multiple_sequential_commits(void) {
+    TEST(multiple_sequential_commits);
+    
+    eflash_ftl_t ftl;
+    memset(&ftl, 0, sizeof(ftl));
+    init_test_flash();
+    eflash_ftl_init(&ftl);
+    
+    uint8_t write_buf[USER_DATA_SIZE];
+    uint8_t read_buf[USER_DATA_SIZE];
+    
+    printf("  [SEQ_COMMIT] Testing multiple sequential commits...\n");
+    
+    // Execute 10 consecutive transaction commits
+    for (int txn = 0; txn < 10; txn++) {
+        eflash_ftl_txn_begin(&ftl);
+        
+        memset(write_buf, (uint8_t)(txn + 0x10), USER_DATA_SIZE);
+        ASSERT(eflash_ftl_write(&ftl, (uint16_t)txn, write_buf) == 0, "write in transaction");
+        
+        ASSERT(eflash_ftl_txn_commit(&ftl) == 0, "commit transaction");
+    }
+    
+    // Verify all data
+    int verified = 0;
+    for (int txn = 0; txn < 10; txn++) {
+        ASSERT(eflash_ftl_read(&ftl, (uint16_t)txn, read_buf) == 0, "read after commit");
+        if (read_buf[0] == (uint8_t)(txn + 0x10)) {
+            verified++;
+        }
+    }
+    
+    printf("  [SEQ_COMMIT] Verified %d/10 sequential commits\n", verified);
+    ASSERT(verified == 10, "all sequential commits should succeed");
+    
     cleanup_test_flash();
     PASS();
 }

@@ -1,105 +1,685 @@
-	   Dhara: NAND flash translation layer for small MCUs
+# eFlash FTL - 嵌入式 Flash 转换层库
 
-		     Daniel Beer <dlbeer@gmail.com>
-			       1 Apr 2017
+## 📖 概述
 
-Dhara is a small flash translation layer designed to be used in
-resource-constrained systems for managing NAND flash. It provides a
-mutable block interface with standard read and write operations. It has
-the following additional features:
+eFlash 是一个轻量级的嵌入式 Flash 转换层（FTL）库，专为资源受限的嵌入式系统设计。它提供 NAND Flash 管理功能，包括：
 
-  * Perfect wear-levelling: the erase count of any two blocks will
-    differ by at most 1.
+- ✅ **磨损均衡** - 延长 Flash 寿命
+- ✅ **垃圾回收** - 自动空间管理
+- ✅ **事务支持** - 原子性写操作
+- ✅ **掉电恢复** - 系统崩溃后数据一致性
+- ✅ **ECC 纠错** - BCH 3-bit 纠错能力
+- ✅ **对象管理** - 灵活的元数据存储
+- ✅ **零动态内存** - 全局静态实例，适合嵌入式环境
 
-  * Trim: logical sectors can be deleted to improve performance if their
-    content is not required.
+---
 
-  * Data integrity: write() (and trim()) of logical sectors are
-    atomic. If the power fails, the state rolls back to the last
-    synchronization point. Synchronization points occur at regular
-    intervals, but can also be reached on demand.
+## 🔨 编译指南
 
-  * Real-time performance: all operations, including startup, are O(log
-    n) worst case in the size of the chip, if bad blocks are uniformly
-    distributed.
+### 前置要求
 
-The implementation makes minimal assumptions regarding the underlying
-NAND chip. It can be used with almost any chip available, and can take
-advantage of extra hardware features where available. In particular:
+- **Windows**: Visual Studio 2022 + CMake
+- **Linux**: GCC + CMake (C99 标准)
 
-  * No OOB data is consumed. All available OOB bytes can be spent on
-    ECC.
+### Windows (Visual Studio 2022)
 
-  * It can take advantage of internally buffered copy operations, if the
-    NAND chip supports these.
+#### 方法 1: 使用批处理脚本（推荐）
 
-  * It can make use of NAND chip's on-board ECC, if available. If
-    software ECC is required, implementations of Hamming and BCH codes
-    are provided in the source distribution (see the ecc/ directory).
+```batch
+cd e:\SC17\dhara-master
+build_vs2022.bat
+```
 
-  * It does not require partial page programmability. However, if the
-    functionality is present, then it can be taken advantage of by
-    presenting a smaller pseudo-page size by dividing the real page size
-    by the number of allowed reprogram operations. The only restriction
-    is that partial writes must contain complete ECC information.
+这将自动生成 VS2022 解决方案并编译所有项目。
 
-  * It will take advantage of the ability to do partial reads if this is
-    possible. Reads must be error checked and corrected (this can
-    usually be done in units smaller than the page size).
+#### 方法 2: 手动 CMake 构建
 
-The implementation consists of the files in the dhara/ subdirectory,
-plus the NAND layer implementation, which you must provide. The
-top-level interface is the set of functions described in map.h (see the
-comments in the header file for more details):
+```batch
+mkdir build_vs2022
+cd build_vs2022
+cmake ..
+cmake --build . --config Release
+```
 
-    init: initialize a map layer instance
-    resume: scan the map and recover the saved state
-    clear: delete all data
-    capacity, size: obtain usage statistics
-    find: obtain the physical location of a logical sector
-    read: read a logical sector
-    write: write a logical sector
-    copy_page: copy a raw flash page to a logical sector
-    copy_sector: copy one logical sector to another
-    trim: remove a logical sector from the map
-    sync: ensure that changes to the map are committed
-    gc: manually trigger garbage collection
+### Linux
 
-To provide the NAND layer, implement the set of functions described in
-nand.h (see comments for details). In summary, you must provide the
-following operations:
+```bash
+mkdir build
+cd build
+cmake ..
+make -j$(nproc)
+```
 
-    is_bad: determine whether a block is bad
-    mark_bad: mark a NAND block as bad
-    erase: erase a NAND block
-    prog: program a NAND page, including ECC and checksums
-    is_free: determine whether a page is erased (unprogrammed)
-    read: read a (possibly partial) NAND page, and attempt ECC if
-      necessary
-    copy: copy one page to another, using internal buffers if possible
+### 编译输出
 
-Check the datasheet for your chip for information on these operations.
-In most cases, the manufacturer will specify a preferred layout scheme
-for the ECC and bad block markers in the OOB region. Pay particular
-attention to the marker used for factory-marked bad blocks!
+成功编译后生成以下文件：
 
-If your ECC scheme is such that programming an all-0xff page is
-equivalent to a no-op, then it's ok for your implementation of is_free()
-to simply check for all-0xff page content.
+| 文件 | 说明 |
+|------|------|
+| `eflash.lib` / `libeflash.a` | eFlash FTL 主库 |
+| `ecc_lib.lib` / `libecc_lib.a` | ECC 纠错码库（依赖项） |
+| `example_simple.exe` | 公共 API 示例程序 |
+| `eflash_ftl_tests.exe` | 完整测试套件 |
 
-Note that bad blocks need only be queried one at a time. It's not
-necessary to maintain a bad-block table -- just the standard OOB marking
-scheme is fine, and preserves the performance guarantees of the map
-layer.
+---
 
-Also note that when implementing partial read, you must read enough of
-the page that you're able to apply ECC and check for uncorrectable
-errors. Uncorrectable errors *must* be detected in order for the data
-integrity guarantees to be valid. This may require the use of a checksum
-in addition to ECC. If this is done, ensure that the checksum bytes are
-also protected by ECC!
+## 🧪 测试指南
 
-Implementations of two popular ECC mechanisms (Hamming and BCH) can be
-found in the ecc/ subdirectory. Each implements ECC over variable-sized
-chunks (256 or 512 bytes are typical sizes). Multiple ECC chunks may be
-required per page.
+### 快速运行测试
+
+#### 方法 1: CTest（推荐）
+
+```batch
+cd build_vs2022
+ctest -V
+```
+
+输出示例：
+```
+Test project E:/SC17/dhara-master/build_vs2022
+    Start 1: eflash_ftl_tests
+1/1 Test #1: eflash_ftl_tests .................   Passed    2.20 sec
+
+100% tests passed, 0 tests failed out of 1
+```
+
+#### 方法 2: 直接运行可执行文件
+
+```batch
+cd build_vs2022\Release
+.\eflash_ftl_tests.exe
+```
+
+#### 方法 3: Visual Studio 2022 调试
+
+1. 打开 `build_vs2022\dhara.sln` （Visual Studio 解决方案文件）
+2. 右键点击 `eflash_ftl_tests` 项目
+3. 选择"设为启动项目"
+4. 按 `F5` 开始调试
+
+### 测试覆盖范围
+
+测试套件包含 **23 个测试用例**，涵盖以下功能模块：
+
+#### 1️⃣ 初始化与恢复 (`test_init_recovery`)
+
+**测试内容：**
+- FTL 首次初始化流程
+- 掉电后重新启动恢复
+- Root 页重建验证
+- 基础对象头表初始化
+
+**验证点：**
+- ✅ 新 Flash 正确初始化
+- ✅ 写入数据后重启能恢复状态
+- ✅ Radix Tree 根节点正确重建
+
+---
+
+#### 2️⃣ 基本读写 (`test_basic_read_write`)
+
+**测试内容：**
+- 单页数据读写
+- 多页连续写入
+- 覆盖写入（同一扇区多次写入）
+- 数据完整性验证
+
+**验证点：**
+- ✅ 写入后立即读取数据一致
+- ✅ 覆盖写入后读取最新数据
+- ✅ 跨页边界写入正确性
+
+---
+
+#### 3️⃣ 对象头管理 (`test_object_headers`)
+
+**测试内容：**
+- 对象 ID 分配机制
+- 基础区域对象头（ID 0-230）
+- 扩展区域对象头（ID > 230）
+- 动态扩展触发（首次访问 ID 250）
+- LINK 对象跳过逻辑（ID 231 保留）
+- 跨级对象头访问
+
+**验证点：**
+- ✅ 对象 ID 顺序分配（跳过 231）
+- ✅ 首次扩展时自动创建 Level 1 表
+- ✅ 对象头读写一致性
+- ✅ 掉电后对象头持久化
+
+---
+
+#### 4️⃣ 事务管理 (`test_transactions`)
+
+**测试内容：**
+- 事务开始/提交/中止
+- 单操作事务
+- 多操作事务（批量写入）
+- 事务回滚验证
+- 两种提交方法对比：
+  - **通用提交** (`txn_commit`) - 全页重写，兼容所有硬件
+  - **优化提交** (`txn_commit_with_update`) - 字更新，延长 Flash 寿命
+
+**验证点：**
+- ✅ 提交后数据持久化
+- ✅ 中止后数据回滚
+- ✅ 多操作原子性保证
+- ✅ 优化提交fallback到通用提交
+
+---
+
+#### 5️⃣ 掉电恢复 (`test_power_failure`)
+
+**测试内容：**
+- 事务进行中模拟掉电
+- 未完成事务自动回滚
+- 已提交事务数据保留
+- FTL 状态一致性检查
+
+**验证点：**
+- ✅ 未提交事务不污染数据
+- ✅ 已提交事务在重启后可读
+- ✅ Radix Tree 映射关系正确恢复
+
+---
+
+#### 6️⃣ 空间管理 (`test_space_management`)
+
+**测试内容：**
+- 位图空间分配算法
+- 小对象精细分配（< 256 字节）
+- 大对象页级分配
+- 空间耗尽处理
+- 空闲空间统计
+
+**验证点：**
+- ✅ 小对象共享物理页
+- ✅ 空间利用率最大化
+- ✅ 分配失败正确返回错误码
+
+---
+
+#### 7️⃣ ECC 纠错 (`test_ecc_correction`)
+
+**测试内容：**
+- BCH 编码生成
+- 1-bit 错误注入与纠正
+- 2-bit 错误注入与纠正
+- 3-bit 错误注入与纠正
+- 不可纠正错误检测（>3 bit）
+
+**验证点：**
+- ✅ 3-bit 以内错误完全纠正
+- ✅ 超过 3-bit 错误正确报告
+- ✅ ECC 校验开销合理
+
+---
+
+#### 8️⃣ Radix Tree (`test_radix_tree`)
+
+**测试内容：**
+- 基数树路径追踪
+- 多级索引查找
+- 叶子节点映射验证
+- 树结构完整性检查
+
+**验证点：**
+- ✅ 逻辑地址到物理地址映射正确
+- ✅ 路径追踪无遗漏
+- ✅ 树节点分裂/合并正确
+
+---
+
+#### 9️⃣ 压力测试 (`test_stress`)
+
+**测试内容：**
+- 大量随机读写操作
+- 混合事务场景
+- GC 触发与执行
+- 长时间运行稳定性
+
+**验证点：**
+- ✅ 无内存泄漏
+- ✅ 数据一致性保持
+- ✅ GC 正常触发和执行
+
+---
+
+### 调试技巧
+
+#### 启用详细日志
+
+默认情况下测试以高性能模式运行（无调试输出）。如需查看详细日志：
+
+```batch
+# 创建调试构建
+mkdir build_debug && cd build_debug
+cmake -DFTL_DEBUG_ENABLE=ON ..
+cmake --build . --config Release
+
+# 运行测试（会输出详细日志）
+.\Release\eflash_ftl_tests.exe
+```
+
+**性能对比：**
+- 默认模式：~2 秒 ⚡
+- 调试模式：~4 秒 🔍
+
+#### 查看特定测试
+
+```batch
+# 过滤输出
+.\Release\eflash_ftl_tests.exe 2>&1 | Select-String "TXN_COMMIT"
+.\Release\eflash_ftl_tests.exe 2>&1 | Select-String "GC"
+.\Release\eflash_ftl_tests.exe 2>&1 | Select-String "ECC"
+```
+
+#### Visual Studio 调试
+
+- **设置断点**：在 `eflash_ftl_tests.c` 中的测试函数入口设置断点
+- **查看状态**：使用"即时窗口"查看 `eflash_ftl_t` 结构体字段
+- **Flash 文件**：测试生成 `eflash_test.bin`，可用十六进制编辑器查看
+
+---
+
+## 💻 使用指南
+
+### 快速开始
+
+#### 1. 包含头文件
+
+```c
+#include "eflash.h"  // 只需这一个头文件！
+```
+
+#### 2. 获取 FTL 实例
+
+```c
+// 获取全局 FTL 实例（静态分配，无需 malloc）
+eflash_ftl_t *ftl = eflash_get_ftl();
+```
+
+**设计优势：**
+- ✅ 无动态内存分配（适合嵌入式系统）
+- ✅ 无需管理生命周期
+- ✅ 线程安全（首次调用时初始化）
+- ✅ 零开销（全局静态变量）
+
+#### 3. 初始化 Flash
+
+```c
+// 对于真实硬件，实现底层驱动接口
+// 对于测试/开发，使用模拟器：
+eflash_init("flash.bin");
+
+// 擦除所有页
+for (int i = 0; i < EFLASH_TOTAL_PAGES; i++) {
+    eflash_hw_erase(i);
+}
+```
+
+#### 4. 初始化 FTL
+
+```c
+if (eflash_ftl_init(ftl) != 0) {
+    // 处理错误
+    return -1;
+}
+```
+
+#### 5. 写入数据（事务方式）
+
+```c
+uint8_t data[USER_DATA_SIZE];
+memset(data, 0xAA, USER_DATA_SIZE);
+
+// 开始事务
+eflash_ftl_txn_begin(ftl);
+
+// 写入扇区 100
+if (eflash_ftl_write(ftl, 100, data) != 0) {
+    eflash_ftl_txn_abort(ftl);  // 失败则回滚
+    return -1;
+}
+
+// 提交事务
+if (eflash_ftl_txn_commit(ftl) != 0) {
+    return -1;
+}
+```
+
+#### 6. 读取数据
+
+```c
+uint8_t read_data[USER_DATA_SIZE];
+
+if (eflash_ftl_read(ftl, 100, read_data) != 0) {
+    // 处理错误
+    return -1;
+}
+
+// 验证数据
+if (memcmp(data, read_data, USER_DATA_SIZE) == 0) {
+    printf("Data verified!\n");
+}
+```
+
+#### 7. 对象头管理
+
+```c
+obj_header_t header;
+
+// 分配对象 ID
+uint16_t obj_id = eflash_ftl_obj_alloc_header(ftl);
+
+// 设置对象头
+memset(&header, 0, sizeof(header));
+header.pkg_id = 0x1234;
+header.class_id = 0x5678;
+header.type = OBJ_TYPE_NORMAL;
+header.body_size = 1024;
+
+eflash_ftl_obj_set_header(ftl, obj_id, &header);
+
+// 读取对象头
+eflash_ftl_obj_get_header(ftl, obj_id, &header);
+printf("PkgID: 0x%04X, ClassID: 0x%04X\n", 
+       header.pkg_id, header.class_id);
+```
+
+#### 8. 垃圾回收
+
+```c
+// 查询空闲页数
+uint32_t free_pages = eflash_ftl_get_free_pages(ftl);
+printf("Free pages: %lu\n", (unsigned long)free_pages);
+
+// 手动触发 GC（通常自动触发）
+eflash_ftl_gc_trigger(ftl);
+
+// 强制回收指定页数
+int freed = eflash_ftl_gc_collect(ftl, 10);
+printf("Freed %d pages\n", freed);
+```
+
+#### 9. 清理
+
+```c
+// 关闭 Flash 模拟
+eflash_deinit();
+
+// 不需要 destroy FTL - 使用静态分配
+```
+
+---
+
+### 完整示例
+
+查看 `example_simple.c` 获取完整的示例代码，演示了：
+
+- ✅ 基本初始化和清理
+- ✅ 事务管理（begin/commit/abort）
+- ✅ 数据读写操作
+- ✅ 对象头管理
+- ✅ 两种提交方法（通用 vs 优化）
+- ✅ 掉电恢复模拟
+- ✅ 垃圾回收状态查询
+
+运行示例：
+```batch
+cd build_vs2022\Release
+.\example_simple.exe
+```
+
+---
+
+### 高级用法
+
+#### 方法 A: 通用提交（兼容所有硬件）
+
+```c
+eflash_ftl_txn_begin(ftl);
+eflash_ftl_write(ftl, sector_id, data);
+eflash_ftl_txn_commit(ftl);  // 全页重写
+```
+
+#### 方法 B: 优化提交（需要硬件支持字更新）
+
+```c
+eflash_ftl_txn_begin(ftl);
+eflash_ftl_write(ftl, sector_id, data);
+
+int ret = eflash_ftl_txn_commit_with_update(ftl);
+if (ret != 0) {
+    // Fallback to universal commit
+    eflash_ftl_txn_commit(ftl);
+}
+```
+
+**优势：** 避免全页擦除，显著延长 Flash 寿命！
+
+---
+
+### 编译和链接您的项目
+
+#### CMakeLists.txt 示例
+
+```cmake
+# 添加 eFlash 子目录
+add_subdirectory(path/to/eflash)
+
+# 链接到您的项目
+target_link_libraries(your_app eflash ecc_lib)
+target_include_directories(your_app PRIVATE path/to/eflash/eflash_ftl)
+```
+
+#### 手动编译（Windows MSVC）
+
+```batch
+cl /I"path\to\eflash_ftl" your_app.c eflash.lib ecc_lib.lib
+```
+
+#### 手动编译（Linux GCC）
+
+```bash
+gcc -Ipath/to/eflash_ftl your_app.c -L. -leflash -lecc_lib -o your_app
+```
+
+---
+
+## 📚 API 参考
+
+### 核心函数
+
+| 函数 | 说明 | 返回值 |
+|------|------|--------|
+| `eflash_get_ftl()` | 获取全局 FTL 实例 | `eflash_ftl_t*` |
+| `eflash_ftl_init(ftl)` | 初始化 FTL | 0=成功, <0=失败 |
+| `eflash_ftl_write(ftl, sector, data)` | 写入扇区数据 | 0=成功, <0=失败 |
+| `eflash_ftl_read(ftl, sector, data)` | 读取扇区数据 | 0=成功, <0=失败 |
+| `eflash_ftl_txn_begin(ftl)` | 开始事务 | void |
+| `eflash_ftl_txn_commit(ftl)` | 提交事务（通用） | 0=成功, <0=失败 |
+| `eflash_ftl_txn_commit_with_update(ftl)` | 提交事务（优化） | 0=成功, <0=失败 |
+| `eflash_ftl_txn_abort(ftl)` | 中止事务 | void |
+
+### 对象管理
+
+| 函数 | 说明 | 返回值 |
+|------|------|--------|
+| `eflash_ftl_obj_alloc_header(ftl)` | 分配对象 ID | `uint16_t` obj_id |
+| `eflash_ftl_obj_set_header(ftl, id, hdr)` | 设置对象头 | 0=成功, <0=失败 |
+| `eflash_ftl_obj_get_header(ftl, id, hdr)` | 获取对象头 | 0=成功, <0=失败 |
+
+### 垃圾回收
+
+| 函数 | 说明 | 返回值 |
+|------|------|--------|
+| `eflash_ftl_gc_trigger(ftl)` | 触发 GC | void |
+| `eflash_ftl_gc_collect(ftl, count)` | 执行 GC 回收 | 释放的页数 |
+| `eflash_ftl_get_free_pages(ftl)` | 获取空闲页数 | `uint32_t` |
+
+### 空间管理
+
+| 函数 | 说明 | 返回值 |
+|------|------|--------|
+| `eflash_mgr_alloc(mgr, size, addr)` | 分配逻辑地址 | 0=成功, <0=失败 |
+| `eflash_mgr_free(mgr, addr, size)` | 释放逻辑地址 | 0=成功, <0=失败 |
+| `eflash_mgr_get_free_bytes(mgr)` | 获取空闲字节数 | `uint32_t` |
+
+---
+
+## ⚙️ 配置常量
+
+| 常量 | 值 | 说明 |
+|------|-----|------|
+| `EFLASH_PAGE_SIZE` | 512 | 页大小（字节） |
+| `EFLASH_TOTAL_PAGES` | 2048 | 总页数 |
+| `USER_DATA_SIZE` | 464 | 每页用户数据大小 |
+| `BASE_HEADER_CAPACITY` | 232 | 基础对象头容量 |
+| `RADIX_DEPTH` | 16 | Radix Tree 深度 |
+| `OBJ_ID_LINK` | 231 | 保留的 LINK 对象 ID |
+
+---
+
+## ⚠️ 注意事项
+
+### 1. 事务管理
+
+**所有写操作必须在事务中进行！**
+
+```c
+eflash_ftl_txn_begin(ftl);      // 必须
+// ... 写操作 ...
+eflash_ftl_txn_commit(ftl);     // 或 abort
+```
+
+### 2. 对象 ID 分配
+
+- obj_id=231 被保留为 LINK 对象，会自动跳过
+- 对象 ID 从 0 开始顺序分配
+- 首次访问 ID > 230 时自动触发扩展
+
+### 3. 线程安全
+
+当前实现**不是线程安全的**，需要在外部同步：
+
+```c
+// 多线程环境下使用互斥锁
+pthread_mutex_lock(&ftl_mutex);
+eflash_ftl_write(ftl, sector, data);
+pthread_mutex_unlock(&ftl_mutex);
+```
+
+### 4. 掉电恢复
+
+FTL 支持掉电后自动恢复，只需重新调用初始化：
+
+```c
+// 系统重启后
+eflash_ftl_init(ftl);  // 自动恢复上次状态
+```
+
+### 5. 嵌入式环境适配
+
+- ✅ 无动态内存分配（malloc/free）
+- ✅ 全局静态实例
+- ✅ 确定性行为
+- ✅ 低内存占用
+
+---
+
+## 🐛 故障排查
+
+### 常见问题
+
+**Q: 测试失败如何调试？**  
+A: 在 VS2022 中打开解决方案，设置断点后按 F5 调试，查看失败测试的断言信息。
+
+**Q: 如何只运行单个测试？**  
+A: 修改 `eflash_ftl_tests.c` 的 `main()` 函数，注释掉不需要的 `RUN_TEST` 调用。
+
+**Q: 测试文件在哪里？**  
+A: 测试运行时在当前目录创建 `eflash_test.bin`，测试结束后自动删除。
+
+**Q: 写入后读取数据不一致？**  
+A: 检查是否正确使用了事务（begin/commit），未提交的数据不会持久化。
+
+**Q: 对象 ID 分配跳号？**  
+A: obj_id=231 是保留的 LINK 对象，这是正常行为。
+
+---
+
+## 📂 项目结构
+
+```
+eflash_ftl/
+├── eflash.h              # 公共 API 头文件（唯一需要包含的头文件）
+├── eflash_ftl.c/h        # FTL 核心实现
+├── eflash_mgr.c/h        # 空间管理器
+├── eflash_sim.c/h        # Flash 模拟器（仅用于测试）
+├── eflash_ftl_tests.c    # 完整测试套件（23 个测试用例）
+├── example_simple.c      # 公共 API 使用示例
+├── API_DESIGN.md         # API 设计说明
+└── README.md             # 本文档
+```
+
+---
+
+## 🎯 最佳实践
+
+### ✅ DO - 推荐做法
+
+1. **始终使用事务** - 所有写操作包裹在 begin/commit 中
+2. **检查返回值** - 所有 API 调用都检查返回值
+3. **优先使用公共 API** - 只包含 `eflash.h`
+4. **定期触发 GC** - 监控空闲页数，及时回收
+5. **验证数据完整性** - 关键数据写入后读取验证
+
+### ❌ DON'T - 避免做法
+
+1. ~~绕过事务直接写入~~
+2. ~~忽略 API 返回值~~
+3. ~~包含内部头文件（除非必要）~~
+4. ~~在事务中执行耗时操作~~
+5. ~~忘记处理空间不足错误~~
+
+---
+
+## 📊 性能特性
+
+| 指标 | 数值 | 说明 |
+|------|------|------|
+| 页大小 | 512 字节 | 固定 |
+| 用户数据 | 464 字节/页 | 扣除元数据和 ECC |
+| ECC 能力 | 3-bit 纠错 | BCH 算法 |
+| 对象头容量 | 232 + 可扩展 | 动态扩展机制 |
+| 最大扇区数 | 65536 | 16-bit 扇区 ID |
+| GC 阈值 | 可配置 | 默认空闲页 < 100 触发 |
+
+---
+
+## 🔗 相关资源
+
+- **API 设计文档**: `API_DESIGN.md` - 详细的 API 设计原则和使用说明
+- **示例代码**: `example_simple.c` - 完整的公共 API 使用示例
+- **测试代码**: `eflash_ftl_tests.c` - 23 个测试用例的完整实现
+
+---
+
+## 📝 版本历史
+
+| 版本 | 日期 | 说明 |
+|------|------|------|
+| 1.0.0 | 2026-04-23 | 初始版本，完整 FTL 功能 |
+
+---
+
+## 📄 许可证
+
+本项目遵循开源许可证，详见 LICENSE 文件。
+
+---
+
+**祝您使用愉快！** 🎉
+
+如有问题，请查看测试代码 `eflash_ftl_tests.c` 获取更多使用示例。

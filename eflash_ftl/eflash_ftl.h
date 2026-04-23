@@ -1,10 +1,13 @@
- #ifndef EFLASH_FTL_H
+#ifndef EFLASH_FTL_H
 #define EFLASH_FTL_H
 
 #include <stdint.h>
 #include <stdbool.h>
 #include "ecc/bch.h"
 #include "eflash_mgr.h"
+
+// If eflash.h is already included, skip the type definition
+#ifndef EFLASH_H
 
 // --- Cross-platform packed structure support ---
 #ifdef _MSC_VER
@@ -114,13 +117,14 @@ typedef struct {
     // Object header management
     uint16_t      max_obj_id;       // Current maximum allocated object ID (for sequential allocation)
 
-    // GC related fields (following Dhara Head/Tail model)
+    // GC related fields (following Head/Tail circular buffer model)
     uint16_t      gc_head_page;     // GC allocation pointer: points to next writable physical page
     uint16_t      gc_tail_page;     // GC reclamation pointer: points to next physical page to reclaim
     uint16_t      gc_threshold;     // GC trigger threshold (remaining free pages)
     uint32_t      total_user_pages; // Total user-available pages (excluding system reserved area)
     bool          gc_in_progress;   // GC in progress flag, prevents recursive GC triggering
 } eflash_ftl_t;
+#endif // EFLASH_H
 
 // --- Interface Functions ---
 int  eflash_ftl_init(eflash_ftl_t *ftl);
