@@ -73,6 +73,8 @@ extern "C" {
  * 
  * Stores metadata for each logical object in the flash.
  */
+#ifndef EFLASH_FTL_H
+// Only define if eflash_ftl.h is not already included
 #ifdef _MSC_VER
 #pragma pack(push, 1)
 typedef struct {
@@ -94,6 +96,7 @@ typedef struct __attribute__((packed)) {
     uint32_t    body_size;      ///< Data body size in bytes
 } obj_header_t;
 #endif
+#endif // EFLASH_FTL_H
 
 /**
  * @brief FTL Context Structure (Opaque)
@@ -106,7 +109,10 @@ typedef struct __attribute__((packed)) {
  *   - Initialize with eflash_ftl_init()
  *   - No need to free - uses static allocation
  */
+#ifndef EFLASH_FTL_H
+// If eflash_ftl.h is not included, define as opaque pointer
 typedef struct eflash_ftl eflash_ftl_t;
+#endif
 
 /**
  * @brief Get the global FTL instance
@@ -362,29 +368,26 @@ uint32_t eflash_ftl_get_free_pages(eflash_ftl_t *ftl);
  * Allocates a contiguous block of logical address space.
  * Used for byte-addressable I/O operations.
  * 
- * @param ftl FTL instance
  * @param size Size in bytes to allocate
  * @param out_logical_addr Output: allocated logical address
  * @return 0 on success, -1 if insufficient space
  */
-int eflash_mgr_alloc(eflash_ftl_t *ftl, uint32_t size, uint32_t *out_logical_addr);
+int eflash_mgr_alloc(uint32_t size, uint32_t *out_logical_addr);
 
 /**
  * @brief Free logical address space
  * 
- * @param ftl FTL instance
  * @param logical_addr Starting logical address to free
  * @param size Size in bytes to free
  */
-void eflash_mgr_free(eflash_ftl_t *ftl, uint32_t logical_addr, uint32_t size);
+void eflash_mgr_free(uint32_t logical_addr, uint32_t size);
 
 /**
  * @brief Get total free bytes available
  * 
- * @param ftl FTL instance
  * @return Total free bytes
  */
-uint32_t eflash_mgr_get_free_bytes(eflash_ftl_t *ftl);
+uint32_t eflash_mgr_get_free_bytes(void);
 
 #ifdef __cplusplus
 }

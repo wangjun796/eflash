@@ -368,6 +368,7 @@ int eflash_mgr_init_free_list(eflash_mgr_t *mgr, uint16_t total_pages, uint16_t 
 }
 
 int eflash_mgr_alloc(eflash_mgr_t *mgr, uint32_t size, uint32_t *out_logical_addr) {
+    eflash_mgr_t *mgr = &g_ftl_instance.spc_mgr;
     // Traverse all free_node pages, find first node that satisfies size requirement
     for (int i = 0; i < FREE_NODE_PAGE_COUNT; i++) {
         int16_t count = read_node_count(mgr->free_node_pages[i]);
@@ -425,7 +426,9 @@ int eflash_mgr_alloc(eflash_mgr_t *mgr, uint32_t size, uint32_t *out_logical_add
     return -1;  // Insufficient space
 }
 
-void eflash_mgr_free(eflash_mgr_t *mgr, uint32_t logical_addr, uint32_t size) {
+void eflash_mgr_free(uint32_t logical_addr, uint32_t size) {
+    eflash_mgr_t *mgr = &g_ftl_instance.spc_mgr;
+
     FTL_DEBUG("[SPACE_FREE] Freeing logical_addr=0x%06X, size=%u\n", logical_addr, size);
     
     // Check if can merge with previous free block
@@ -453,7 +456,8 @@ void eflash_mgr_sync(eflash_mgr_t *mgr) {
     (void)mgr;
 }
 
-uint32_t eflash_mgr_get_free_bytes(eflash_mgr_t *mgr) {
+uint32_t eflash_mgr_get_free_bytes(void) {
+    eflash_mgr_t *mgr = &g_ftl_instance.spc_mgr;
     uint32_t total_free_pages = 0;
     
     for (int i = 0; i < FREE_NODE_PAGE_COUNT; i++) {

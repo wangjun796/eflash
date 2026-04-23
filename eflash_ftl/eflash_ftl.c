@@ -4,6 +4,11 @@
 #include <string.h>
 #include <stdio.h>
 
+// --- Forward Declarations ---
+static int extend_headers(eflash_ftl_t *ftl);
+static int write_system_page(eflash_ftl_t *ftl, uint16_t lpn, const uint8_t *data);
+static void scan_and_rebuild_ext_headers(eflash_ftl_t *ftl);
+
 // --- Abbreviation Reference ---
 // This file uses the following abbreviations for clarity:
 //   PPN  - Physical Page Number (physical flash page address)
@@ -777,7 +782,7 @@ static int extend_headers(eflash_ftl_t *ftl) {
 
     // 2. Allocate new 4-page logical space
     uint32_t new_ext_logical_addr;
-    if (eflash_mgr_alloc(&ftl->spc_mgr, 4 * EFLASH_PAGE_SIZE, &new_ext_logical_addr) != 0) {
+    if (eflash_mgr_alloc(4 * EFLASH_PAGE_SIZE, &new_ext_logical_addr) != 0) {
         return -1;
     }
     uint16_t new_ext_lpn = (uint16_t)(new_ext_logical_addr / EFLASH_PAGE_SIZE);  // Logical Page Number
@@ -2102,3 +2107,4 @@ int eflash_ftl_gc_trigger(eflash_ftl_t *ftl) {
     FTL_DEBUG("[GC_TRIGGER] GC completed successfully, freed %d pages\n", result);
     return 0;
 }
+

@@ -18,7 +18,7 @@
     #define PACKED_STRUCT
     #define PACKED_STRUCT_END
     #define ATTRIBUTE_PACKED __attribute__((packed))
-#endif // EFLASH_FTL_H
+#endif
 
 // --- Physical Layout Configuration ---
 #define EFLASH_PAGE_SIZE    512
