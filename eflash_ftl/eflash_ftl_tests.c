@@ -30,8 +30,7 @@
 #include "eflash_mgr.h"
 #include "eflash_sim.h"
 
-// External declaration of global FTL instance (defined in eflash_ftl.c)
-extern eflash_ftl_t g_ftl_instance;
+
 
 // Then include public API header
 #include "eflash.h"
@@ -1070,7 +1069,6 @@ int main(void) {
 
 // Helper: Print radix tree structure (text-based visualization)
 static void print_radix_tree_node(uint16_t page, int depth, int max_depth) {
-    eflash_ftl_t *ftl = &g_ftl_instance;
     if (page == PAGE_NONE || depth > max_depth) return;
 
     ftl_meta_t meta;
@@ -1091,30 +1089,28 @@ static void print_radix_tree_node(uint16_t page, int depth, int max_depth) {
     // Recursively print children (only non-NONE alts)
     for (int i = depth; i < RADIX_DEPTH && i < depth + 2; i++) {
         if (meta.alt[i] != PAGE_NONE) {
-            print_radix_tree_node(ftl, meta.alt[i], depth + 1, max_depth);
+            print_radix_tree_node(meta.alt[i], depth + 1, max_depth);
         }
     }
 }
 
 static void print_radix_tree(void) {
-    eflash_ftl_t *ftl = &g_ftl_instance;
     printf("\n=== Radix Tree Structure ===\n");
-    printf("Root page: %d\n", ftl->root_page);
-    if (ftl->root_page != PAGE_NONE) {
-        print_radix_tree_node(ftl->root_page, 0, 4);
+    printf("Root page: %d\n", FTL->root_page);
+    if (FTL->root_page != PAGE_NONE) {
+        print_radix_tree_node(FTL->root_page, 0, 4);
     }
     printf("===========================\n\n");
 }
 
 // Helper: Verify tree integrity by checking all alt pointers form valid paths
 static int verify_tree_integrity(void) {
-    eflash_ftl_t *ftl = &g_ftl_instance;
-    if (ftl->root_page == PAGE_NONE) return 0; // Empty tree is valid
+    if (FTL->root_page == PAGE_NONE) return 0; // Empty tree is valid
 
     // Check that root page is valid
     ftl_meta_t root_meta;
-    if (!is_page_valid_local(ftl->root_page, &root_meta)) {
-        printf("  [ERROR] Root page %d is invalid!\n", ftl->root_page);
+    if (!is_page_valid_local(FTL->root_page, &root_meta)) {
+        printf("  [ERROR] Root page %d is invalid!\n", FTL->root_page);
         return -1;
     }
 
@@ -1123,8 +1119,8 @@ static int verify_tree_integrity(void) {
     int head = 0, tail = 0;
     bool visited[EFLASH_TOTAL_PAGES] = {false};
 
-    queue[tail++] = ftl->root_page;
-    visited[ftl->root_page] = true;
+    queue[tail++] = FTL->root_page;
+    visited[FTL->root_page] = true;
 
     while (head < tail) {
         uint16_t current = queue[head++];
@@ -1405,7 +1401,6 @@ static int test_radix_tree_stress_random_access(void) {
  * 3. 验证数据完整性（迁移后的数据仍可读取）
  */
 int test_gc_basic() {
-    eflash_ftl_t ftl;
 
     printf("[TEST] test_gc_basic: Starting...\n");
 
@@ -1529,7 +1524,6 @@ int test_gc_basic() {
  * 关键区别：不再强制设置 gc_tail_page，而是通过真实写入让它自然移动
  */
 int test_gc_round_wrap() {
-    eflash_ftl_t ftl;
 
     printf("[TEST] test_gc_round_wrap: Starting...\n");
 
@@ -1739,7 +1733,6 @@ int test_gc_round_wrap() {
  * 3. 验证 GC 在极端情况下的稳定性
  */
 int test_gc_stress() {
-    eflash_ftl_t ftl;
 
     printf("[TEST] test_gc_stress: Starting...\n");
 
@@ -1860,8 +1853,6 @@ static int test_logical_address_interface(void) {
     TEST(logical_address_interface);
 
     init_test_flash();
-
-    eflash_ftl_t ftl;
     ASSERT(eflash_ftl_init() == 0, "FTL initialization");
 
     printf("  [LOGICAL] Testing logical address allocation and I/O...\n");

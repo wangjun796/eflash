@@ -4,8 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 
-// External declaration of global FTL instance (defined in eflash_ftl.c)
-extern eflash_ftl_t g_ftl_instance;
+
 
 #ifndef FTL_DEBUG
 #define FTL_DEBUG(...) do {} while(0)  // Disable debug output
@@ -104,16 +103,16 @@ static void write_free_node(uint16_t phys_page, uint16_t index, const free_node_
 }
 
 // Find and remove node with specified logical address from free_node table, return its size
-static uint32_t remove_node_from_table(eflash_mgr_t *mgr, uint32_t target_logical_addr) {
+static uint32_t remove_node_from_table(uint32_t target_logical_addr) {
     for (int i = 0; i < FREE_NODE_PAGE_COUNT; i++) {
-        int16_t count = read_node_count(mgr->free_node_pages[i]);
+        int16_t count = read_node_count(MGR->free_node_pages[i]);
         if (count < 0) continue;  // Skip invalid pages
         
         FTL_DEBUG("[REMOVE_NODE] Searching logical_addr=0x%08X in free_node[%d], count=%d\n", 
                  target_logical_addr, i, count);
         
         for (int16_t j = 0; j < count; j++) {
-            free_node_t node = read_free_node(mgr->free_node_pages[i], j);
+            free_node_t node = read_free_node(MGR->free_node_pages[i], j);
             
             FTL_DEBUG("[REMOVE_NODE] Checking node[%d][%d]: addr=0x%08X, size=%u\n",
                      i, j, node.addr, node.size);
@@ -123,7 +122,7 @@ static uint32_t remove_node_from_table(eflash_mgr_t *mgr, uint32_t target_logica
                 
                 // Read entire page
                 uint8_t buf[EFLASH_PAGE_SIZE];
-                eflash_hw_read(mgr->free_node_pages[i], buf);
+                eflash_hw_read(MGR->free_node_pages[i], buf);
                 
                 int16_t last_idx = count - 1;
                 if (j != last_idx) {
@@ -150,8 +149,8 @@ static uint32_t remove_node_from_table(eflash_mgr_t *mgr, uint32_t target_logica
                 bch_generate(&bch_3bit, buf, protected_len, ecc_ptr);
                 
                 // Erase and write in one operation
-                eflash_hw_erase(mgr->free_node_pages[i]);
-                eflash_hw_prog(mgr->free_node_pages[i], buf);
+                eflash_hw_erase(MGR->free_node_pages[i]);
+                eflash_hw_prog(MGR->free_node_pages[i], buf);
                 
                 FTL_DEBUG("[REMOVE_NODE] Updated count: %d -> %d\n", count, count - 1);
                 
@@ -165,20 +164,20 @@ static uint32_t remove_node_from_table(eflash_mgr_t *mgr, uint32_t target_logica
 }
 
 // Insert new free_node into table (maintain sorting by size)
-static void insert_node_to_table(eflash_mgr_t *mgr, uint32_t logical_addr, uint32_t size) {
+static void insert_node_to_table(uint32_t logical_addr, uint32_t size) {
     // Find suitable insertion location (first page with size >= new node's size)
     int best_page_idx = -1;
     uint32_t best_size = 0xFFFFFFFF;
     
     for (int i = 0; i < FREE_NODE_PAGE_COUNT; i++) {
-        uint16_t count = read_node_count(mgr->free_node_pages[i]);
+        uint16_t count = read_node_count(MGR->free_node_pages[i]);
         
         // Skip if page is full
         if (count >= FREE_NODES_PER_PAGE) continue;
         
         // Find first position in this page where size >= new size
         for (int16_t j = 0; j < count; j++) {
-            free_node_t node = read_free_node(mgr->free_node_pages[i], j);
+            free_node_t node = read_free_node(MGR->free_node_pages[i], j);
             if (node.size >= size && node.size < best_size) {
                 best_size = node.size;
                 best_page_idx = i;
@@ -197,7 +196,7 @@ static void insert_node_to_table(eflash_mgr_t *mgr, uint32_t logical_addr, uint3
         return;  // Table is full
     }
     
-    int16_t count = read_node_count(mgr->free_node_pages[best_page_idx]);
+    int16_t count = read_node_count(MGR->free_node_pages[best_page_idx]);
     if (count < 0) {
         FTL_DEBUG("[INSERT_NODE] ERROR: Failed to read node count\n");
         return;
@@ -206,7 +205,7 @@ static void insert_node_to_table(eflash_mgr_t *mgr, uint32_t logical_addr, uint3
     // Find insertion position (maintain ascending order by size)
     uint16_t insert_pos = (uint16_t)count;
     for (int16_t j = 0; j < count; j++) {
-        free_node_t node = read_free_node(mgr->free_node_pages[best_page_idx], j);
+        free_node_t node = read_free_node(MGR->free_node_pages[best_page_idx], j);
         if (node.size >= size) {
             insert_pos = j;
             break;
@@ -215,7 +214,7 @@ static void insert_node_to_table(eflash_mgr_t *mgr, uint32_t logical_addr, uint3
     
     // Read entire page
     uint8_t buf[EFLASH_PAGE_SIZE];
-    eflash_hw_read(mgr->free_node_pages[best_page_idx], buf);
+    eflash_hw_read(MGR->free_node_pages[best_page_idx], buf);
     
     // Shift elements backward
     for (uint16_t j = count; j > insert_pos; j--) {
@@ -242,8 +241,8 @@ static void insert_node_to_table(eflash_mgr_t *mgr, uint32_t logical_addr, uint3
     bch_generate(&bch_3bit, buf, protected_len, ecc_ptr);
     
     // Erase and write in one operation
-    eflash_hw_erase(mgr->free_node_pages[best_page_idx]);
-    eflash_hw_prog(mgr->free_node_pages[best_page_idx], buf);
+    eflash_hw_erase(MGR->free_node_pages[best_page_idx]);
+    eflash_hw_prog(MGR->free_node_pages[best_page_idx], buf);
     
     FTL_DEBUG("[INSERT_NODE] Inserted logical_addr=0x%08X, size=%u at [%d][%d]\n",
              logical_addr, size, best_page_idx, insert_pos);
@@ -251,21 +250,21 @@ static void insert_node_to_table(eflash_mgr_t *mgr, uint32_t logical_addr, uint3
 
 // --- Interface Implementation ---
 
-void eflash_mgr_init(eflash_mgr_t *mgr, uint16_t total_pages) {
-    mgr->total_pages = total_pages;
+void eflash_mgr_init(uint16_t total_pages) {
+    MGR->total_pages = total_pages;
     
     FTL_DEBUG("[SPACE_INIT] === Memory-only initialization (no Flash writes) ===\n");
     
     // Initialize free_node page array to invalid values
     // These will be set by FTL when system pages are allocated through Radix Tree
     for (int i = 0; i < FREE_NODE_PAGE_COUNT; i++) {
-        mgr->free_node_pages[i] = PAGE_NONE;
+        MGR->free_node_pages[i] = PAGE_NONE;
     }
     
     // Initialize header page array to invalid values
     // These will be set by FTL when system pages are allocated through Radix Tree
     for (int i = 0; i < BASE_HEADER_PAGES; i++) {
-        mgr->header_pages[i] = PAGE_NONE;
+        MGR->header_pages[i] = PAGE_NONE;
     }
     
     // Calculate system reserved logical pages (LPN 0-11)
@@ -283,18 +282,18 @@ void eflash_mgr_init(eflash_mgr_t *mgr, uint16_t total_pages) {
              total_pages, reserved_logic_page_count, reserved_logic_page_count - 1);
     FTL_DEBUG("[SPACE_INIT] Memory initialization complete (waiting for FTL to write system pages)\n");
     
-    mgr->next_alloc_page = reserved_logic_page_count;  // Next logical page to allocate (LPN 12)
+    MGR->next_alloc_page = reserved_logic_page_count;  // Next logical page to allocate (LPN 12)
 }
 
-bool eflash_mgr_check_initialized(eflash_mgr_t *mgr) {
+bool eflash_mgr_check_initialized(void) {
     // Check if at least one free_node page contains valid data (not all 0xFF)
     for (int i = 0; i < FREE_NODE_PAGE_COUNT; i++) {
-        if (mgr->free_node_pages[i] == PAGE_NONE) {
+        if (MGR->free_node_pages[i] == PAGE_NONE) {
             continue;  // Physical page not assigned yet
         }
         
         uint8_t buf[EFLASH_PAGE_SIZE];
-        if (eflash_hw_read(mgr->free_node_pages[i], buf) != 0) {
+        if (eflash_hw_read(MGR->free_node_pages[i], buf) != 0) {
             continue;  // Read failed
         }
         
@@ -309,7 +308,7 @@ bool eflash_mgr_check_initialized(eflash_mgr_t *mgr) {
         
         if (!is_blank) {
             // Page has data, check if it contains at least one valid node
-            int16_t count = read_node_count(mgr->free_node_pages[i]);
+            int16_t count = read_node_count(MGR->free_node_pages[i]);
             if (count > 0) {
                 FTL_DEBUG("[SPACE_CHECK] Found initialized free_node page %d with %d nodes\n", i, count);
                 return true;
@@ -321,7 +320,7 @@ bool eflash_mgr_check_initialized(eflash_mgr_t *mgr) {
     return false;
 }
 
-int eflash_mgr_init_free_list(eflash_mgr_t *mgr, uint16_t total_pages, uint16_t reserved_logic_pages) {
+int eflash_mgr_init_free_list(uint16_t total_pages, uint16_t reserved_logic_pages) {
     FTL_DEBUG("[SPACE_INIT_FREE_LIST] Initializing free list (memory only)...\n");
     
     // Calculate available logical space
@@ -353,7 +352,7 @@ int eflash_mgr_init_free_list(eflash_mgr_t *mgr, uint16_t total_pages, uint16_t 
              initial_node.addr, initial_node.size);
     
     // Check if physical page is assigned (should be set by FTL before calling this)
-    if (mgr->free_node_pages[0] == PAGE_NONE) {
+    if (MGR->free_node_pages[0] == PAGE_NONE) {
         FTL_DEBUG("[SPACE_INIT_FREE_LIST] WARNING: free_node_pages[0] not yet assigned.\n");
         FTL_DEBUG("[SPACE_INIT_FREE_LIST] This will be written via FTL layer when system page is allocated.\n");
         // Don't return error - the actual write will happen through FTL
@@ -371,14 +370,13 @@ int eflash_mgr_init_free_list(eflash_mgr_t *mgr, uint16_t total_pages, uint16_t 
 }
 
 int eflash_mgr_alloc(uint32_t size, uint32_t *out_logical_addr) {
-    eflash_mgr_t *mgr = &g_ftl_instance.spc_mgr;
     // Traverse all free_node pages, find first node that satisfies size requirement
     for (int i = 0; i < FREE_NODE_PAGE_COUNT; i++) {
-        int16_t count = read_node_count(mgr->free_node_pages[i]);
+        int16_t count = read_node_count(MGR->free_node_pages[i]);
         if (count < 0) continue;  // Skip invalid pages
         
         for (int16_t j = 0; j < count; j++) {
-            free_node_t node = read_free_node(mgr->free_node_pages[i], j);
+            free_node_t node = read_free_node(MGR->free_node_pages[i], j);
             
             if (node.size >= size) {
                 // Found suitable node
@@ -389,20 +387,20 @@ int eflash_mgr_alloc(uint32_t size, uint32_t *out_logical_addr) {
                          alloc_addr, size, i, j);
                 
                 // Remove original node from table
-                remove_node_from_table(mgr, alloc_addr);
+                remove_node_from_table(alloc_addr);
                 
                 FTL_DEBUG("[SPACE_ALLOC] After removal, remaining=%u, will insert at addr=0x%08X\n", 
                          remaining, alloc_addr + size);
                 
                 // If there's remaining space, insert remaining node
                 if (remaining > 0) {
-                    insert_node_to_table(mgr, alloc_addr + size, remaining);
+                    insert_node_to_table(alloc_addr + size, remaining);
                     
 #ifdef FTL_DEBUG_ENABLE
                     // Verify insertion
-                    int16_t new_count = read_node_count(mgr->free_node_pages[0]);
+                    int16_t new_count = read_node_count(MGR->free_node_pages[0]);
                     if (new_count > 0) {
-                        free_node_t verify_after = read_free_node(mgr->free_node_pages[0], 0);
+                        free_node_t verify_after = read_free_node(MGR->free_node_pages[0], 0);
                         FTL_DEBUG("[SPACE_ALLOC] After insert: count=%d, node[0][0] addr=0x%08X, size=%u\n",
                                  new_count, verify_after.addr, verify_after.size);
                     }
@@ -415,7 +413,7 @@ int eflash_mgr_alloc(uint32_t size, uint32_t *out_logical_addr) {
                 
 #ifdef FTL_DEBUG_ENABLE
                 // Verify: read the just-removed node position to confirm it's cleared
-                free_node_t verify_node = read_free_node(mgr->free_node_pages[i], j);
+                free_node_t verify_node = read_free_node(MGR->free_node_pages[i], j);
                 FTL_DEBUG("[SPACE_ALLOC] After removal: node[%d][%d] addr=0x%08X, size=%u\n",
                          i, j, verify_node.addr, verify_node.size);
 #endif
@@ -430,12 +428,11 @@ int eflash_mgr_alloc(uint32_t size, uint32_t *out_logical_addr) {
 }
 
 void eflash_mgr_free(uint32_t logical_addr, uint32_t size) {
-    eflash_mgr_t *mgr = &g_ftl_instance.spc_mgr;
 
     FTL_DEBUG("[SPACE_FREE] Freeing logical_addr=0x%06X, size=%u\n", logical_addr, size);
     
     // Check if can merge with previous free block
-    uint32_t prev_size = remove_node_from_table(mgr, logical_addr - 1);
+    uint32_t prev_size = remove_node_from_table(logical_addr - 1);
     if (prev_size > 0) {
         logical_addr = logical_addr - 1;
         size += prev_size;
@@ -444,34 +441,35 @@ void eflash_mgr_free(uint32_t logical_addr, uint32_t size) {
     }
     
     // Check if can merge with next free block
-    uint32_t next_size = remove_node_from_table(mgr, logical_addr + size);
+    uint32_t next_size = remove_node_from_table(logical_addr + size);
     if (next_size > 0) {
         size += next_size;
         FTL_DEBUG("[SPACE_FREE] Merged with next block: new_size=%u\n", size);
     }
     
     // Insert merged node
-    insert_node_to_table(mgr, logical_addr, size);
+    insert_node_to_table(logical_addr, size);
 }
 
-void eflash_mgr_sync(eflash_mgr_t *mgr) {
+void eflash_mgr_sync(void) {
     // free_node table already synced to Flash on each operation, this function kept for batch sync optimization
-    (void)mgr;
+    (void)MGR;
 }
 
 uint32_t eflash_mgr_get_free_bytes(void) {
-    eflash_mgr_t *mgr = &g_ftl_instance.spc_mgr;
     uint32_t total_free_pages = 0;
     
     for (int i = 0; i < FREE_NODE_PAGE_COUNT; i++) {
-        int16_t count = read_node_count(mgr->free_node_pages[i]);
+        int16_t count = read_node_count(MGR->free_node_pages[i]);
         if (count < 0) continue;  // Skip invalid pages
         
         for (int16_t j = 0; j < count; j++) {
-            free_node_t node = read_free_node(mgr->free_node_pages[i], j);
+            free_node_t node = read_free_node(MGR->free_node_pages[i], j);
             total_free_pages += node.size;
         }
     }
     
     return total_free_pages * EFLASH_PAGE_SIZE;
 }
+
+

@@ -146,4 +146,8 @@ int  eflash_ftl_gc_trigger(void);  // Manually trigger GC
 int  eflash_ftl_gc_collect(uint16_t pages_to_free); // Reclaim specified number of pages
 uint32_t eflash_ftl_get_free_pages(void); // Get current number of free pages
 
+// --- Global FTL Instance ---
+extern eflash_ftl_t g_ftl_instance;
+#define FTL (&g_ftl_instance)
+
 #endif

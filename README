@@ -292,20 +292,7 @@ cmake --build . --config Release
 #include "eflash.h"  // 只需这一个头文件！
 ```
 
-#### 2. 获取 FTL 实例
-
-```c
-// 获取全局 FTL 实例（静态分配，无需 malloc）
-eflash_ftl_t *ftl = eflash_get_ftl();
-```
-
-**设计优势：**
-- ✅ 无动态内存分配（适合嵌入式系统）
-- ✅ 无需管理生命周期
-- ✅ 线程安全（首次调用时初始化）
-- ✅ 零开销（全局静态变量）
-
-#### 3. 初始化 Flash
+#### 2. 初始化 Flash
 
 ```c
 // 对于真实硬件，实现底层驱动接口
@@ -318,42 +305,48 @@ for (int i = 0; i < EFLASH_TOTAL_PAGES; i++) {
 }
 ```
 
-#### 4. 初始化 FTL
+#### 3. 初始化 FTL
 
 ```c
-if (eflash_ftl_init(ftl) != 0) {
+if (eflash_ftl_init() != 0) {
     // 处理错误
     return -1;
 }
 ```
 
-#### 5. 写入数据（事务方式）
+**设计优势：**
+- ✅ 无动态内存分配（适合嵌入式系统）
+- ✅ 无需管理生命周期
+- ✅ 使用全局静态实例 `g_ftl_instance`
+- ✅ 零开销（全局静态变量）
+
+#### 4. 写入数据（事务方式）
 
 ```c
 uint8_t data[USER_DATA_SIZE];
 memset(data, 0xAA, USER_DATA_SIZE);
 
 // 开始事务
-eflash_ftl_txn_begin(ftl);
+eflash_ftl_txn_begin();
 
 // 写入扇区 100
-if (eflash_ftl_write(ftl, 100, data) != 0) {
-    eflash_ftl_txn_abort(ftl);  // 失败则回滚
+if (eflash_ftl_write(100, data) != 0) {
+    eflash_ftl_txn_abort();  // 失败则回滚
     return -1;
 }
 
 // 提交事务
-if (eflash_ftl_txn_commit(ftl) != 0) {
+if (eflash_ftl_txn_commit() != 0) {
     return -1;
 }
 ```
 
-#### 6. 读取数据
+#### 5. 读取数据
 
 ```c
 uint8_t read_data[USER_DATA_SIZE];
 
-if (eflash_ftl_read(ftl, 100, read_data) != 0) {
+if (eflash_ftl_read(100, read_data) != 0) {
     // 处理错误
     return -1;
 }
@@ -364,13 +357,13 @@ if (memcmp(data, read_data, USER_DATA_SIZE) == 0) {
 }
 ```
 
-#### 7. 对象头管理
+#### 6. 对象头管理
 
 ```c
 obj_header_t header;
 
 // 分配对象 ID
-uint16_t obj_id = eflash_ftl_obj_alloc_header(ftl);
+uint16_t obj_id = eflash_ftl_obj_alloc_header();
 
 // 设置对象头
 memset(&header, 0, sizeof(header));
@@ -379,36 +372,36 @@ header.class_id = 0x5678;
 header.type = OBJ_TYPE_NORMAL;
 header.body_size = 1024;
 
-eflash_ftl_obj_set_header(ftl, obj_id, &header);
+eflash_ftl_obj_set_header(obj_id, &header);
 
 // 读取对象头
-eflash_ftl_obj_get_header(ftl, obj_id, &header);
+eflash_ftl_obj_get_header(obj_id, &header);
 printf("PkgID: 0x%04X, ClassID: 0x%04X\n", 
        header.pkg_id, header.class_id);
 ```
 
-#### 8. 垃圾回收
+#### 7. 垃圾回收
 
 ```c
 // 查询空闲页数
-uint32_t free_pages = eflash_ftl_get_free_pages(ftl);
+uint32_t free_pages = eflash_ftl_get_free_pages();
 printf("Free pages: %lu\n", (unsigned long)free_pages);
 
 // 手动触发 GC（通常自动触发）
-eflash_ftl_gc_trigger(ftl);
+eflash_ftl_gc_trigger();
 
 // 强制回收指定页数
-int freed = eflash_ftl_gc_collect(ftl, 10);
+int freed = eflash_ftl_gc_collect(10);
 printf("Freed %d pages\n", freed);
 ```
 
-#### 9. 清理
+#### 8. 清理
 
 ```c
 // 关闭 Flash 模拟
 eflash_deinit();
 
-// 不需要 destroy FTL - 使用静态分配
+// 不需要 destroy FTL - 使用全局静态实例
 ```
 
 ---
@@ -438,21 +431,21 @@ cd build_vs2022\Release
 #### 方法 A: 通用提交（兼容所有硬件）
 
 ```c
-eflash_ftl_txn_begin(ftl);
-eflash_ftl_write(ftl, sector_id, data);
-eflash_ftl_txn_commit(ftl);  // 全页重写
+eflash_ftl_txn_begin();
+eflash_ftl_write(sector_id, data);
+eflash_ftl_txn_commit();  // 全页重写
 ```
 
 #### 方法 B: 优化提交（需要硬件支持字更新）
 
 ```c
-eflash_ftl_txn_begin(ftl);
-eflash_ftl_write(ftl, sector_id, data);
+eflash_ftl_txn_begin();
+eflash_ftl_write(sector_id, data);
 
-int ret = eflash_ftl_txn_commit_with_update(ftl);
+int ret = eflash_ftl_txn_commit_with_update();
 if (ret != 0) {
     // Fallback to universal commit
-    eflash_ftl_txn_commit(ftl);
+    eflash_ftl_txn_commit();
 }
 ```
 
@@ -493,38 +486,37 @@ gcc -Ipath/to/eflash_ftl your_app.c -L. -leflash -lecc_lib -o your_app
 
 | 函数 | 说明 | 返回值 |
 |------|------|--------|
-| `eflash_get_ftl()` | 获取全局 FTL 实例 | `eflash_ftl_t*` |
-| `eflash_ftl_init(ftl)` | 初始化 FTL | 0=成功, <0=失败 |
-| `eflash_ftl_write(ftl, sector, data)` | 写入扇区数据 | 0=成功, <0=失败 |
-| `eflash_ftl_read(ftl, sector, data)` | 读取扇区数据 | 0=成功, <0=失败 |
-| `eflash_ftl_txn_begin(ftl)` | 开始事务 | void |
-| `eflash_ftl_txn_commit(ftl)` | 提交事务（通用） | 0=成功, <0=失败 |
-| `eflash_ftl_txn_commit_with_update(ftl)` | 提交事务（优化） | 0=成功, <0=失败 |
-| `eflash_ftl_txn_abort(ftl)` | 中止事务 | void |
+| `eflash_ftl_init()` | 初始化 FTL | 0=成功, <0=失败 |
+| `eflash_ftl_write(sector, data)` | 写入扇区数据 | 0=成功, <0=失败 |
+| `eflash_ftl_read(sector, data)` | 读取扇区数据 | 0=成功, <0=失败 |
+| `eflash_ftl_txn_begin()` | 开始事务 | void |
+| `eflash_ftl_txn_commit()` | 提交事务（通用） | 0=成功, <0=失败 |
+| `eflash_ftl_txn_commit_with_update()` | 提交事务（优化） | 0=成功, <0=失败 |
+| `eflash_ftl_txn_abort()` | 中止事务 | void |
 
 ### 对象管理
 
 | 函数 | 说明 | 返回值 |
 |------|------|--------|
-| `eflash_ftl_obj_alloc_header(ftl)` | 分配对象 ID | `uint16_t` obj_id |
-| `eflash_ftl_obj_set_header(ftl, id, hdr)` | 设置对象头 | 0=成功, <0=失败 |
-| `eflash_ftl_obj_get_header(ftl, id, hdr)` | 获取对象头 | 0=成功, <0=失败 |
+| `eflash_ftl_obj_alloc_header()` | 分配对象 ID | `uint16_t` obj_id |
+| `eflash_ftl_obj_set_header(id, hdr)` | 设置对象头 | 0=成功, <0=失败 |
+| `eflash_ftl_obj_get_header(id, hdr)` | 获取对象头 | 0=成功, <0=失败 |
 
 ### 垃圾回收
 
 | 函数 | 说明 | 返回值 |
 |------|------|--------|
-| `eflash_ftl_gc_trigger(ftl)` | 触发 GC | void |
-| `eflash_ftl_gc_collect(ftl, count)` | 执行 GC 回收 | 释放的页数 |
-| `eflash_ftl_get_free_pages(ftl)` | 获取空闲页数 | `uint32_t` |
+| `eflash_ftl_gc_trigger()` | 触发 GC | void |
+| `eflash_ftl_gc_collect(count)` | 执行 GC 回收 | 释放的页数 |
+| `eflash_ftl_get_free_pages()` | 获取空闲页数 | `uint32_t` |
 
 ### 空间管理
 
 | 函数 | 说明 | 返回值 |
 |------|------|--------|
-| `eflash_mgr_alloc(mgr, size, addr)` | 分配逻辑地址 | 0=成功, <0=失败 |
-| `eflash_mgr_free(mgr, addr, size)` | 释放逻辑地址 | 0=成功, <0=失败 |
-| `eflash_mgr_get_free_bytes(mgr)` | 获取空闲字节数 | `uint32_t` |
+| `eflash_mgr_alloc(size, addr)` | 分配逻辑地址 | 0=成功, <0=失败 |
+| `eflash_mgr_free(addr, size)` | 释放逻辑地址 | 0=成功, <0=失败 |
+| `eflash_mgr_get_free_bytes()` | 获取空闲字节数 | `uint32_t` |
 
 ---
 
@@ -548,9 +540,9 @@ gcc -Ipath/to/eflash_ftl your_app.c -L. -leflash -lecc_lib -o your_app
 **所有写操作必须在事务中进行！**
 
 ```c
-eflash_ftl_txn_begin(ftl);      // 必须
+eflash_ftl_txn_begin();      // 必须
 // ... 写操作 ...
-eflash_ftl_txn_commit(ftl);     // 或 abort
+eflash_ftl_txn_commit();     // 或 abort
 ```
 
 ### 2. 对象 ID 分配
@@ -566,7 +558,7 @@ eflash_ftl_txn_commit(ftl);     // 或 abort
 ```c
 // 多线程环境下使用互斥锁
 pthread_mutex_lock(&ftl_mutex);
-eflash_ftl_write(ftl, sector, data);
+eflash_ftl_write(sector, data);
 pthread_mutex_unlock(&ftl_mutex);
 ```
 
@@ -576,7 +568,7 @@ FTL 支持掉电后自动恢复，只需重新调用初始化：
 
 ```c
 // 系统重启后
-eflash_ftl_init(ftl);  // 自动恢复上次状态
+eflash_ftl_init();  // 自动恢复上次状态
 ```
 
 ### 5. 嵌入式环境适配
