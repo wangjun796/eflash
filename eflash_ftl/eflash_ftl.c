@@ -540,9 +540,18 @@ int eflash_ftl_obj_get_header(eflash_ftl_t *ftl, uint16_t obj_id, obj_header_t *
  * @sector: Sector ID (Logical Page Number)
  * @return: Physical page number, PAGE_NONE if not found
  */
+/**
+ * find_phys_page_by_sector: Find physical page number for a given sector_id
+ * @ftl: FTL instance
+ * @sector: Target sector ID to search for
+ * @return: Physical page number, or PAGE_NONE if not found
+ *
+ * Note: This function follows the same traversal logic as eflash_ftl_read,
+ * using bit-by-bit comparison to navigate the Radix Tree.
+ */
 static uint16_t find_phys_page_by_sector(eflash_ftl_t *ftl, uint16_t sector) {
-    if (ftl->root_page == PAGE_NONE) {
-        FTL_DEBUG("[FIND_PHYS] ERROR: No root page\n");
+    if (!ftl || ftl->root_page == PAGE_NONE) {
+        FTL_DEBUG("[FIND_PHYS] ERROR: No root page or invalid FTL\n");
         return PAGE_NONE;
     }
 
@@ -551,19 +560,22 @@ static uint16_t find_phys_page_by_sector(eflash_ftl_t *ftl, uint16_t sector) {
     int depth = 0;
     uint16_t current = ftl->root_page;
 
-    // Read root node metadata
-    if (eflash_hw_read(current, meta_buf) != 0) {
-        FTL_DEBUG("[FIND_PHYS] ERROR: Failed to read root page %d\n", current);
-        return PAGE_NONE;
-    }
-    if (verify_and_correct_page(meta_buf) != 0) {
-        FTL_DEBUG("[FIND_PHYS] ERROR: Root page verification failed\n");
-        return PAGE_NONE;
-    }
-    memcpy(&cur_meta, meta_buf + META_OFFSET, META_SIZE);
-
-    // Traverse radix tree
+    // Traverse radix tree using bit-by-bit comparison (same as eflash_ftl_read)
     while (depth < RADIX_DEPTH) {
+        // Read current node metadata
+        if (eflash_hw_read(current, meta_buf) != 0) {
+            FTL_DEBUG("[FIND_PHYS] ERROR: Failed to read PPN %d at depth %d\n", current, depth);
+            return PAGE_NONE;
+        }
+        if (verify_and_correct_page(meta_buf) != 0) {
+            FTL_DEBUG("[FIND_PHYS] ERROR: Page verification failed at PPN %d\n", current);
+            return PAGE_NONE;
+        }
+        memcpy(&cur_meta, meta_buf + META_OFFSET, META_SIZE);
+
+        FTL_DEBUG("[FIND_PHYS] depth=%d, cur_sector=%d, target=%d, alt[%d]=%d\n",
+                 depth, cur_meta.sector_id, sector, depth, cur_meta.alt[depth]);
+
         // Check if current node matches the target sector
         if (cur_meta.sector_id == sector) {
             FTL_DEBUG("[FIND_PHYS] Found sector %d at physical page %d (depth=%d)\n",
@@ -571,34 +583,28 @@ static uint16_t find_phys_page_by_sector(eflash_ftl_t *ftl, uint16_t sector) {
             return current;
         }
 
-        // Calculate bit at current depth (for reference, not used in traversal)
+        // Calculate bit value at current depth (MSB first)
         uint16_t bit_mask = 1 << (RADIX_DEPTH - 1 - depth);
-#if FTL_DEBUG_ENABLE
         int target_bit = (sector & bit_mask) ? 1 : 0;
-        (void)target_bit;  // Used for debugging only
-#endif
-        (void)bit_mask;  // Suppress unused variable warning
+        int current_bit = (cur_meta.sector_id & bit_mask) ? 1 : 0;
 
-        // Follow the alt pointer for this bit
-        uint16_t next_ppn = cur_meta.alt[depth];
-        if (next_ppn == PAGE_NONE) {
-            FTL_DEBUG("[FIND_PHYS] Sector %d not found (alt[%d]=NONE)\n", sector, depth);
-            return PAGE_NONE;
+        if (target_bit != current_bit) {
+            // Bits differ: need to jump to alt[depth]
+            FTL_DEBUG("[FIND_PHYS] Bit mismatch at depth=%d (target=%d, current=%d), jumping to alt[%d]\n",
+                     depth, target_bit, current_bit, depth);
+            
+            current = cur_meta.alt[depth];
+            if (current == PAGE_NONE) {
+                FTL_DEBUG("[FIND_PHYS] Sector %d not found (alt[%d]=NONE)\n", sector, depth);
+                return PAGE_NONE;
+            }
+            // After jump, continue comparing same depth bit with new node
+            // Note: Don't increment depth here, continue in next loop iteration
+        } else {
+            // Bits same: continue to next depth level
+            FTL_DEBUG("[FIND_PHYS] Bits match at depth=%d, moving to next level\n", depth);
+            depth++;
         }
-
-        // Read next node
-        if (eflash_hw_read(next_ppn, meta_buf) != 0) {
-            FTL_DEBUG("[FIND_PHYS] ERROR: Failed to read PPN %d\n", next_ppn);
-            return PAGE_NONE;
-        }
-        if (verify_and_correct_page(meta_buf) != 0) {
-            FTL_DEBUG("[FIND_PHYS] ERROR: Page verification failed at PPN %d\n", next_ppn);
-            return PAGE_NONE;
-        }
-        memcpy(&cur_meta, meta_buf + META_OFFSET, META_SIZE);
-
-        current = next_ppn;
-        depth++;
     }
 
     // Reached maximum depth without finding exact match
@@ -1740,30 +1746,41 @@ uint32_t eflash_ftl_get_free_pages(eflash_ftl_t *ftl) {
 }
 
 /**
- * is_page_still_valid: Check if physical page is still referenced by Radix Tree
+ * is_page_still_valid: Check if physical page is still the latest mapping in Radix Tree
  * @ftl: FTL instance
  * @phys_page: Physical page number to check
- * @return: true=valid (still in tree), false=invalid (can be reclaimed)
+ * @return: true=valid (latest mapping, should migrate), false=invalid (stale, can erase)
  *
- * Principle: Read sector_id of the page, then search current mapping via eflash_ftl_read.
- * If current mapping points to same physical page as phys_page, it's valid data.
+ * Principle:
+ *   1. Read sector_id from the page metadata
+ *   2. Query Radix Tree to find current physical page for this sector_id
+ *   3. Compare: if current mapping == phys_page, it's valid (latest version)
+ *              if current mapping != phys_page, it's invalid (stale/obsolete)
  */
 static bool is_page_still_valid(eflash_ftl_t *ftl, uint16_t phys_page) {
-    (void)ftl;  // Suppress unused parameter warning
+    if (!ftl) return false;
+
+    // Optimization 1: Quick check for blank page
+    if (is_blank_page(phys_page)) {
+        FTL_DEBUG("[GC_VALID] Page %d: BLANK (all 0xFF), invalid\n", phys_page);
+        return false;
+    }
+
+    // Step 1: Read page metadata to get sector_id
     uint8_t meta_buf[EFLASH_PAGE_SIZE];
     ftl_meta_t meta;
-
-    // Read page metadata
+    
     if (eflash_hw_read(phys_page, meta_buf) != 0) {
-        FTL_DEBUG("[GC_VALID] Page %d: read failed\n", phys_page);
-        return false; // Read failed, treat as invalid
+        FTL_DEBUG("[GC_VALID] Page %d: read failed, invalid\n", phys_page);
+        return false;
     }
 
     // Verify ECC
     int ecc_result = verify_and_correct_page(meta_buf);
     if (ecc_result != 0) {
-        FTL_DEBUG("[GC_VALID] Page %d: ECC verification failed (result=%d)\n", phys_page, ecc_result);
-        return false; // ECC verification failed, treat as invalid
+        FTL_DEBUG("[GC_VALID] Page %d: ECC verification failed (result=%d), invalid\n", 
+                 phys_page, ecc_result);
+        return false;
     }
 
     memcpy(&meta, meta_buf + META_OFFSET, META_SIZE);
@@ -1771,15 +1788,34 @@ static bool is_page_still_valid(eflash_ftl_t *ftl, uint16_t phys_page) {
     FTL_DEBUG("[GC_VALID] Page %d: sector_id=%d, status=0x%02X, count=%d\n",
              phys_page, meta.sector_id, meta.status, meta.global_count);
 
-    // Check status: must be COMMITTED or READY to be potentially valid data
+    // Check status: must be COMMITTED or READY to be potentially valid
     if (meta.status != TXN_STATUS_COMMITTED && meta.status != TXN_STATUS_READY) {
         FTL_DEBUG("[GC_VALID] Page %d: invalid status 0x%02X\n", phys_page, meta.status);
         return false;
     }
 
-    // Conservative strategy: COMMITTED/READY pages with valid ECC are treated as valid
-    FTL_DEBUG("[GC_VALID] Page %d: VALID\n", phys_page);
-    return true;
+    // Step 2: Query Radix Tree to find current physical page for this sector_id
+    uint16_t current_ppn = find_phys_page_by_sector(ftl, meta.sector_id);
+    
+    if (current_ppn == PAGE_NONE) {
+        // Sector not found in Radix Tree, this page is orphaned
+        FTL_DEBUG("[GC_VALID] Page %d: sector_id=%d NOT FOUND in Radix Tree, invalid\n",
+                 phys_page, meta.sector_id);
+        return false;
+    }
+
+    // Step 3: Compare current mapping with this physical page
+    if (current_ppn == phys_page) {
+        // This page is still the latest mapping - VALID (needs migration)
+        FTL_DEBUG("[GC_VALID] Page %d: VALID (sector_id=%d maps to PPN %d)\n",
+                 phys_page, meta.sector_id, current_ppn);
+        return true;
+    } else {
+        // This page is stale/obsolete - INVALID (can be erased directly)
+        FTL_DEBUG("[GC_VALID] Page %d: STALE (sector_id=%d now maps to PPN %d, not %d)\n",
+                 phys_page, meta.sector_id, current_ppn, phys_page);
+        return false;
+    }
 }
 
 /**
