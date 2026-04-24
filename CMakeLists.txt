@@ -71,6 +71,7 @@ target_compile_definitions(eflash_ftl_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 option(FTL_DEBUG_ENABLE "Enable FTL debug output" OFF)
 if(FTL_DEBUG_ENABLE)
     target_compile_definitions(eflash_ftl_tests PRIVATE FTL_DEBUG_ENABLE=1)
+    target_compile_definitions(eflash PRIVATE FTL_DEBUG_ENABLE=1)
 endif()
 
 # 关键修复：在Release模式下也启用assert，确保测试失败时立即终止

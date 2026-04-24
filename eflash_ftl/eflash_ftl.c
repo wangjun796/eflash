@@ -6,7 +6,6 @@
 
 // --- Forward Declarations ---
 static int extend_headers(void);
-static int write_system_page(uint16_t lpn, const uint8_t *data);
 static void scan_and_rebuild_ext_headers();
 
 // --- Abbreviation Reference ---
@@ -239,7 +238,7 @@ static int get_header_page_info(uint16_t obj_id, uint16_t *out_log_page, uint16_
  *   Note: For extended object headers, the LPN is dynamically allocated by
  *   eflash_mgr_alloc, so it can be any value (e.g., 100-103, 200-203, etc.)
  */
-static int write_system_page(uint16_t lpn, const uint8_t *data) {
+int write_system_page(uint16_t lpn, const uint8_t *data) {
     FTL_DEBUG("[SYS_WRITE] Writing system page LPN=%d (sector_id=%d)\n", lpn, lpn);
     return eflash_ftl_write(lpn, data);
 }
@@ -602,7 +601,7 @@ int eflash_ftl_obj_get_header(uint16_t obj_id, obj_header_t *hdr) {
  * Note: This function follows the same traversal logic as eflash_ftl_read,
  * using bit-by-bit comparison to navigate the Radix Tree.
  */
-static uint16_t find_phys_page_by_sector(uint16_t sector) {
+uint16_t find_phys_page_by_sector(uint16_t sector) {
     if (!FTL || FTL->root_page == PAGE_NONE) {
         FTL_DEBUG("[FIND_PHYS] ERROR: No root page or invalid FTL\n");
         return PAGE_NONE;
@@ -1241,6 +1240,10 @@ int eflash_ftl_init(void) {
         }
         FTL->spc_mgr.free_node_pages[0] = phys_page;
         FTL_DEBUG("[INIT] Updated LPN %d -> PPN %d (free_node[0])\n", SYS_FREE_LIST_BASE_LPN, phys_page);
+        
+        // Set total_free_nodes to 1 (we have one initial free node)
+        FTL->spc_mgr.total_free_nodes = 1;
+        FTL_DEBUG("[INIT] total_free_nodes initialized to %u\n", FTL->spc_mgr.total_free_nodes);
 
         // Initialize max_obj_id to 0xFFFF (no objects allocated yet)
         // The first call to alloc_header will return 0

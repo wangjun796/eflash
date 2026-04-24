@@ -128,6 +128,10 @@ uint16_t eflash_ftl_obj_alloc_header(void);  // Allocate next object header ID
 int  eflash_ftl_obj_get_header(uint16_t obj_id, obj_header_t *hdr);
 int  eflash_ftl_obj_set_header(uint16_t obj_id, const obj_header_t *hdr);
 
+// System page access functions (used by space manager)
+int  write_system_page(uint16_t lpn, const uint8_t *data);
+uint16_t find_phys_page_by_sector(uint16_t sector);
+
 // Read/write interface based on sector_id (recommended)
 int  eflash_ftl_write(uint16_t sector_id, const uint8_t *data);
 int  eflash_ftl_read(uint16_t sector_id, uint8_t *data);

@@ -1052,6 +1052,7 @@ int main(void) {
     RUN_TEST(object_header_extension)
     RUN_TEST(txn_abort_without_begin)
     RUN_TEST(multiple_sequential_commits)
+    RUN_TEST(variable_size_alloc)
 
     #undef RUN_TEST
 
@@ -2190,9 +2191,93 @@ static int test_multiple_sequential_commits(void) {
     PASS();
 }
 
+// ============================================================================
+// Test: Variable Size Allocation and Free Verification
+// ============================================================================
 
+// Helper function to count total free nodes
+static uint32_t count_total_free_nodes(void) {
+    // Access internal MGR structure through the global instance
+    extern eflash_ftl_t g_ftl_instance;
+    return g_ftl_instance.spc_mgr.total_free_nodes;
+}
 
+int test_variable_size_alloc(void) {
+    printf("[TEST] test_variable_size_alloc: Starting...\n");
 
+    init_test_flash();
+    eflash_ftl_init();
+
+    // Record initial free space
+    uint32_t initial_free_bytes = eflash_mgr_get_free_bytes();
+    uint32_t initial_free_nodes = count_total_free_nodes();
+    printf("  [INFO] Initial free bytes: %lu, free nodes: %lu\n", 
+           (unsigned long)initial_free_bytes, (unsigned long)initial_free_nodes);
+
+    // Allocate sizes: 2, 4, 6, ..., 508 (254 allocations)
+    #define NUM_ALLOCS 254
+    uint32_t addrs[NUM_ALLOCS];
+    uint32_t sizes[NUM_ALLOCS];
+    
+    printf("  [INFO] Allocating %d blocks with sizes 2, 4, 6, ..., 508 bytes\n", NUM_ALLOCS);
+    
+    for (int i = 0; i < NUM_ALLOCS; i++) {
+        sizes[i] = (uint32_t)((i + 1) * 2);  // 2, 4, 6, ..., 508
+        
+        int ret = eflash_mgr_alloc(sizes[i], &addrs[i]);
+        ASSERT(ret == 0, "allocation should succeed");
+        
+        // Print status after each alloc
+        uint32_t current_free_bytes = eflash_mgr_get_free_bytes();
+        uint32_t current_free_nodes = count_total_free_nodes();
+        
+        printf("  [ALLOC #%d] size=%3u bytes, addr=0x%08X, free_nodes=%lu, free_bytes=%lu\n",
+               i + 1, sizes[i], addrs[i], 
+               (unsigned long)current_free_nodes, (unsigned long)current_free_bytes);
+    }
+    
+    printf("  [PASS] All %d allocations succeeded\n", NUM_ALLOCS);
+    printf("  [INFO] After all allocs: free_nodes=%lu, free_bytes=%lu\n",
+           (unsigned long)count_total_free_nodes(), 
+           (unsigned long)eflash_mgr_get_free_bytes());
+    
+    // Free all allocated blocks
+    printf("  [INFO] Freeing all allocated blocks...\n");
+    
+    for (int i = 0; i < NUM_ALLOCS; i++) {
+        eflash_mgr_free(addrs[i], sizes[i]);
+        
+        // Print status after each free
+        uint32_t current_free_bytes = eflash_mgr_get_free_bytes();
+        uint32_t current_free_nodes = count_total_free_nodes();
+        
+        printf("  [FREE  #%d] size=%3u bytes, addr=0x%08X, free_nodes=%lu, free_bytes=%lu\n",
+               i + 1, sizes[i], addrs[i],
+               (unsigned long)current_free_nodes, (unsigned long)current_free_bytes);
+    }
+    
+    printf("  [PASS] All blocks freed\n");
+    
+    // Verify final free space matches initial
+    uint32_t final_free_bytes = eflash_mgr_get_free_bytes();
+    uint32_t final_free_nodes = count_total_free_nodes();
+    printf("  [INFO] Final free bytes: %lu, free nodes: %lu\n", 
+           (unsigned long)final_free_bytes, (unsigned long)final_free_nodes);
+    printf("  [INFO] Initial free bytes: %lu, free nodes: %lu\n", 
+           (unsigned long)initial_free_bytes, (unsigned long)initial_free_nodes);
+    printf("  [INFO] Difference: bytes=%ld, nodes=%ld\n",
+           (long)final_free_bytes - (long)initial_free_bytes,
+           (long)final_free_nodes - (long)initial_free_nodes);
+    
+    ASSERT(final_free_bytes == initial_free_bytes, 
+           "free space should match after alloc/free cycle");
+    
+    printf("  [PASS] Free space verification passed (%lu bytes)\n", 
+           (unsigned long)final_free_bytes);
+    
+    cleanup_test_flash();
+    PASS();
+}
 
 
 
