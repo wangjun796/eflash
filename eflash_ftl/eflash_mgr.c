@@ -11,6 +11,12 @@
 #define FTL_DEBUG(...) do {} while(0)  // Disable debug output
 #endif
 
+// Disable all printf debug output in eflash_mgr.c for better performance
+#ifndef MGR_DEBUG
+#define MGR_DEBUG(...) do {} while(0)
+#define MGR_PRINTF(...) do {} while(0)
+#endif
+
 // --- Internal Helper Functions ---
 
 // Forward declarations
@@ -58,7 +64,7 @@ static int16_t read_node_count(uint16_t lpn) {
     uint16_t offset = META_SIZE;  // Skip 48-byte meta
     int16_t count = (int16_t)(buf[offset] | (buf[offset + 1] << 8));
     
-    printf("[READ_COUNT] lpn=%d, count=%d\n", lpn, count);
+    // MGR_PRINTF("[READ_COUNT] lpn=%d, count=%d\n", lpn, count);  // Disabled for performance
     return count;
 }
 
@@ -216,7 +222,7 @@ static uint32_t remove_node_from_table(uint32_t target_logical_addr) {
                 // Debug: Print page counts when reaching multiples of 57
                 if (MGR->total_free_nodes % FREE_NODES_PER_PAGE == 0) {
                     print_free_page_counts("REMOVE");
-                    printf("  [DEBUG REMOVE] Total nodes=%u\n", MGR->total_free_nodes);
+                    MGR_PRINTF("  [DEBUG REMOVE] Total nodes=%u\n", MGR->total_free_nodes);
                 }
                 
                 FTL_DEBUG("[REMOVE_NODE] Removed addr=0x%08X from base LPN %d, new total=%u\n",
@@ -873,32 +879,32 @@ static uint32_t remove_node_ending_at(uint32_t target_addr) {
 
 void eflash_mgr_free(uint32_t logical_addr, uint32_t size) {
 
-    printf("[SPACE_FREE] Freeing logical_addr=0x%06X, size=%u\n", logical_addr, size);
+    MGR_PRINTF("[SPACE_FREE] Freeing logical_addr=0x%06X, size=%u\n", logical_addr, size);
     
     // Check if can merge with previous free block
-    printf("[SPACE_FREE] Checking merge with previous block ending at 0x%06X\n", logical_addr);
+    MGR_PRINTF("[SPACE_FREE] Checking merge with previous block ending at 0x%06X\n", logical_addr);
     uint32_t prev_size = remove_node_ending_at(logical_addr);
-    printf("[SPACE_FREE] Previous merge result: prev_size=%u\n", prev_size);
+    MGR_PRINTF("[SPACE_FREE] Previous merge result: prev_size=%u\n", prev_size);
     if (prev_size > 0) {
         uint32_t prev_addr = logical_addr - prev_size;
         assert(prev_addr + prev_size == logical_addr);
         logical_addr = prev_addr;
         size += prev_size;
-        printf("[SPACE_FREE] Merged with previous block: new_addr=0x%06X, new_size=%u\n",
+        MGR_PRINTF("[SPACE_FREE] Merged with previous block: new_addr=0x%06X, new_size=%u\n",
                  logical_addr, size);
     }
     
     // Check if can merge with next free block
-    printf("[SPACE_FREE] Checking merge with next block at addr=0x%06X\n", logical_addr + size);
+    MGR_PRINTF("[SPACE_FREE] Checking merge with next block at addr=0x%06X\n", logical_addr + size);
     uint32_t next_size = remove_node_from_table(logical_addr + size);
-    printf("[SPACE_FREE] Next merge result: next_size=%u\n", next_size);
+    MGR_PRINTF("[SPACE_FREE] Next merge result: next_size=%u\n", next_size);
     if (next_size > 0) {
         size += next_size;
-        printf("[SPACE_FREE] Merged with next block: new_size=%u\n", size);
+        MGR_PRINTF("[SPACE_FREE] Merged with next block: new_size=%u\n", size);
     }
     
     // Insert merged node
-    printf("[SPACE_FREE] Inserting merged node: addr=0x%06X, size=%u\n", logical_addr, size);
+    MGR_PRINTF("[SPACE_FREE] Inserting merged node: addr=0x%06X, size=%u\n", logical_addr, size);
     insert_node_to_table(logical_addr, size);
 }
 

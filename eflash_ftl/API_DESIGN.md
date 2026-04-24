@@ -261,5 +261,73 @@ gcc your_app.c -leflash -lecc_lib -o your_app
 
 ---
 
-**版本**: 1.0.0  
+## 最近的重要改进 (v1.2.0)
+
+### 1. 空闲块合并逻辑优化
+
+**问题：** 之前的 `eflash_mgr_free()` 使用错误的参数查找前驱相邻块
+
+**修复：**
+- 新增辅助函数 `remove_node_ending_at(target_addr)` 
+- 正确查找满足 `node.addr + node.size == target_addr` 的前驱块
+- 使用 `assert(prev_addr + prev_size == logical_addr)` 验证相邻关系
+
+**代码示例：**
+```c
+void eflash_mgr_free(uint32_t logical_addr, uint32_t size) {
+    // 查找并删除前驱相邻块
+    uint32_t prev_size = remove_node_ending_at(logical_addr);
+    if (prev_size > 0) {
+        uint32_t prev_addr = logical_addr - prev_size;
+        assert(prev_addr + prev_size == logical_addr);  // 验证相邻性
+        logical_addr = prev_addr;
+        size += prev_size;
+    }
+    
+    // 查找并删除后继相邻块
+    uint32_t next_size = remove_node_from_table(logical_addr + size);
+    if (next_size > 0) {
+        size += next_size;
+    }
+    
+    // 插入合并后的节点
+    insert_node_to_table(logical_addr, size);
+}
+```
+
+### 2. 测试用例增强
+
+**新增测试：** `test_variable_size_alloc_random_order()`
+
+**特性：**
+- 生成两个独立的随机排列（Fisher-Yates 算法）
+- 按随机顺序分配和释放内存块
+- 验证在不同操作顺序下的鲁棒性
+- 数据填充值为索引 i，释放前验证数据完整性
+
+**关键改进：**
+- ✅ 使用栈缓冲区替代 malloc/free（`uint8_t data_buf[512]`）
+- ✅ 使用 `USER_DATA_SIZE` 而非 `EFLASH_PAGE_SIZE` 计算偏移量
+- ✅ 跨页边界数据处理正确性验证
+- ✅ 固定随机种子（srand(42)）保证可重复性
+
+### 3. 代码质量提升
+
+**断言验证：**
+```c
+#include <assert.h>
+
+// 在关键逻辑处添加断言，异常时尽早发现
+assert(prev_addr + prev_size == logical_addr);
+assert(data_valid);  // 数据完整性验证
+```
+
+**设计原则：**
+- 嵌入式代码保持简洁
+- 避免创建不必要的辅助函数
+- 在关键路径使用 assert 进行防御性编程
+
+---
+
+**版本**: 1.2.0  
 **更新日期**: 2026-04-23

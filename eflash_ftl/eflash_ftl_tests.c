@@ -1,5 +1,7 @@
 /* eFlash FTL - Comprehensive Test Suite
  * Tests for Mini-FTL implementation with transaction support
+ *
+ * 测试用例列表 (25个):
 *✅ test_init_recovery - 初始化与恢复
 *✅ test_basic_read_write - 基础读写
 *✅ test_object_headers - 对象头管理（基础）
@@ -18,6 +20,9 @@
 *✅ test_object_header_extension - 对象头扩展机制测试（>232个对象）
 *✅ test_txn_abort_without_begin - 无begin调用abort的异常处理
 *✅ test_multiple_sequential_commits - 多次连续提交测试
+*✅ test_variable_size_alloc - 可变大小分配（顺序）
+*✅ test_variable_size_alloc_random_order - 可变大小分配（随机顺序）
+*⚠️  test_free_list_extension - 已移至 eflash_ftl_tests_extension.c 独立测试
 */
 
 #include <stdio.h>
@@ -1053,6 +1058,8 @@ int main(void) {
     RUN_TEST(txn_abort_without_begin)
     RUN_TEST(multiple_sequential_commits)
     RUN_TEST(variable_size_alloc)
+    RUN_TEST(variable_size_alloc_random_order)
+    // free_list_extension moved to eflash_ftl_tests_extension.c
 
     #undef RUN_TEST
 
@@ -2218,6 +2225,7 @@ int test_variable_size_alloc(void) {
     #define NUM_ALLOCS 254
     uint32_t addrs[NUM_ALLOCS];
     uint32_t sizes[NUM_ALLOCS];
+    uint8_t data_buf[512];  // Stack buffer for data operations (max size is 508)
     
     printf("  [INFO] Allocating %d blocks with sizes 2, 4, 6, ..., 508 bytes\n", NUM_ALLOCS);
     
@@ -2226,6 +2234,39 @@ int test_variable_size_alloc(void) {
         
         int ret = eflash_mgr_alloc(sizes[i], &addrs[i]);
         ASSERT(ret == 0, "allocation should succeed");
+        
+        // Fill allocated memory with value i
+        memset(data_buf, (uint8_t)i, sizes[i]);
+        
+        // Write data to flash via FTL (page by page)
+        uint32_t page_offset = addrs[i] / USER_DATA_SIZE;
+        uint32_t byte_offset = addrs[i] % USER_DATA_SIZE;
+        uint32_t remaining = sizes[i];
+        uint32_t written = 0;
+        
+        while (remaining > 0) {
+            uint32_t write_size = (remaining < (USER_DATA_SIZE - byte_offset)) ? remaining : (USER_DATA_SIZE - byte_offset);
+            
+            // Read current page
+            uint8_t page_buf[EFLASH_PAGE_SIZE];
+            ret = eflash_ftl_read((uint16_t)(page_offset), page_buf);
+            if (ret != 0) {
+                // Page not initialized, use zero-filled buffer
+                memset(page_buf, 0, EFLASH_PAGE_SIZE);
+            }
+            
+            // Write data to page buffer
+            memcpy(page_buf + byte_offset, data_buf + written, write_size);
+            
+            // Write page back
+            ret = eflash_ftl_write((uint16_t)(page_offset), page_buf);
+            ASSERT(ret == 0, "write should succeed");
+            
+            remaining -= write_size;
+            written += write_size;
+            page_offset++;
+            byte_offset = 0;
+        }
         
         // Print status after each alloc
         uint32_t current_free_bytes = eflash_mgr_get_free_bytes();
@@ -2245,6 +2286,45 @@ int test_variable_size_alloc(void) {
     printf("  [INFO] Freeing all allocated blocks...\n");
     
     for (int i = 0; i < NUM_ALLOCS; i++) {
+        // Verify data before freeing: read back and check all bytes are i
+        memset(data_buf, 0, sizes[i]);
+        
+        uint32_t page_offset = addrs[i] / USER_DATA_SIZE;
+        uint32_t byte_offset = addrs[i] % USER_DATA_SIZE;
+        uint32_t remaining = sizes[i];
+        uint32_t read_bytes = 0;
+        
+        while (remaining > 0) {
+            uint32_t read_size = (remaining < (USER_DATA_SIZE - byte_offset)) ? remaining : (USER_DATA_SIZE - byte_offset);
+            
+            // Read page from flash
+            uint8_t page_buf[EFLASH_PAGE_SIZE];
+            int ret = eflash_ftl_read((uint16_t)(page_offset), page_buf);
+            ASSERT(ret == 0, "read should succeed");
+            
+            // Copy data to verify buffer
+            memcpy(data_buf + read_bytes, page_buf + byte_offset, read_size);
+            
+            remaining -= read_size;
+            read_bytes += read_size;
+            page_offset++;
+            byte_offset = 0;
+        }
+        
+        // Verify all bytes are equal to i
+        bool data_valid = true;
+        for (uint32_t j = 0; j < sizes[i]; j++) {
+            if (data_buf[j] != (uint8_t)i) {
+                printf("  [ERROR] Data mismatch at alloc #%d: byte[%u]=%u, expected=%u\n",
+                       i + 1, j, data_buf[j], i);
+                data_valid = false;
+                break;
+            }
+        }
+        
+        ASSERT(data_valid, "data should be filled with value i");
+        
+        // Now free the block
         eflash_mgr_free(addrs[i], sizes[i]);
         
         // Print status after each free
@@ -2279,7 +2359,200 @@ int test_variable_size_alloc(void) {
     PASS();
 }
 
+// Helper function to generate random permutation using Fisher-Yates shuffle
+static void generate_random_permutation(int *array, int n) {
+    // Initialize array with 0, 1, 2, ..., n-1
+    for (int i = 0; i < n; i++) {
+        array[i] = i;
+    }
+    
+    // Fisher-Yates shuffle
+    srand(42);  // Fixed seed for reproducibility
+    for (int i = n - 1; i > 0; i--) {
+        int j = rand() % (i + 1);
+        // Swap array[i] and array[j]
+        int temp = array[i];
+        array[i] = array[j];
+        array[j] = temp;
+    }
+}
+
+int test_variable_size_alloc_random_order(void) {
+    printf("[TEST] test_variable_size_alloc_random_order: Starting...\n");
+
+    init_test_flash();
+    eflash_ftl_init();
+
+    // Record initial free space
+    uint32_t initial_free_bytes = eflash_mgr_get_free_bytes();
+    uint32_t initial_free_nodes = count_total_free_nodes();
+    printf("  [INFO] Initial free bytes: %lu, free nodes: %lu\n", 
+           (unsigned long)initial_free_bytes, (unsigned long)initial_free_nodes);
+
+    // Allocate sizes: 2, 4, 6, ..., 508 (254 allocations)
+    #define NUM_ALLOCS 254
+    uint32_t addrs[NUM_ALLOCS];
+    uint32_t sizes[NUM_ALLOCS];
+    int alloc_order[NUM_ALLOCS];   // Random order for allocation
+    int free_order[NUM_ALLOCS];    // Random order for freeing
+    uint8_t data_buf[512];  // Stack buffer for data operations (max size is 508)
+    
+    // Generate two different random permutations
+    generate_random_permutation(alloc_order, NUM_ALLOCS);
+    generate_random_permutation(free_order, NUM_ALLOCS);
+    
+    printf("  [INFO] Alloc order (first 10): ");
+    for (int i = 0; i < 10 && i < NUM_ALLOCS; i++) {
+        printf("%d ", alloc_order[i]);
+    }
+    printf("...\n");
+    
+    printf("  [INFO] Free order (first 10): ");
+    for (int i = 0; i < 10 && i < NUM_ALLOCS; i++) {
+        printf("%d ", free_order[i]);
+    }
+    printf("...\n");
+    
+    printf("  [INFO] Allocating %d blocks in random order with sizes 2, 4, 6, ..., 508 bytes\n", NUM_ALLOCS);
+    
+    // Allocate in RANDOM order
+    for (int k = 0; k < NUM_ALLOCS; k++) {
+        int i = alloc_order[k];  // Get index from random order
+        sizes[i] = (uint32_t)((i + 1) * 2);  // 2, 4, 6, ..., 508
+        
+        int ret = eflash_mgr_alloc(sizes[i], &addrs[i]);
+        ASSERT(ret == 0, "allocation should succeed");
+        
+        // Fill allocated memory with value i
+        memset(data_buf, (uint8_t)i, sizes[i]);
+        
+        // Write data to flash via FTL (page by page)
+        uint32_t page_offset = addrs[i] / USER_DATA_SIZE;
+        uint32_t byte_offset = addrs[i] % USER_DATA_SIZE;
+        uint32_t remaining = sizes[i];
+        uint32_t written = 0;
+        
+        while (remaining > 0) {
+            uint32_t write_size = (remaining < (USER_DATA_SIZE - byte_offset)) ? remaining : (USER_DATA_SIZE - byte_offset);
+            
+            // Read current page
+            uint8_t page_buf[EFLASH_PAGE_SIZE];
+            ret = eflash_ftl_read((uint16_t)(page_offset), page_buf);
+            if (ret != 0) {
+                // Page not initialized, use zero-filled buffer
+                memset(page_buf, 0, EFLASH_PAGE_SIZE);
+            }
+            
+            // Write data to page buffer
+            memcpy(page_buf + byte_offset, data_buf + written, write_size);
+            
+            // Write page back
+            ret = eflash_ftl_write((uint16_t)(page_offset), page_buf);
+            ASSERT(ret == 0, "write should succeed");
+            
+            remaining -= write_size;
+            written += write_size;
+            page_offset++;
+            byte_offset = 0;
+        }
+        
+        // Print status every 50 allocations
+        if ((k + 1) % 50 == 0 || k == NUM_ALLOCS - 1) {
+            uint32_t current_free_bytes = eflash_mgr_get_free_bytes();
+            uint32_t current_free_nodes = count_total_free_nodes();
+            printf("  [ALLOC] Completed %d/%d, free_nodes=%lu, free_bytes=%lu\n",
+                   k + 1, NUM_ALLOCS,
+                   (unsigned long)current_free_nodes, (unsigned long)current_free_bytes);
+        }
+    }
+    
+    printf("  [PASS] All %d allocations succeeded\n", NUM_ALLOCS);
+    printf("  [INFO] After all allocs: free_nodes=%lu, free_bytes=%lu\n",
+           (unsigned long)count_total_free_nodes(), 
+           (unsigned long)eflash_mgr_get_free_bytes());
+    
+    // Free all allocated blocks in RANDOM order (different from alloc order)
+    printf("  [INFO] Freeing all allocated blocks in random order...\n");
+    
+    for (int k = 0; k < NUM_ALLOCS; k++) {
+        int i = free_order[k];  // Get index from random order
+        
+        // Verify data before freeing: read back and check all bytes are i
+        memset(data_buf, 0, sizes[i]);
+        
+        uint32_t page_offset = addrs[i] / USER_DATA_SIZE;
+        uint32_t byte_offset = addrs[i] % USER_DATA_SIZE;
+        uint32_t remaining = sizes[i];
+        uint32_t read_bytes = 0;
+        
+        while (remaining > 0) {
+            uint32_t read_size = (remaining < (USER_DATA_SIZE - byte_offset)) ? remaining : (USER_DATA_SIZE - byte_offset);
+            
+            // Read page from flash
+            uint8_t page_buf[EFLASH_PAGE_SIZE];
+            int ret = eflash_ftl_read((uint16_t)(page_offset), page_buf);
+            ASSERT(ret == 0, "read should succeed");
+            
+            // Copy data to verify buffer
+            memcpy(data_buf + read_bytes, page_buf + byte_offset, read_size);
+            
+            remaining -= read_size;
+            read_bytes += read_size;
+            page_offset++;
+            byte_offset = 0;
+        }
+        
+        // Verify all bytes are equal to i
+        bool data_valid = true;
+        for (uint32_t j = 0; j < sizes[i]; j++) {
+            if (data_buf[j] != (uint8_t)i) {
+                printf("  [ERROR] Data mismatch at alloc #%d (free order #%d): byte[%u]=%u, expected=%u\n",
+                       i + 1, k + 1, j, data_buf[j], i);
+                data_valid = false;
+                break;
+            }
+        }
+        
+        ASSERT(data_valid, "data should be filled with value i");
+        
+        // Now free the block
+        eflash_mgr_free(addrs[i], sizes[i]);
+        
+        // Print status every 50 frees
+        if ((k + 1) % 50 == 0 || k == NUM_ALLOCS - 1) {
+            uint32_t current_free_bytes = eflash_mgr_get_free_bytes();
+            uint32_t current_free_nodes = count_total_free_nodes();
+            printf("  [FREE] Completed %d/%d, free_nodes=%lu, free_bytes=%lu\n",
+                   k + 1, NUM_ALLOCS,
+                   (unsigned long)current_free_nodes, (unsigned long)current_free_bytes);
+        }
+    }
+    
+    printf("  [PASS] All blocks freed in random order\n");
+    
+    // Verify final free space matches initial
+    uint32_t final_free_bytes = eflash_mgr_get_free_bytes();
+    uint32_t final_free_nodes = count_total_free_nodes();
+    printf("  [INFO] Final free bytes: %lu, free nodes: %lu\n", 
+           (unsigned long)final_free_bytes, (unsigned long)final_free_nodes);
+    printf("  [INFO] Initial free bytes: %lu, free nodes: %lu\n", 
+           (unsigned long)initial_free_bytes, (unsigned long)initial_free_nodes);
+    printf("  [INFO] Difference: bytes=%ld, nodes=%ld\n",
+           (long)final_free_bytes - (long)initial_free_bytes,
+           (long)final_free_nodes - (long)initial_free_nodes);
+    
+    ASSERT(final_free_bytes == initial_free_bytes, 
+           "free space should match after alloc/free cycle");
+    
+    printf("  [PASS] Free space verification passed (%lu bytes)\n", 
+           (unsigned long)final_free_bytes);
+    
+    cleanup_test_flash();
+    PASS();
+}
 
 
 
+
+// test_free_list_extension moved to eflash_ftl_tests_extension.c
 
