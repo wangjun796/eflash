@@ -40,18 +40,38 @@
 
 // --- 测试辅助函数 ---
 
-// 打印当前系统状态
-static void print_system_state(const char *tag, uint32_t expected_free_bytes) {
-    uint32_t current_free_bytes = eflash_mgr_get_free_bytes();
+// Count total free nodes from internal structure
+static uint32_t count_total_free_nodes(void) {
     extern eflash_ftl_t g_ftl_instance;
-    uint32_t total_nodes = g_ftl_instance.spc_mgr.total_free_nodes;
+    return g_ftl_instance.spc_mgr.total_free_nodes;
+}
+
+// 打印当前系统状态
+static void print_system_state(const char *tag, uint32_t initial_free_bytes) {
+    uint32_t current_free_bytes = eflash_mgr_get_free_bytes();
+    uint32_t current_free_nodes = count_total_free_nodes();
     
-    printf("  [%s] Free bytes: %lu (expected: %lu, diff: %ld), Total nodes: %lu\n",
+    // Calculate extension overhead: each level uses 4 pages * 464 bytes = 1856 bytes
+    extern eflash_ftl_t g_ftl_instance;
+    uint32_t ext_levels_used = 0;
+    for (int i = 0; i < MAX_FREE_NODE_EXT_LEVELS; i++) {
+        if (g_ftl_instance.spc_mgr.ext_free_node_addrs[i] != 0xFFFFFFFF) {
+            ext_levels_used++;
+        } else {
+            break;
+        }
+    }
+    uint32_t ext_overhead = ext_levels_used * FREE_NODE_EXT_PAGES * USER_DATA_SIZE;
+    uint32_t expected_free_bytes = initial_free_bytes - ext_overhead;
+    
+    printf("  [%s] Free nodes: %lu, Free bytes: %lu (expected: %lu, ext_levels: %u, ext_overhead: %lu, diff: %ld)\n",
            tag,
+           (unsigned long)current_free_nodes,
            (unsigned long)current_free_bytes,
            (unsigned long)expected_free_bytes,
-           (long)current_free_bytes - (long)expected_free_bytes,
-           (unsigned long)total_nodes);
+           ext_levels_used,
+           (unsigned long)ext_overhead,
+           (long)current_free_bytes - (long)expected_free_bytes);
 }
 
 // 初始化测试Flash
@@ -108,11 +128,27 @@ int test_free_list_extension(void) {
     
     // Record initial state
     uint32_t initial_free_bytes = eflash_mgr_get_free_bytes();
-    extern eflash_ftl_t g_ftl_instance;
-    uint32_t initial_total_nodes = g_ftl_instance.spc_mgr.total_free_nodes;
+    uint32_t initial_free_nodes = count_total_free_nodes();
     
-    printf("  [INFO] Initial state: free_bytes=%lu, total_nodes=%lu\n", 
-           (unsigned long)initial_free_bytes, (unsigned long)initial_total_nodes);
+    printf("  [INFO] Initial state: free_bytes=%lu, free_nodes=%lu\n", 
+           (unsigned long)initial_free_bytes, (unsigned long)initial_free_nodes);
+    
+    // Debug: Read all base free_node pages to check initialization
+    for (int lpn = 8; lpn <= 11; lpn++) {
+        uint8_t debug_buf[EFLASH_PAGE_SIZE];
+        int debug_ret = eflash_ftl_read(lpn, debug_buf);
+        if (debug_ret == 0) {
+            uint16_t count = (uint16_t)(debug_buf[0] | (debug_buf[1] << 8));
+            printf("  [DEBUG] LPN %d: count=%u\n", lpn, count);
+            if (count > 0 && lpn == 8) {
+                free_node_t node;
+                memcpy(&node, debug_buf + 2, sizeof(free_node_t));
+                printf("  [DEBUG] LPN %d: node[0].addr=0x%08X, node[0].size=%u\n", lpn, node.addr, node.size);
+            }
+        } else {
+            printf("  [DEBUG] LPN %d: read failed, ret=%d\n", lpn, debug_ret);
+        }
+    }
     
     // ========================================================================
     // Phase 1: Allocate small blocks with data verification
@@ -145,7 +181,7 @@ int test_free_list_extension(void) {
             uint8_t page_buf[EFLASH_PAGE_SIZE];
             ret = eflash_ftl_read((uint16_t)(page_offset), page_buf);
             if (ret != 0) {
-                memset(page_buf, 0, EFLASH_PAGE_SIZE);
+                memset(page_buf, 0xff, EFLASH_PAGE_SIZE);
             }
             
             memcpy(page_buf + byte_offset, write_buf + written, write_size);
@@ -158,12 +194,12 @@ int test_free_list_extension(void) {
             byte_offset = 0;
         }
         
-        // Print status every 50 allocations
-        if ((i + 1) % 50 == 0 || i == NUM_ALLOCS - 1) {
-            print_system_state("ALLOC", initial_free_bytes);
-            printf("  [ALLOC] Completed %d/%d, addr[0]=0x%06X, addr[%d]=0x%06X\n",
-                   i + 1, NUM_ALLOCS, addrs[0], i, addrs[i]);
-        }
+        // Print status after EVERY allocation
+        uint32_t current_free_bytes = eflash_mgr_get_free_bytes();
+        uint32_t current_free_nodes = count_total_free_nodes();
+        printf("  [ALLOC #%d] addr=0x%06X, free_nodes=%lu, free_bytes=%lu\n",
+               i + 1, addrs[i],
+               (unsigned long)current_free_nodes, (unsigned long)current_free_bytes);
     }
     
     printf("\n  [PASS] Phase 1: All %d allocations and writes completed\n", NUM_ALLOCS);
@@ -215,11 +251,12 @@ int test_free_list_extension(void) {
         eflash_mgr_free(addrs[i], SMALL_BLOCK_SIZE);
         freed_count_phase2++;
         
-        // Print status every 20 frees
-        if (freed_count_phase2 % 20 == 0) {
-            print_system_state("FREE", initial_free_bytes);
-            printf("  [FREE] Freed %d blocks so far (block #%d)\n", freed_count_phase2, i);
-        }
+        // Print status after EVERY free
+        uint32_t current_free_bytes = eflash_mgr_get_free_bytes();
+        uint32_t current_free_nodes = count_total_free_nodes();
+        printf("  [FREE #%d] block #%d, addr=0x%06X, free_nodes=%lu, free_bytes=%lu\n",
+               freed_count_phase2, i, addrs[i],
+               (unsigned long)current_free_nodes, (unsigned long)current_free_bytes);
     }
     
     printf("\n  [PASS] Phase 2: Freed %d blocks (every 3rd block)\n", freed_count_phase2);
@@ -311,10 +348,12 @@ int test_free_list_extension(void) {
         
         alloc_count++;
         
-        if ((i + 1) % 25 == 0 || i == EXTENDED_ALLOCS - 1) {
-            print_system_state("EXT_ALLOC", initial_free_bytes);
-            printf("  [EXT_ALLOC] Completed %d/%d\n", i + 1, EXTENDED_ALLOCS);
-        }
+        // Print status after EVERY allocation
+        uint32_t current_free_bytes = eflash_mgr_get_free_bytes();
+        uint32_t current_free_nodes = count_total_free_nodes();
+        printf("  [EXT_ALLOC #%d] addr=0x%06X, free_nodes=%lu, free_bytes=%lu\n",
+               alloc_count, ext_addrs[i],
+               (unsigned long)current_free_nodes, (unsigned long)current_free_bytes);
     }
     
     printf("\n  [PASS] Phase 4: Allocated %d/%d additional blocks\n", alloc_count, EXTENDED_ALLOCS);
@@ -375,10 +414,12 @@ int test_free_list_extension(void) {
             eflash_mgr_free(addrs[i], SMALL_BLOCK_SIZE);
             total_freed++;
             
-            if (total_freed % 50 == 0) {
-                print_system_state("FREE_BASE", initial_free_bytes);
-                printf("  [FREE_BASE] Total freed: %d\n", total_freed);
-            }
+            // Print status after EVERY free
+            uint32_t current_free_bytes = eflash_mgr_get_free_bytes();
+            uint32_t current_free_nodes = count_total_free_nodes();
+            printf("  [FREE_BASE #%d] block #%d, addr=0x%06X, free_nodes=%lu, free_bytes=%lu\n",
+                   total_freed, i, addrs[i],
+                   (unsigned long)current_free_nodes, (unsigned long)current_free_bytes);
         }
     }
     
@@ -391,10 +432,12 @@ int test_free_list_extension(void) {
         eflash_mgr_free(ext_addrs[i], SMALL_BLOCK_SIZE);
         total_freed++;
         
-        if (i % 25 == 0 || i == alloc_count - 1) {
-            print_system_state("FREE_EXT", initial_free_bytes);
-            printf("  [FREE_EXT] Freed %d/%d extended blocks\n", i + 1, alloc_count);
-        }
+        // Print status after EVERY free
+        uint32_t current_free_bytes = eflash_mgr_get_free_bytes();
+        uint32_t current_free_nodes = count_total_free_nodes();
+        printf("  [FREE_EXT #%d] block #%d, addr=0x%06X, free_nodes=%lu, free_bytes=%lu\n",
+               total_freed, i, ext_addrs[i],
+               (unsigned long)current_free_nodes, (unsigned long)current_free_bytes);
     }
     
     printf("  [PASS] Phase 5B: Freed %d extended blocks\n", alloc_count);
@@ -404,6 +447,11 @@ int test_free_list_extension(void) {
     printf("\n  [PHASE 5C] Freeing large block...\n");
     eflash_mgr_free(large_block_addr, 100);
     total_freed++;
+    uint32_t current_free_bytes = eflash_mgr_get_free_bytes();
+    uint32_t current_free_nodes = count_total_free_nodes();
+    printf("  [FREE_LARGE] addr=0x%06X, free_nodes=%lu, free_bytes=%lu\n",
+           large_block_addr,
+           (unsigned long)current_free_nodes, (unsigned long)current_free_bytes);
     print_system_state("AFTER_FREE_LARGE", initial_free_bytes);
     
     // ========================================================================
@@ -412,21 +460,21 @@ int test_free_list_extension(void) {
     printf("\n  [FINAL VERIFICATION]\n");
     
     uint32_t final_free_bytes = eflash_mgr_get_free_bytes();
-    uint32_t final_total_nodes = g_ftl_instance.spc_mgr.total_free_nodes;
+    uint32_t final_free_nodes = count_total_free_nodes();
     
-    printf("  [INFO] Final state: free_bytes=%lu (initial: %lu, diff: %ld), total_nodes=%lu (initial: %lu, diff: %ld)\n",
+    printf("  [INFO] Final state: free_bytes=%lu (initial: %lu, diff: %ld), free_nodes=%lu (initial: %lu, diff: %ld)\n",
            (unsigned long)final_free_bytes,
            (unsigned long)initial_free_bytes,
            (long)final_free_bytes - (long)initial_free_bytes,
-           (unsigned long)final_total_nodes,
-           (unsigned long)initial_total_nodes,
-           (long)final_total_nodes - (long)initial_total_nodes);
+           (unsigned long)final_free_nodes,
+           (unsigned long)initial_free_nodes,
+           (long)final_free_nodes - (long)initial_free_nodes);
     
     printf("  [INFO] Total blocks freed: %d\n", total_freed);
     
     ASSERT(final_free_bytes == initial_free_bytes, 
            "free space should match after alloc/free cycle");
-    ASSERT(final_total_nodes == initial_total_nodes,
+    ASSERT(final_free_nodes == initial_free_nodes,
            "total nodes should match after alloc/free cycle");
     
     printf("\n  [PASS] Free list extension test completed successfully\n");

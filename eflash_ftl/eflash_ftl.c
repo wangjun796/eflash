@@ -1201,10 +1201,9 @@ int eflash_ftl_init(void) {
         uint8_t free_list_page[USER_DATA_SIZE];
         memset(free_list_page, 0xFF, USER_DATA_SIZE);
 
-        // Set count = 1 at offset META_SIZE (within user data region)
-        uint16_t count_offset = META_SIZE;
-        free_list_page[count_offset] = 1 & 0xFF;
-        free_list_page[count_offset + 1] = (1 >> 8) & 0xFF;
+        // Set count = 1 at offset 0 (beginning of user data region)
+        free_list_page[0] = 1 & 0xFF;
+        free_list_page[1] = (1 >> 8) & 0xFF;
 
         // Create initial free node
         free_node_t initial_node;
@@ -1214,17 +1213,12 @@ int eflash_ftl_init(void) {
         FTL_DEBUG("[INIT] Initial free node: addr=0x%08X, size=%u bytes\n",
                  initial_node.addr, initial_node.size);
 
-        // Write node data after count header
-        uint16_t node_offset = META_SIZE + FREE_NODE_HEADER_SIZE;
+        // Write node data after 2-byte count header (at offset 2)
+        uint16_t node_offset = FREE_NODE_HEADER_SIZE;
         memcpy(free_list_page + node_offset, &initial_node, sizeof(free_node_t));
 
-        // Calculate ECC for the page
-        size_t protected_len = USER_DATA_SIZE + META_SIZE - 5;
-        uint8_t ecc_buf[5];
-        bch_generate(&bch_3bit, free_list_page, protected_len, ecc_buf);
-        memcpy(free_list_page + USER_DATA_SIZE + META_SIZE - 5, ecc_buf, 5);
-
         // Write through FTL layer (this will allocate PPN and update Radix Tree)
+        // Note: eflash_ftl_write will calculate ECC internally, no need to do it here
         FTL_DEBUG("[INIT] Writing initial free node to LPN %d via FTL...\n", SYS_FREE_LIST_BASE_LPN);
         if (write_system_page(SYS_FREE_LIST_BASE_LPN, free_list_page) != 0) {
             FTL_DEBUG("[INIT] ERROR: Failed to write initial free node!\n");
@@ -1240,6 +1234,30 @@ int eflash_ftl_init(void) {
         }
         FTL->spc_mgr.free_node_pages[0] = phys_page;
         FTL_DEBUG("[INIT] Updated LPN %d -> PPN %d (free_node[0])\n", SYS_FREE_LIST_BASE_LPN, phys_page);
+        
+        // Initialize remaining base free_node pages (LPN 9-11) with count=0
+        // This ensures find_page_with_space can find empty pages instead of triggering extension prematurely
+        uint8_t blank_page[USER_DATA_SIZE];
+        memset(blank_page, 0xFF, USER_DATA_SIZE);
+        blank_page[0] = 0;  // count = 0
+        blank_page[1] = 0;
+        
+        for (int i = 1; i < FREE_NODE_PAGE_COUNT; i++) {
+            uint16_t lpn = SYS_FREE_LIST_BASE_LPN + i;
+            if (write_system_page(lpn, blank_page) != 0) {
+                FTL_DEBUG("[INIT] ERROR: Failed to initialize LPN %d\n", lpn);
+                return -1;
+            }
+            
+            // Get the physical page for this LPN
+            phys_page = find_phys_page_by_sector(lpn);
+            if (phys_page == PAGE_NONE) {
+                FTL_DEBUG("[INIT] ERROR: Failed to get PPN for LPN %d\n", lpn);
+                return -1;
+            }
+            FTL->spc_mgr.free_node_pages[i] = phys_page;
+            FTL_DEBUG("[INIT] Initialized LPN %d -> PPN %d (count=0)\n", lpn, phys_page);
+        }
         
         // Set total_free_nodes to 1 (we have one initial free node)
         FTL->spc_mgr.total_free_nodes = 1;
@@ -1263,10 +1281,17 @@ int eflash_ftl_init(void) {
         FTL->spc_mgr.free_node_pages[0] = phys_page;
         FTL_DEBUG("[INIT] LPN %d -> PPN %d (free_node[0])\n", SYS_FREE_LIST_BASE_LPN, phys_page);
 
-        // Set remaining free_node_pages and all header_pages to PAGE_NONE
-        // They will be allocated on-demand when needed
+        // Query physical pages for remaining base free_node pages (LPN 9-11)
         for (int i = 1; i < FREE_NODE_PAGE_COUNT; i++) {
-            FTL->spc_mgr.free_node_pages[i] = PAGE_NONE;
+            uint16_t lpn = SYS_FREE_LIST_BASE_LPN + i;
+            phys_page = find_phys_page_by_sector(lpn);
+            if (phys_page == PAGE_NONE) {
+                FTL_DEBUG("[INIT] WARNING: LPN %d not mapped yet (will be allocated on-demand)\n", lpn);
+                FTL->spc_mgr.free_node_pages[i] = PAGE_NONE;
+            } else {
+                FTL->spc_mgr.free_node_pages[i] = phys_page;
+                FTL_DEBUG("[INIT] LPN %d -> PPN %d (free_node[%d])\n", lpn, phys_page, i);
+            }
         }
         for (int i = 0; i < BASE_HEADER_PAGES; i++) {
             FTL->spc_mgr.header_pages[i] = PAGE_NONE;

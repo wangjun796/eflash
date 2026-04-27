@@ -2252,7 +2252,7 @@ int test_variable_size_alloc(void) {
             ret = eflash_ftl_read((uint16_t)(page_offset), page_buf);
             if (ret != 0) {
                 // Page not initialized, use zero-filled buffer
-                memset(page_buf, 0, EFLASH_PAGE_SIZE);
+                memset(page_buf, 0xFF, EFLASH_PAGE_SIZE);
             }
             
             // Write data to page buffer
@@ -2440,7 +2440,7 @@ int test_variable_size_alloc_random_order(void) {
             ret = eflash_ftl_read((uint16_t)(page_offset), page_buf);
             if (ret != 0) {
                 // Page not initialized, use zero-filled buffer
-                memset(page_buf, 0, EFLASH_PAGE_SIZE);
+                memset(page_buf, 0xFF, EFLASH_PAGE_SIZE);
             }
             
             // Write data to page buffer

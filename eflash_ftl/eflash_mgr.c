@@ -43,52 +43,47 @@ static uint16_t get_free_node_lpn(int page_index, int is_extended, int ext_level
 // Read count from free_node page via FTL layer (using logical address)
 static int16_t read_node_count(uint16_t lpn) {
     if (lpn == PAGE_NONE) {
-        printf("[READ_COUNT] ERROR: lpn is PAGE_NONE\n");
         return -1;
     }
     
     // Boundary check for LPN
     if (lpn >= EFLASH_TOTAL_PAGES) {
-        printf("[READ_COUNT] ERROR: lpn=%d out of range (max=%d)\n", lpn, EFLASH_TOTAL_PAGES);
         return -1;
     }
     
     uint8_t buf[USER_DATA_SIZE];
     int ret = eflash_ftl_read(lpn, buf);
     if (ret != 0) {
-        printf("[READ_COUNT] ERROR: eflash_ftl_read(lpn=%d) failed, ret=%d\n", lpn, ret);
+        // Page not initialized yet or read failed, return -1 silently
         return -1;
     }
     
-    // count stored as uint16_t at beginning of user data area after meta region (2 bytes)
-    uint16_t offset = META_SIZE;  // Skip 48-byte meta
-    int16_t count = (int16_t)(buf[offset] | (buf[offset + 1] << 8));
+    // count stored as uint16_t at the beginning of user data area (offset 0)
+    // Note: eflash_ftl_read already returns USER_DATA_SIZE bytes (464 bytes),
+    // which is the pure user data without META/ECC. The count is at buf[0..1].
+    int16_t count = (int16_t)(buf[0] | (buf[1] << 8));
     
     // MGR_PRINTF("[READ_COUNT] lpn=%d, count=%d\n", lpn, count);  // Disabled for performance
     return count;
 }
 
-// Write count to free_node page
-static void write_node_count(uint16_t phys_page, uint16_t count) {
-    uint8_t buf[EFLASH_PAGE_SIZE];
+// Write count to free_node page via FTL layer
+static void write_node_count(uint16_t lpn, uint16_t count) {
+    // Read current page first
+    uint8_t buf[USER_DATA_SIZE];
+    if (eflash_ftl_read(lpn, buf) != 0) {
+        FTL_DEBUG("[WRITE_COUNT] ERROR: Failed to read LPN %d\n", lpn);
+        return;
+    }
     
-    // Initialize to all 0xFF (erased state)
-    memset(buf, 0xFF, EFLASH_PAGE_SIZE);
+    // Update count at the beginning of user data area (offset 0)
+    buf[0] = count & 0xFF;
+    buf[1] = (count >> 8) & 0xFF;
     
-    // count stored as uint16_t at beginning of user data area after meta region (2 bytes)
-    uint16_t offset = META_SIZE;
-    buf[offset] = count & 0xFF;
-    buf[offset + 1] = (count >> 8) & 0xFF;
-    
-    // Calculate ECC for entire page (covers user data + metadata excluding ECC part)
-    // ECC protection range: USER_DATA_SIZE + META_SIZE - 5
-    size_t protected_len = USER_DATA_SIZE + META_SIZE - 5;
-    uint8_t *ecc_ptr = buf + USER_DATA_SIZE + META_SIZE - 5;
-    bch_generate(&bch_3bit, buf, protected_len, ecc_ptr);
-    
-    // Flash must be erased before writing
-    eflash_hw_erase(phys_page);
-    eflash_hw_prog(phys_page, buf);
+    // Write back via FTL layer
+    if (write_free_node_page(lpn, buf) != 0) {
+        FTL_DEBUG("[WRITE_COUNT] ERROR: Failed to write LPN %d\n", lpn);
+    }
 }
 
 // Read link info from the last free_node page of an extension block
@@ -107,7 +102,7 @@ static int read_ext_link(uint32_t ext_logical_addr, free_node_link_t *link) {
     
     // Link is at the end of user data area (last 6 bytes)
     uint16_t link_offset = USER_DATA_SIZE - FREE_NODE_LINK_SIZE;
-    memcpy(link, buf + META_SIZE + link_offset, FREE_NODE_LINK_SIZE);
+    memcpy(link, buf + link_offset, FREE_NODE_LINK_SIZE);
     
     if (link->magic != LINK_FREE_NODE_MAGIC) {
         return -1;  // Invalid magic
@@ -132,7 +127,7 @@ static int write_ext_link(uint32_t ext_logical_addr, const free_node_link_t *lin
     
     // Write link at the end of user data area
     uint16_t link_offset = USER_DATA_SIZE - FREE_NODE_LINK_SIZE;
-    memcpy(buf + META_SIZE + link_offset, link, FREE_NODE_LINK_SIZE);
+    memcpy(buf + link_offset, link, FREE_NODE_LINK_SIZE);
     
     // Write through FTL layer (FTL will calculate ECC internally)
     return eflash_ftl_write(last_page_lpn, buf);
@@ -151,8 +146,8 @@ static free_node_t read_free_node(uint16_t lpn, uint16_t index) {
         return node;  // Read failed
     }
     
-    // Node data starts after meta + 2-byte count header
-    uint16_t offset = META_SIZE + FREE_NODE_HEADER_SIZE + index * sizeof(free_node_t);
+    // Node data starts after 2-byte count header (at offset 2)
+    uint16_t offset = FREE_NODE_HEADER_SIZE + index * sizeof(free_node_t);
     
     // Boundary check
     if (offset + sizeof(free_node_t) > USER_DATA_SIZE) {
@@ -196,19 +191,18 @@ static uint32_t remove_node_from_table(uint32_t target_logical_addr) {
                 int16_t last_idx = count - 1;
                 if (j != last_idx) {
                     // Overwrite current node with last node
-                    uint16_t src_offset = META_SIZE + FREE_NODE_HEADER_SIZE + last_idx * sizeof(free_node_t);
-                    uint16_t dst_offset = META_SIZE + FREE_NODE_HEADER_SIZE + j * sizeof(free_node_t);
+                    uint16_t src_offset = FREE_NODE_HEADER_SIZE + last_idx * sizeof(free_node_t);
+                    uint16_t dst_offset = FREE_NODE_HEADER_SIZE + j * sizeof(free_node_t);
                     memcpy(buf + dst_offset, buf + src_offset, sizeof(free_node_t));
                 }
                 
                 // Clear last node (fill with 0xFF)
-                uint16_t clear_offset = META_SIZE + FREE_NODE_HEADER_SIZE + last_idx * sizeof(free_node_t);
+                uint16_t clear_offset = FREE_NODE_HEADER_SIZE + last_idx * sizeof(free_node_t);
                 memset(buf + clear_offset, 0xFF, sizeof(free_node_t));
                 
-                // Update count
-                uint16_t count_offset = META_SIZE;
-                buf[count_offset] = (count - 1) & 0xFF;
-                buf[count_offset + 1] = ((count - 1) >> 8) & 0xFF;
+                // Update count at offset 0
+                buf[0] = (count - 1) & 0xFF;
+                buf[1] = ((count - 1) >> 8) & 0xFF;
                 
                 // Write entire page back via FTL
                 if (write_free_node_page(lpn, buf) != 0) {
@@ -259,19 +253,18 @@ static uint32_t remove_node_from_table(uint32_t target_logical_addr) {
                     int16_t last_idx = count - 1;
                     if (j != last_idx) {
                         // Overwrite current node with last node
-                        uint16_t src_offset = META_SIZE + FREE_NODE_HEADER_SIZE + last_idx * sizeof(free_node_t);
-                        uint16_t dst_offset = META_SIZE + FREE_NODE_HEADER_SIZE + j * sizeof(free_node_t);
+                        uint16_t src_offset = FREE_NODE_HEADER_SIZE + last_idx * sizeof(free_node_t);
+                        uint16_t dst_offset = FREE_NODE_HEADER_SIZE + j * sizeof(free_node_t);
                         memcpy(buf + dst_offset, buf + src_offset, sizeof(free_node_t));
                     }
                     
                     // Clear last node (fill with 0xFF)
-                    uint16_t clear_offset = META_SIZE + FREE_NODE_HEADER_SIZE + last_idx * sizeof(free_node_t);
+                    uint16_t clear_offset = FREE_NODE_HEADER_SIZE + last_idx * sizeof(free_node_t);
                     memset(buf + clear_offset, 0xFF, sizeof(free_node_t));
                     
-                    // Update count
-                    uint16_t count_offset = META_SIZE;
-                    buf[count_offset] = (count - 1) & 0xFF;
-                    buf[count_offset + 1] = ((count - 1) >> 8) & 0xFF;
+                    // Update count at offset 0
+                    buf[0] = (count - 1) & 0xFF;
+                    buf[1] = ((count - 1) >> 8) & 0xFF;
                     
                     // Write entire page back via FTL
                     if (write_free_node_page(lpn, buf) != 0) {
@@ -346,10 +339,9 @@ static void insert_node_to_table(uint32_t logical_addr, uint32_t size) {
         uint8_t blank_page[USER_DATA_SIZE];
         memset(blank_page, 0xFF, USER_DATA_SIZE);
         
-        // Set count to 0
-        uint16_t count_offset = META_SIZE;
-        blank_page[count_offset] = 0;
-        blank_page[count_offset + 1] = 0;
+        // Set count to 0 at offset 0 (beginning of user data)
+        blank_page[0] = 0;
+        blank_page[1] = 0;
         
         // Write through FTL layer to allocate physical page
         FTL_DEBUG("[INSERT_NODE] Writing blank page to LPN %d...\n", target_lpn);
@@ -400,22 +392,21 @@ static void insert_node_to_table(uint32_t logical_addr, uint32_t size) {
     
     // Shift elements backward
     for (uint16_t j = count; j > insert_pos; j--) {
-        uint16_t src_offset = META_SIZE + FREE_NODE_HEADER_SIZE + (j - 1) * sizeof(free_node_t);
-        uint16_t dst_offset = META_SIZE + FREE_NODE_HEADER_SIZE + j * sizeof(free_node_t);
+        uint16_t src_offset = FREE_NODE_HEADER_SIZE + (j - 1) * sizeof(free_node_t);
+        uint16_t dst_offset = FREE_NODE_HEADER_SIZE + j * sizeof(free_node_t);
         memcpy(buf + dst_offset, buf + src_offset, sizeof(free_node_t));
     }
     
     // Insert new node
-    uint16_t node_offset = META_SIZE + FREE_NODE_HEADER_SIZE + insert_pos * sizeof(free_node_t);
+    uint16_t node_offset = FREE_NODE_HEADER_SIZE + insert_pos * sizeof(free_node_t);
     free_node_t new_node;
     new_node.addr = logical_addr;
     new_node.size = size;
     memcpy(buf + node_offset, &new_node, sizeof(free_node_t));
     
-    // Update count
-    uint16_t count_offset = META_SIZE;
-    buf[count_offset] = (count + 1) & 0xFF;
-    buf[count_offset + 1] = ((count + 1) >> 8) & 0xFF;
+    // Update count at offset 0
+    buf[0] = (count + 1) & 0xFF;
+    buf[1] = ((count + 1) >> 8) & 0xFF;
     
     // Write entire page back via FTL layer
     if (write_free_node_page(target_lpn, buf) != 0) {
@@ -554,6 +545,8 @@ static int extend_free_node_table(void) {
     
     FTL_DEBUG("[EXTEND_FREE_NODE] Allocated extension block at logical_addr=0x%08X (level %d)\n",
              ext_logical_addr, level);
+    FTL_DEBUG("[EXTEND_FREE_NODE] Extension block range: 0x%08X - 0x%08X (%u bytes)\n",
+             ext_logical_addr, ext_logical_addr + alloc_size - 1, alloc_size);
     
     // Initialize the 4 pages with count=0 via FTL layer
     uint16_t start_lpn = (uint16_t)(ext_logical_addr / EFLASH_PAGE_SIZE);
@@ -561,10 +554,9 @@ static int extend_free_node_table(void) {
     memset(buf, 0xFF, USER_DATA_SIZE);
     
     for (int i = 0; i < FREE_NODE_EXT_PAGES; i++) {
-        // Set count to 0 for each page
-        uint16_t count_offset = META_SIZE;
-        buf[count_offset] = 0;
-        buf[count_offset + 1] = 0;
+        // Set count to 0 for each page at offset 0
+        buf[0] = 0;
+        buf[1] = 0;
         
         // Write through FTL layer (handles physical page allocation)
         uint16_t lpn = start_lpn + i;
@@ -601,7 +593,7 @@ static int extend_free_node_table(void) {
             free_node_link_t link;
             link.magic = LINK_FREE_NODE_MAGIC;
             link.next_ext_addr = ext_logical_addr;
-            memcpy(page_buf + META_SIZE + link_offset, &link, FREE_NODE_LINK_SIZE);
+            memcpy(page_buf + link_offset, &link, FREE_NODE_LINK_SIZE);
             
             // Write back via FTL
             if (write_free_node_page(base_last_lpn, page_buf) != 0) {
@@ -730,13 +722,12 @@ int eflash_mgr_init_free_list(uint16_t total_pages, uint16_t reserved_logic_page
     uint8_t page_data[USER_DATA_SIZE];
     memset(page_data, 0xFF, USER_DATA_SIZE);
     
-    // Set count to 1
-    uint16_t count_offset = META_SIZE;
-    page_data[count_offset] = 1 & 0xFF;
-    page_data[count_offset + 1] = (1 >> 8) & 0xFF;
+    // Set count to 1 at offset 0
+    page_data[0] = 1 & 0xFF;
+    page_data[1] = (1 >> 8) & 0xFF;
     
-    // Write the initial node at index 0
-    uint16_t node_offset = META_SIZE + FREE_NODE_HEADER_SIZE;
+    // Write the initial node at index 0 (after 2-byte count header)
+    uint16_t node_offset = FREE_NODE_HEADER_SIZE;
     memcpy(page_data + node_offset, &initial_node, sizeof(free_node_t));
     
     // Write through FTL layer (this will allocate PPN and update Radix Tree)
@@ -751,6 +742,22 @@ int eflash_mgr_init_free_list(uint16_t total_pages, uint16_t reserved_logic_page
     }
     FTL_DEBUG("[SPACE_INIT_FREE_LIST] Initial free node written successfully\n");
     
+    // Debug: Verify the written data by reading it back
+    uint8_t verify_buf[USER_DATA_SIZE];
+    if (eflash_ftl_read(SYS_FREE_LIST_BASE_LPN, verify_buf) == 0) {
+        uint16_t verify_count = (uint16_t)(verify_buf[0] | (verify_buf[1] << 8));
+        FTL_DEBUG("[SPACE_INIT_FREE_LIST] Verification: LPN %d count=%u\n", 
+                 SYS_FREE_LIST_BASE_LPN, verify_count);
+        if (verify_count > 0) {
+            free_node_t verify_node;
+            memcpy(&verify_node, verify_buf + FREE_NODE_HEADER_SIZE, sizeof(free_node_t));
+            FTL_DEBUG("[SPACE_INIT_FREE_LIST] Verification: node[0].addr=0x%08X, size=%u\n",
+                     verify_node.addr, verify_node.size);
+        }
+    } else {
+        FTL_DEBUG("[SPACE_INIT_FREE_LIST] WARNING: Failed to verify written data\n");
+    }
+    
     // Query Radix Tree for the physical page of LPN 8
     uint16_t phys_page = find_phys_page_by_sector(SYS_FREE_LIST_BASE_LPN);
     if (phys_page == PAGE_NONE) {
@@ -763,11 +770,29 @@ int eflash_mgr_init_free_list(uint16_t total_pages, uint16_t reserved_logic_page
     FTL_DEBUG("[SPACE_INIT_FREE_LIST] Updated LPN %d -> PPN %d (free_node[0])\n", 
              SYS_FREE_LIST_BASE_LPN, phys_page);
     
-    // Initialize other free_node_pages to PAGE_NONE (will be allocated on-demand when written)
+    // Initialize other free_node_pages with count=0
+    // This ensures find_page_with_space can find empty pages instead of triggering extension prematurely
+    uint8_t blank_page[USER_DATA_SIZE];
+    memset(blank_page, 0xFF, USER_DATA_SIZE);
+    blank_page[0] = 0;  // count = 0
+    blank_page[1] = 0;
+    
     for (int i = 1; i < FREE_NODE_PAGE_COUNT; i++) {
-        MGR->free_node_pages[i] = PAGE_NONE;
+        uint16_t lpn = SYS_FREE_LIST_BASE_LPN + i;
+        if (write_free_node_page(lpn, blank_page) != 0) {
+            FTL_DEBUG("[SPACE_INIT_FREE_LIST] ERROR: Failed to initialize LPN %d\n", lpn);
+            return -1;
+        }
+        
+        // Get the physical page for this LPN
+        phys_page = find_phys_page_by_sector(lpn);
+        if (phys_page == PAGE_NONE) {
+            FTL_DEBUG("[SPACE_INIT_FREE_LIST] ERROR: Failed to get PPN for LPN %d\n", lpn);
+            return -1;
+        }
+        MGR->free_node_pages[i] = phys_page;
+        FTL_DEBUG("[SPACE_INIT_FREE_LIST] Initialized LPN %d -> PPN %d (count=0)\n", lpn, phys_page);
     }
-    FTL_DEBUG("[SPACE_INIT_FREE_LIST] Other free_node_pages set to PAGE_NONE (on-demand allocation)\n");
     
     // Set total_free_nodes to 1 (we have one initial free node)
     MGR->total_free_nodes = 1;

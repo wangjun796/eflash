@@ -1,5 +1,7 @@
 # eFlash FTL - 嵌入式 Flash 转换层库
 
+**版本**: v1.3.0 (2026-04-24) | [查看版本历史](CHANGELOG.md)
+
 ## 📖 概述
 
 eFlash 是一个轻量级的嵌入式 Flash 转换层（FTL）库，专为资源受限的嵌入式系统设计。它提供 NAND Flash 管理功能，包括：
