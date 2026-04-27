@@ -75,7 +75,7 @@ target_compile_definitions(eflash_ftl_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_executable(eflash_ftl_tests_extension ${EFLASH_FTL_TEST_EXTENSION_SOURCES} ${EFLASH_FTL_SOURCES} ${ECC_SOURCES})
 target_compile_definitions(eflash_ftl_tests_extension PRIVATE _CRT_SECURE_NO_WARNINGS)
 
-# 可选：启用FTL调试输出，用于故障排查（同时应用到两个测试程序）
+# 可选：启用FTL调试输出，用于故障排查（同时应用到所有测试程序）
 # 要启用调试输出，请使用：cmake -DFTL_DEBUG_ENABLE=ON ..
 option(FTL_DEBUG_ENABLE "Enable FTL debug output" OFF)
 if(FTL_DEBUG_ENABLE)

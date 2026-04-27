@@ -1422,43 +1422,46 @@ int eflash_ftl_read(uint16_t sector_id, uint8_t *data) {
         int current_bit = (cur_meta.sector_id & bit_mask) ? 1 : 0;
 
         if (target_bit != current_bit) {
-            // Bits differ, need to jump
-            current = cur_meta.alt[depth];
-            if (current == PAGE_NONE) {
+            // Bits differ: divergence occurs, need to jump to alt pointer
+            FTL_DEBUG("[READ] Diverge at depth=%d\n", depth);
+            
+            uint16_t next_ppn = cur_meta.alt[depth];
+            if (next_ppn == PAGE_NONE) {
                 FTL_DEBUG("[READ] ERROR: Path not found at depth=%d\n", depth);
                 return -1;
             }
-            // After jump, continue comparing same depth bit with new node
-            // Note: Don't increment depth, continue comparing same depth bit in next loop
+            
+            // Jump to next physical page and read it immediately
+            current = next_ppn;
+            FTL_DEBUG("[READ] Following alt[%d]=%d\n", depth, current);
+            
+            // Read next node's metadata (same as trace_tree)
+            if (eflash_hw_read(current, meta_buf) != 0) {
+                FTL_DEBUG("[READ] ERROR: Failed to read next PPN %d\n", current);
+                return -1;
+            }
+            if (verify_and_correct_page(meta_buf) != 0) {
+                FTL_DEBUG("[READ] ERROR: Page verification failed at PPN %d\n", current);
+                return -1;
+            }
+            memcpy(&cur_meta, meta_buf + META_OFFSET, META_SIZE);
+            
+            // Check if the new node matches
+            if (cur_meta.sector_id == lpn) {
+                FTL_DEBUG("[READ] Found match after jump at depth=%d, reading data from PPN %d\n", depth, current);
+                memcpy(data, meta_buf, USER_DATA_SIZE);
+                FTL_DEBUG("[READ] Success, first byte=0x%02X\n", data[0]);
+                return 0;
+            }
         } else {
-            // Bits same, continue to next bit
-            depth++;
+            // Bits same: continue to next depth level
+            FTL_DEBUG("[READ] Same bit at depth=%d\n", depth);
         }
+        
+        depth++;
     }
 
-    // Loop ended without finding, try reading last jumped-to node (if any)
-    // This happens when jump occurred in last iteration
-    if (current != PAGE_NONE && current != FTL->root_page) {
-        if (eflash_hw_read(current, meta_buf) != 0) {
-            FTL_DEBUG("[READ] ERROR: Failed to read final PPN %d\n", current);
-            return -1;
-        }
-
-        if (verify_and_correct_page(meta_buf) != 0) {
-            FTL_DEBUG("[READ] ERROR: Page verification failed at final PPN %d\n", current);
-            return -1;
-        }
-        memcpy(&cur_meta, meta_buf + META_OFFSET, META_SIZE);
-
-        if (cur_meta.sector_id == lpn) {
-            FTL_DEBUG("[READ] Found match at final PPN %d, reading data\n", current);
-            memcpy(data, meta_buf, USER_DATA_SIZE);
-            FTL_DEBUG("[READ] Success, first byte=0x%02X\n", data[0]);
-            return 0;
-        }
-    }
-
-    // Really not found
+    // Loop ended without finding match
     FTL_DEBUG("[READ] ERROR: Sector not found in tree (exceeded max depth)\n");
     return -1;
 }
