@@ -552,7 +552,7 @@ int test_free_list_extension_stress(void) {
     // Strategy: Allocate 1024 blocks, then free every 4th block to avoid merging
     // ========================================================================
     #define STRESS_BLOCK_SIZE 8  // Small blocks to maximize node count
-    #define STRESS_NUM_BLOCKS 700  // Large number to ensure extension trigger
+    #define STRESS_NUM_BLOCKS 988  // Large number to ensure extension trigger
     uint32_t addrs[STRESS_NUM_BLOCKS];
     
     printf("\n  [PHASE 1] Allocating %d blocks (%d bytes each)...\n", 
@@ -783,7 +783,7 @@ int main(int argc, char *argv[]) {
     int failed_count = 0;
     
     // Run all extension tests
-//    RUN_TEST(test_free_list_extension);
+    RUN_TEST(test_free_list_extension);
     RUN_TEST(test_free_list_extension_stress);
     
     // Summary

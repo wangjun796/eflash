@@ -315,16 +315,22 @@ static int write_full_page(uint16_t ppn, const uint8_t *data, const ftl_meta_t *
  * @return: Physical page index, -1 on failure
  *
  * Description: Allocate physical pages sequentially starting from Head
+ * Note: GC should be triggered by the caller BEFORE calling this function.
+ *       This function only handles head wraparound without triggering GC.
  */
 static int allocate_physical_page(void) {
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
 
-    // Handle wraparound: trigger GC BEFORE taking the page
+    // Handle wraparound: reset head to 0 WITHOUT triggering GC
+    // GC should have been triggered by the caller before allocation
     if (FTL->gc_head_page > last_user_page) {
         FTL->gc_head_page = 0;  // Wrap around to PPN 0
-        // Trigger GC after wraparound to reclaim space
-        // Note: gc_in_progress flag prevents recursive GC calls
-        eflash_ftl_gc_trigger();
+        // IMPORTANT: Do NOT trigger GC here!
+        // The caller (eflash_ftl_write) has already triggered GC if needed.
+        // Triggering GC here would cause:
+        // 1. Race condition: GC modifies radix tree while trace_tree is in progress
+        // 2. Recursive calls: GC -> write -> allocate -> GC -> ...
+        FTL_DEBUG("[ALLOC_PHYS] WARNING: Head wrapped to 0 (GC should have been triggered by caller)\n");
     }
 
     // Take current head as the page to allocate
@@ -1337,12 +1343,17 @@ int eflash_ftl_obj_write_body(uint16_t obj_id, const uint8_t *data, uint32_t siz
 int eflash_ftl_write(uint16_t sector_id, const uint8_t *data) {
     if (!FTL->is_initialized) return -1;
 
-    // TODO: GC should be triggered manually or based on specific conditions (e.g., low space threshold)
-    // Not on every write operation to avoid circular dependency during initialization
-    // if (eflash_ftl_gc_trigger(FTL) != 0) {
-    //     FTL_DEBUG("[WRITE] ERROR: GC trigger failed, no space available\n");
-    //     return -1;
-    // }
+    // CRITICAL: Trigger GC BEFORE tracing the tree to avoid race condition
+    // If GC is triggered during allocation, it will modify the radix tree,
+    // making the traced path information invalid.
+    // By triggering GC first, we ensure:
+    // 1. Sufficient free space for allocation
+    // 2. No GC will be triggered during this write operation
+    // 3. The traced path remains valid throughout the write
+    if (eflash_ftl_gc_trigger() != 0) {
+        FTL_DEBUG("[WRITE] ERROR: GC trigger failed, no space available\n");
+        return -1;
+    }
 
     FTL_DEBUG("[WRITE] sector_id=%d\n", sector_id);
 
@@ -1356,6 +1367,7 @@ int eflash_ftl_write(uint16_t sector_id, const uint8_t *data) {
     }
 
     // Step 2: Allocate physical page using Head/Tail mechanism
+    // Note: GC has already been triggered above, so this should not trigger GC again
     int new_phys = allocate_physical_page();
     if (new_phys < 0) {
         FTL_DEBUG("[WRITE] ERROR: Failed to allocate physical page!\n");
@@ -1616,7 +1628,7 @@ int eflash_ftl_read_logical(uint32_t logical_addr, uint8_t *data, int16_t size) 
 void eflash_ftl_txn_begin(void) {
     // Trigger GC before starting transaction to ensure enough free space
     // This prevents GC from being triggered during transaction, which could cause inconsistency
-    if (eflash_ftl_gc_trigger(FTL) != 0) {
+    if (eflash_ftl_gc_trigger() != 0) {
         FTL_DEBUG("[TXN_BEGIN] WARNING: GC trigger failed, but proceeding with transaction\n");
     }
 
@@ -1955,7 +1967,7 @@ static int gc_migrate_page(uint16_t src_page) {
 
     // [DEBUG] Record state before migration
 #if FTL_DEBUG_ENABLE
-    uint32_t free_before = eflash_ftl_get_free_pages(FTL);
+    uint32_t free_before = eflash_ftl_get_free_pages();
     FTL_DEBUG("[GC_MIGRATE] Before migration: head=%d, tail=%d, free=%d\n",
              FTL->gc_head_page, FTL->gc_tail_page, free_before);
 #endif
@@ -1969,7 +1981,7 @@ static int gc_migrate_page(uint16_t src_page) {
 
     // [DEBUG] Record state after migration
 #if 0
-    uint32_t free_after = eflash_ftl_get_free_pages(FTL);
+    uint32_t free_after = eflash_ftl_get_free_pages();
     FTL_DEBUG("[GC_MIGRATE] After migration: head=%d, tail=%d, free=%d (delta=%d)\n",
              FTL->gc_head_page, FTL->gc_tail_page, free_after, (int32_t)(free_after - free_before));
     
@@ -2065,7 +2077,7 @@ int eflash_ftl_gc_collect(uint16_t pages_to_free) {
     FTL_DEBUG("[GC] Need to free %d pages\n", pages_to_free);
 #if FTL_DEBUG_ENABLE
     FTL_DEBUG("[GC] Initial state: head=%d, tail=%d, free=%d\n",
-              FTL->gc_head_page, FTL->gc_tail_page, eflash_ftl_get_free_pages(FTL));
+              FTL->gc_head_page, FTL->gc_tail_page, eflash_ftl_get_free_pages());
 #endif
 
     uint16_t pages_freed = 0;
@@ -2075,6 +2087,8 @@ int eflash_ftl_gc_collect(uint16_t pages_to_free) {
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
 
     // Traverse entire physical page space at most twice to prevent infinite loop
+    // Reason for *2: In worst case, tail may need to wrap around and scan all pages again
+    // to ensure we don't miss any reclaimable pages or get stuck in a cycle
     uint16_t max_iterations = EFLASH_TOTAL_PAGES * 2;
     uint16_t iterations = 0;
 
@@ -2085,7 +2099,7 @@ int eflash_ftl_gc_collect(uint16_t pages_to_free) {
         if (iterations % 10 == 0) {
             FTL_DEBUG("[GC] Iteration %d: processing page %d, freed=%d, head=%d, tail=%d, free=%d\n",
                      iterations, current_page, pages_freed, FTL->gc_head_page, FTL->gc_tail_page,
-                     eflash_ftl_get_free_pages(FTL));
+                     eflash_ftl_get_free_pages());
         }
 
         // Execute single page reclamation (all physical pages are valid for GC)
@@ -2122,7 +2136,7 @@ int eflash_ftl_gc_collect(uint16_t pages_to_free) {
     FTL_DEBUG("[GC] ========== Collection complete ==========\n");
     FTL_DEBUG("[GC] Final state: freed %d pages (tail: %d -> %d, iterations=%d)\n",
               pages_freed, start_tail, FTL->gc_tail_page, iterations);
-    FTL_DEBUG("[GC] Final free pages: %d\n", eflash_ftl_get_free_pages(FTL));
+    FTL_DEBUG("[GC] Final free pages: %d\n", eflash_ftl_get_free_pages());
 #endif
 
     return pages_freed;
@@ -2152,7 +2166,7 @@ int eflash_ftl_gc_trigger(void) {
         return 0;
     }
 
-    uint32_t free_pages = eflash_ftl_get_free_pages(FTL);
+    uint32_t free_pages = eflash_ftl_get_free_pages();
 
     FTL_DEBUG("[GC_TRIGGER] Checking GC: free_pages=%d, threshold=%d\n",
               free_pages, FTL->gc_threshold);
@@ -2164,8 +2178,8 @@ int eflash_ftl_gc_trigger(void) {
 
     FTL_DEBUG("[GC_TRIGGER] Triggering GC! Free space below threshold\n");
 
-    // Calculate pages to reclaim (target: restore to 50% free space)
-    uint32_t target_free_pages = FTL->total_user_pages / 2;
+    // Calculate pages to reclaim (target: restore to 10% free space)
+    uint32_t target_free_pages = FTL->total_user_pages / 10;
     uint16_t pages_needed = (target_free_pages > free_pages) ?
                             (uint16_t)(target_free_pages - free_pages) : 10;
 
