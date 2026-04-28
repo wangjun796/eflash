@@ -1044,6 +1044,8 @@ int main(void) {
 
     // GC tests
     RUN_TEST(gc_basic)
+    
+    // GC round-wrap and stress tests
     RUN_TEST(gc_round_wrap)
     RUN_TEST(gc_stress)
 
@@ -1596,14 +1598,20 @@ int test_gc_round_wrap() {
         uint16_t tail_after = g_ftl_instance.gc_tail_page;
         uint32_t free_after = eflash_ftl_get_free_pages();
 
-        // 检测 GC 触发（空闲空间突然增加）
-        if (free_after > free_before + 5) {
+        // 检测 GC 触发：tail 指针移动超过一定距离（说明 GC 回收了页面）
+        // Note: GC is triggered BEFORE write now, so we check tail movement
+        int tail_distance = (tail_after >= tail_before) ? 
+                            (tail_after - tail_before) : 
+                            (EFLASH_TOTAL_PAGES - tail_before + tail_after);
+        
+        if (tail_distance > 5 || (free_after > free_before && free_after - free_before > 5)) {
             gc_triggers++;
             gc_triggered = true;
             printf("  [WRAP] *** GC #%d TRIGGERED at write #%d ***\n", gc_triggers, i);
-            printf("  [WRAP]     Free space: %d -> %d (+%d pages)\n",
-                   free_before, free_after, free_after - free_before);
-            printf("  [WRAP]     Tail moved: %d -> %d\n", tail_before, tail_after);
+            printf("  [WRAP]     Free space: %d -> %d (%+d pages)\n",
+                   free_before, free_after, (int)(free_after - free_before));
+            printf("  [WRAP]     Tail moved: %d -> %d (distance=%d)\n", 
+                   tail_before, tail_after, tail_distance);
         }
 
         // 检测 Round-Wrap：tail 从高位突然跳到低位
@@ -1780,15 +1788,38 @@ int test_gc_stress() {
         total_writes++;
 
         uint32_t free_after = eflash_ftl_get_free_pages();
-
-        // 检测 GC 触发（空闲空间突然增加）
-        if (free_after > free_before + 5) {
-            gc_count++;
-            gc_triggered = true;
-            printf("  [STRESS] *** GC #%d TRIGGERED at write #%d ***\n", gc_count, i);
-            printf("  [STRESS]     Free space: %d -> %d (+%d pages recovered)\n",
-                   free_before, free_after, free_after - free_before);
+        uint16_t tail_after = g_ftl_instance.gc_tail_page;
+        
+        // 检测 GC 触发：tail 指针移动（说明 GC 回收了页面）
+        // Note: GC is triggered BEFORE write now, so we check tail movement
+        static uint16_t last_tail_for_gc_detect = 0;
+        static int consecutive_tail_moves = 0;
+        if (i == 0) {
+            last_tail_for_gc_detect = g_ftl_instance.gc_tail_page;
+            consecutive_tail_moves = 0;
         }
+        
+        // Check if tail moved at all (even small movement indicates GC activity)
+        if (tail_after != last_tail_for_gc_detect) {
+            consecutive_tail_moves++;
+        } else {
+            consecutive_tail_moves = 0;
+        }
+        
+        // If tail has moved consistently, GC is active
+        if (consecutive_tail_moves >= 3 || (free_after > free_before && free_after - free_before > 5)) {
+            if (consecutive_tail_moves == 3) {  // Only count once when threshold reached
+                gc_count++;
+                gc_triggered = true;
+                printf("  [STRESS] *** GC #%d DETECTED at write #%d (tail moving consistently) ***\n", gc_count, i);
+                printf("  [STRESS]     Free space: %d -> %d (%+d pages)\n",
+                       free_before, free_after, (int)(free_after - free_before));
+                printf("  [STRESS]     Tail: %d -> %d (3 consecutive moves)\n",
+                       last_tail_for_gc_detect, tail_after);
+            }
+        }
+        
+        last_tail_for_gc_detect = tail_after;
 
         last_free = free_after;
 
