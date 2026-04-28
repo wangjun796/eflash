@@ -35,7 +35,7 @@ static uint16_t get_free_node_lpn(int page_index, int is_extended, int ext_level
         if (MGR->ext_free_node_addrs[ext_level] == 0xFFFFFFFF) {
             return PAGE_NONE;
         }
-        uint16_t start_lpn = (uint16_t)(MGR->ext_free_node_addrs[ext_level] / EFLASH_PAGE_SIZE);
+        uint16_t start_lpn = (uint16_t)(MGR->ext_free_node_addrs[ext_level] / USER_DATA_SIZE);
         return start_lpn + page_in_block;
     }
 }
@@ -93,7 +93,7 @@ static int read_ext_link(uint32_t ext_logical_addr, free_node_link_t *link) {
     }
     
     // The link is stored at the end of the last page in the 4-page extension block
-    uint16_t last_page_lpn = (uint16_t)(ext_logical_addr / EFLASH_PAGE_SIZE) + FREE_NODE_EXT_PAGES - 1;
+    uint16_t last_page_lpn = (uint16_t)(ext_logical_addr / USER_DATA_SIZE) + FREE_NODE_EXT_PAGES - 1;
     
     uint8_t buf[USER_DATA_SIZE];
     if (eflash_ftl_read(last_page_lpn, buf) != 0) {
@@ -118,7 +118,7 @@ static int write_ext_link(uint32_t ext_logical_addr, const free_node_link_t *lin
     }
     
     // The link is stored at the end of the last page in the 4-page extension block
-    uint16_t last_page_lpn = (uint16_t)(ext_logical_addr / EFLASH_PAGE_SIZE) + FREE_NODE_EXT_PAGES - 1;
+    uint16_t last_page_lpn = (uint16_t)(ext_logical_addr / USER_DATA_SIZE) + FREE_NODE_EXT_PAGES - 1;
     
     uint8_t buf[USER_DATA_SIZE];
     if (eflash_ftl_read(last_page_lpn, buf) != 0) {
@@ -233,7 +233,7 @@ static uint32_t remove_node_from_table(uint32_t target_logical_addr) {
             break;  // No more extensions
         }
         
-        uint16_t start_lpn = (uint16_t)(MGR->ext_free_node_addrs[level] / EFLASH_PAGE_SIZE);
+        uint16_t start_lpn = (uint16_t)(MGR->ext_free_node_addrs[level] / USER_DATA_SIZE);
         for (int i = 0; i < FREE_NODE_EXT_PAGES; i++) {
             uint16_t lpn = start_lpn + i;
             int16_t count = read_node_count(lpn);
@@ -446,7 +446,7 @@ static uint32_t get_total_node_count(void) {
             break;  // No more extensions
         }
         
-        uint16_t start_lpn = (uint16_t)(MGR->ext_free_node_addrs[level] / EFLASH_PAGE_SIZE);
+        uint16_t start_lpn = (uint16_t)(MGR->ext_free_node_addrs[level] / USER_DATA_SIZE);
         for (int i = 0; i < FREE_NODE_EXT_PAGES; i++) {
             int16_t count = read_node_count(start_lpn + i);
             if (count > 0) {
@@ -473,7 +473,7 @@ static void print_free_page_counts(const char *tag) {
         }
         
         printf("Ext%d: ", level);
-        uint16_t start_lpn = (uint16_t)(MGR->ext_free_node_addrs[level] / EFLASH_PAGE_SIZE);
+        uint16_t start_lpn = (uint16_t)(MGR->ext_free_node_addrs[level] / USER_DATA_SIZE);
         for (int i = 0; i < FREE_NODE_EXT_PAGES; i++) {
             int16_t count = read_node_count(start_lpn + i);
             printf("[%d]=%d ", i, count);
@@ -504,7 +504,7 @@ static int find_page_with_space(uint16_t *out_lpn, int *out_is_extended, int *ou
             break;  // No more extensions
         }
         
-        uint16_t start_lpn = (uint16_t)(MGR->ext_free_node_addrs[level] / EFLASH_PAGE_SIZE);
+        uint16_t start_lpn = (uint16_t)(MGR->ext_free_node_addrs[level] / USER_DATA_SIZE);
         for (int i = 0; i < FREE_NODE_EXT_PAGES; i++) {
             int16_t count = read_node_count(start_lpn + i);
             if (count >= 0 && count < FREE_NODES_PER_PAGE) {
@@ -549,7 +549,7 @@ static int extend_free_node_table(void) {
              ext_logical_addr, ext_logical_addr + alloc_size - 1, alloc_size);
     
     // Initialize the 4 pages with count=0 via FTL layer
-    uint16_t start_lpn = (uint16_t)(ext_logical_addr / EFLASH_PAGE_SIZE);
+    uint16_t start_lpn = (uint16_t)(ext_logical_addr / USER_DATA_SIZE);
     uint8_t buf[USER_DATA_SIZE];
     memset(buf, 0xFF, USER_DATA_SIZE);
     
@@ -884,7 +884,7 @@ static uint32_t remove_node_ending_at(uint32_t target_addr) {
     for (int level = 0; level < MAX_FREE_NODE_EXT_LEVELS; level++) {
         if (MGR->ext_free_node_addrs[level] == 0xFFFFFFFF) break;
         
-        uint16_t start_lpn = (uint16_t)(MGR->ext_free_node_addrs[level] / EFLASH_PAGE_SIZE);
+        uint16_t start_lpn = (uint16_t)(MGR->ext_free_node_addrs[level] / USER_DATA_SIZE);
         for (int i = 0; i < FREE_NODE_EXT_PAGES; i++) {
             uint16_t lpn = start_lpn + i;
             int16_t count = read_node_count(lpn);
@@ -959,7 +959,7 @@ uint32_t eflash_mgr_get_free_bytes(void) {
             break;  // No more extensions
         }
         
-        uint16_t start_lpn = (uint16_t)(MGR->ext_free_node_addrs[level] / EFLASH_PAGE_SIZE);
+        uint16_t start_lpn = (uint16_t)(MGR->ext_free_node_addrs[level] / USER_DATA_SIZE);
         for (int i = 0; i < FREE_NODE_EXT_PAGES; i++) {
             int16_t count = read_node_count(start_lpn + i);
             if (count < 0) continue;

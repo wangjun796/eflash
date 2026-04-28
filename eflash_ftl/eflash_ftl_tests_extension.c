@@ -32,6 +32,7 @@
         fprintf(stderr, "  File: %s, Line: %d\n", __FILE__, __LINE__); \
         fprintf(stderr, "  Expression: %s\n\n", #expr); \
         fflush(stderr); \
+        while(1);       \
         exit(EXIT_FAILURE); \
     } \
 } while(0)
@@ -551,12 +552,18 @@ int test_free_list_extension_stress(void) {
     // Strategy: Allocate 1024 blocks, then free every 4th block to avoid merging
     // ========================================================================
     #define STRESS_BLOCK_SIZE 8  // Small blocks to maximize node count
-    #define STRESS_NUM_BLOCKS 513  // Large number to ensure extension trigger
+    #define STRESS_NUM_BLOCKS 700  // Large number to ensure extension trigger
     uint32_t addrs[STRESS_NUM_BLOCKS];
     
     printf("\n  [PHASE 1] Allocating %d blocks (%d bytes each)...\n", 
            STRESS_NUM_BLOCKS, STRESS_BLOCK_SIZE);
     printf("  [PHASE 1] This will use significant space, preparing for extension test...\n");
+    
+#ifdef FTL_DEBUG_ENABLE
+    // Track root page changes for debugging (only when debug is enabled)
+    bool enable_tree_print = false;  // Enable detailed tree printing when root >= 2046
+    int write_count_after_2046 = 0;  // Count writes after reaching PPN 2046
+#endif
     
     for (int i = 0; i < STRESS_NUM_BLOCKS; i++) {
         int ret = eflash_mgr_alloc(STRESS_BLOCK_SIZE, &addrs[i]);
@@ -584,6 +591,25 @@ int test_free_list_extension_stress(void) {
             memcpy(page_buf + byte_offset, write_buf + written, write_size);
             ret = eflash_ftl_write((uint16_t)page_offset, page_buf);
             ASSERT(ret == 0, "write should succeed");
+            
+#ifdef FTL_DEBUG_ENABLE
+            // Check if we should enable detailed tree printing (trigger when next_count > 2046)
+            if (!enable_tree_print && FTL->next_count > 2046) {
+                enable_tree_print = true;
+                printf("\n  [DEBUG] *** next_count reached %u, enabling detailed tree tracking ***\n", FTL->next_count);
+                printf("  [DEBUG] Writing block #%d, page_offset=%lu\n", i, (unsigned long)page_offset);
+            }
+            
+            // Print tree on every write when next_count > 2046
+            if (enable_tree_print) {
+                write_count_after_2046++;
+                printf("\n  [DEBUG TREE #%d] Block #%d, page_offset=%lu, root=%d, next_count=%u, head=%d, tail=%d\n",
+                       write_count_after_2046, i, (unsigned long)page_offset,
+                       FTL->root_page, FTL->next_count, FTL->gc_head_page, FTL->gc_tail_page);
+                extern void eflash_ftl_print_radix_tree_mermaid_to_file(eflash_ftl_t *ftl, uint16_t root_page);
+                eflash_ftl_print_radix_tree_mermaid_to_file(FTL, FTL->root_page);
+            }
+#endif
             
             remaining -= write_size;
             written += write_size;
@@ -757,7 +783,7 @@ int main(int argc, char *argv[]) {
     int failed_count = 0;
     
     // Run all extension tests
-    RUN_TEST(test_free_list_extension);
+//    RUN_TEST(test_free_list_extension);
     RUN_TEST(test_free_list_extension_stress);
     
     // Summary

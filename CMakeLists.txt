@@ -31,6 +31,7 @@ set(EFLASH_FTL_SOURCES
     eflash_ftl/eflash_ftl.c
     eflash_ftl/eflash_mgr.c
     eflash_ftl/eflash_sim.c
+    eflash_ftl/eflash_ftl_visual.c
 )
 
 set(EFLASH_FTL_TEST_SOURCES

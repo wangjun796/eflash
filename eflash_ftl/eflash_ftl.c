@@ -317,16 +317,21 @@ static int write_full_page(uint16_t ppn, const uint8_t *data, const ftl_meta_t *
  * Description: Allocate physical pages sequentially starting from Head
  */
 static int allocate_physical_page(void) {
-    uint16_t ppn = FTL->gc_head_page;  // Physical Page Number
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
 
-    // Move to next physical page
-    FTL->gc_head_page++;
-
-    // Handle wraparound: cycle through all physical pages
+    // Handle wraparound: trigger GC BEFORE taking the page
     if (FTL->gc_head_page > last_user_page) {
         FTL->gc_head_page = 0;  // Wrap around to PPN 0
+        // Trigger GC after wraparound to reclaim space
+        // Note: gc_in_progress flag prevents recursive GC calls
+        eflash_ftl_gc_trigger();
     }
+
+    // Take current head as the page to allocate
+    uint16_t ppn = FTL->gc_head_page;  // Physical Page Number
+    
+    // Move to next physical page
+    FTL->gc_head_page++;
 
     FTL_DEBUG("[ALLOC_PHYS] Allocated physical page %d (next head=%d)\n",
              ppn, FTL->gc_head_page);
@@ -782,10 +787,10 @@ static int extend_headers() {
 
     // 2. Allocate new 4-page logical space
     uint32_t new_ext_logical_addr;
-    if (eflash_mgr_alloc(4 * EFLASH_PAGE_SIZE, &new_ext_logical_addr) != 0) {
+    if (eflash_mgr_alloc(4 * USER_DATA_SIZE, &new_ext_logical_addr) != 0) {
         return -1;
     }
-    uint16_t new_ext_lpn = (uint16_t)(new_ext_logical_addr / EFLASH_PAGE_SIZE);  // Logical Page Number
+    uint16_t new_ext_lpn = (uint16_t)(new_ext_logical_addr / USER_DATA_SIZE);  // Logical Page Number
 
     // 3. Update pointer at end of previous level with Magic Numbers
     obj_header_t link_hdr;
@@ -1800,33 +1805,54 @@ void eflash_ftl_txn_abort(void) {
 uint32_t eflash_ftl_get_free_pages(void) {
     // Based on Head/Tail circular buffer model
     // Head: Next writable physical page
-    // Tail: Starting position for GC scan
+    // Tail: Starting position for GC scan (oldest valid data)
     //
-    // Free space = Distance from Head to Tail (clockwise direction)
-    // All physical pages (PPN 0 to EFLASH_TOTAL_PAGES-1) are available
+    // Free space = Pages from Head to Tail (clockwise direction)
+    // This represents pages that can be written without triggering GC
+    //
+    // Visualization:
+    //   Case 1 (normal): [0...Tail..........Head...last]
+    //                    Free = pages from Head to end + pages from 0 to Tail
+    //   Case 2 (wrapped): [0...Head..Tail...last]
+    //                    Free = pages from Head to Tail
+    //   Special: head==tail means either completely empty OR completely full
+    //            We distinguish by checking if any writes have occurred
 
-    uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
-
-    if (FTL->gc_head_page >= FTL->gc_tail_page) {
-        // Case 1: Head is after or equal to Tail
-        // [0...Tail...Head...last]
-        // Free space = (last - Head + 1) + (Tail - 0)
-        uint32_t free = (uint32_t)(last_user_page - FTL->gc_head_page + 1) +
-                        (uint32_t)(FTL->gc_tail_page);
-
-        FTL_DEBUG("[FREE_PAGES] Case 1: head=%d, tail=%d, free=%u\n",
-                 FTL->gc_head_page, FTL->gc_tail_page, free);
-        return free;
+    uint16_t total_pages = FTL->total_user_pages;
+    uint16_t head = FTL->gc_head_page;
+    uint16_t tail = FTL->gc_tail_page;
+    
+    uint32_t free_pages;
+    
+    if (head == tail) {
+        // Ambiguous case: could be completely empty or completely full
+        // In our design, we trigger GC before flash gets completely full,
+        // so head==tail typically means "empty" (all pages available)
+        // However, to be safe, we check next_count to see if any writes occurred
+        if (FTL->next_count == 0) {
+            // No writes yet, flash is completely empty
+            free_pages = total_pages;
+        } else {
+            // Writes occurred but head caught up with tail
+            // This shouldn't happen in normal operation (GC should prevent it)
+            // Return 0 to trigger immediate GC
+            free_pages = 0;
+        }
+    } else if (tail > head) {
+        // Normal case: tail is ahead of head
+        // [0...Head..........Tail...last]
+        // Free = Tail - Head
+        free_pages = (uint32_t)(tail - head);
     } else {
-        // Case 2: Head has wrapped around to start, before Tail
-        // [0...Head...Tail...last]
-        // Free space = Tail - Head
-        uint32_t free = (uint32_t)(FTL->gc_tail_page - FTL->gc_head_page);
-
-        FTL_DEBUG("[FREE_PAGES] Case 2: head=%d, tail=%d, free=%u\n",
-                 FTL->gc_head_page, FTL->gc_tail_page, free);
-        return free;
+        // Wrapped case: head has wrapped around, tail is behind
+        // [0...Tail...last][0...Head...]
+        // Free = (end - head + 1) + tail
+        free_pages = (uint32_t)(total_pages - head + tail);
     }
+
+    FTL_DEBUG("[FREE_PAGES] head=%d, tail=%d, total=%d, free=%u\n",
+             head, tail, total_pages, free_pages);
+    return free_pages;
 }
 
 /**
@@ -1942,10 +1968,31 @@ static int gc_migrate_page(uint16_t src_page) {
     }
 
     // [DEBUG] Record state after migration
-#if FTL_DEBUG_ENABLE
+#if 0
     uint32_t free_after = eflash_ftl_get_free_pages(FTL);
     FTL_DEBUG("[GC_MIGRATE] After migration: head=%d, tail=%d, free=%d (delta=%d)\n",
              FTL->gc_head_page, FTL->gc_tail_page, free_after, (int32_t)(free_after - free_before));
+    
+    // Print radix tree when next_count > 2046 to track wrap-around behavior
+    static bool gc_tree_print_enabled = false;
+    static int gc_tree_print_count = 0;
+    
+    if (!gc_tree_print_enabled && FTL->next_count > 2046) {
+        gc_tree_print_enabled = true;
+        printf("\n  [GC DEBUG] *** next_count reached %u during GC migration, enabling tree tracking ***\n", FTL->next_count);
+    }
+    
+    if (gc_tree_print_enabled) {
+        gc_tree_print_count++;
+        printf("\n  [GC TREE #%d] Migrated sector %d from page %d, root=%d, next_count=%u, head=%d, tail=%d\n",
+               gc_tree_print_count, meta->sector_id, src_page,
+               FTL->root_page, FTL->next_count, FTL->gc_head_page, FTL->gc_tail_page);
+        extern void eflash_ftl_print_radix_tree_mermaid_to_file(eflash_ftl_t * ftl, uint16_t root_page);
+        extern void eflash_ftl_print_radix_tree_mermaid(eflash_ftl_t * ftl, uint16_t root_page);
+        eflash_ftl_print_radix_tree_mermaid(FTL, FTL->root_page);
+
+        eflash_ftl_print_radix_tree_mermaid_to_file(FTL, FTL->root_page);
+    }
 #endif
 
     FTL_DEBUG("[GC_MIGRATE] Success: migrated sector %d from page %d\n",
