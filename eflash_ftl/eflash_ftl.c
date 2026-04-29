@@ -791,9 +791,9 @@ static int extend_headers() {
 
     if (level >= MAX_EXT_LEVELS) return -1; // Reached maximum extension levels
 
-    // 2. Allocate new 4-page logical space
+    // 2. Allocate new 4-page logical space (page-aligned)
     uint32_t new_ext_logical_addr;
-    if (eflash_mgr_alloc(4 * USER_DATA_SIZE, &new_ext_logical_addr) != 0) {
+    if (eflash_mgr_alloc_pages(4, &new_ext_logical_addr) != 0) {
         return -1;
     }
     uint16_t new_ext_lpn = (uint16_t)(new_ext_logical_addr / USER_DATA_SIZE);  // Logical Page Number

@@ -897,6 +897,13 @@ int eflash_mgr_init_free_list(uint16_t total_pages, uint16_t reserved_logic_page
 }
 
 int eflash_mgr_alloc(uint32_t size, uint32_t *out_logical_addr) {
+    // Parameter validation
+    if (size == 0 || out_logical_addr == NULL) {
+        FTL_DEBUG("[SPACE_ALLOC] ERROR: Invalid parameters (size=%u, out_logical_addr=%p)\n",
+                 size, (void*)out_logical_addr);
+        return -1;
+    }
+    
     // Traverse all free_node pages, find first node that satisfies size requirement
     for (int i = 0; i < FREE_NODE_PAGE_COUNT; i++) {
         uint16_t lpn = SYS_FREE_LIST_BASE_LPN + i;
