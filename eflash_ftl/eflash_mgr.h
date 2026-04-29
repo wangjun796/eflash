@@ -80,6 +80,17 @@ void eflash_mgr_init(uint16_t total_pages);
 int eflash_mgr_alloc(uint32_t size, uint32_t *out_logical_addr);
 
 /**
+ * eflash_mgr_alloc_pages: Allocate page-aligned logical address space
+ * @pages: Number of pages to allocate
+ * @out_logical_addr: Output allocated starting logical address (guaranteed page-aligned)
+ * @return: 0 success, -1 failure (insufficient space)
+ * 
+ * Note: This function ensures the returned address is aligned to USER_DATA_SIZE boundary.
+ *       It may temporarily allocate extra space for alignment, then free it.
+ */
+int eflash_mgr_alloc_pages(uint16_t pages, uint32_t *out_logical_addr);
+
+/**
  * eflash_mgr_free: Free specified logical address space and merge adjacent free blocks
  * @logical_addr: Starting logical address to free (24-bit)
  * @size: Size in bytes to free

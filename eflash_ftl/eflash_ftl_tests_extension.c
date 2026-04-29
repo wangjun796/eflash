@@ -566,8 +566,20 @@ int test_free_list_extension_stress(void) {
 #endif
     
     for (int i = 0; i < STRESS_NUM_BLOCKS; i++) {
+        uint32_t free_bytes_before_alloc = eflash_mgr_get_free_bytes();
         int ret = eflash_mgr_alloc(STRESS_BLOCK_SIZE, &addrs[i]);
         ASSERT(ret == 0, "allocation should succeed");
+        uint32_t free_bytes_after_alloc = eflash_mgr_get_free_bytes();
+        
+        // Print alloc info for first 10 and every 50th allocation
+        //if (i < 10 || (i + 1) % 50 == 0) 
+        {
+            printf("  [ALLOC #%d] Block #%d: free_bytes %lu -> %lu (%+ld), addr=0x%08X\n",
+                   i + 1, i,
+                   (unsigned long)free_bytes_before_alloc, (unsigned long)free_bytes_after_alloc,
+                   (long)(free_bytes_after_alloc - free_bytes_before_alloc),
+                   addrs[i]);
+        }
         
         // Write unique pattern to each block
         uint8_t write_buf[STRESS_BLOCK_SIZE];
@@ -676,6 +688,7 @@ int test_free_list_extension_stress(void) {
         
         // Check free nodes before free
         uint32_t nodes_before = count_total_free_nodes();
+        uint32_t free_bytes_before = eflash_mgr_get_free_bytes();
         
         // Free the block
         eflash_mgr_free(addrs[i], STRESS_BLOCK_SIZE);
@@ -683,20 +696,28 @@ int test_free_list_extension_stress(void) {
         
         // Check if extension was triggered
         uint32_t nodes_after = count_total_free_nodes();
+        uint32_t free_bytes_after = eflash_mgr_get_free_bytes();
         uint32_t current_ext_levels = get_ext_levels_used();
+        
+        // Print free bytes change for every free operation
+        //if (freed_count <= 10 || freed_count % 10 == 0) 
+        {
+            printf("  [FREE #%d] Block #%d: free_bytes %lu -> %lu (%+ld), nodes=%lu, ext=%u\n",
+                   freed_count, i,
+                   (unsigned long)free_bytes_before, (unsigned long)free_bytes_after,
+                   (long)(free_bytes_after - free_bytes_before),
+                   (unsigned long)nodes_after, current_ext_levels);
+        }
         
         if (current_ext_levels > ext_level_at_trigger && !extension_triggered) {
             extension_triggered = 1;
             ext_level_at_trigger = current_ext_levels;
             printf("\n  [*** EXTENSION TRIGGERED ***] After freeing block #%d\n", i);
-            printf("  [*** EXTENSION TRIGGERED ***] Free nodes: %lu -> %lu, Extension level: %u\n\n",
+            printf("  [*** EXTENSION TRIGGERED ***] Free nodes: %lu -> %lu, Extension level: %u\n",
                    (unsigned long)nodes_before, (unsigned long)nodes_after, current_ext_levels);
-        }
-        
-        // Print status every 50 frees
-        if (freed_count % 50 == 0) {
-            printf("  [FREE #%d] Block #%d, free_nodes=%lu, ext_levels=%u\n",
-                   freed_count, i, (unsigned long)nodes_after, current_ext_levels);
+            printf("  [*** EXTENSION TRIGGERED ***] Free bytes: %lu -> %lu (+%ld bytes)\n\n",
+                   (unsigned long)free_bytes_before, (unsigned long)free_bytes_after,
+                   (long)(free_bytes_after - free_bytes_before));
         }
     }
     
@@ -711,6 +732,7 @@ int test_free_list_extension_stress(void) {
     printf("\n  [PHASE 3] Verifying extension overhead calculation...\n");
     
     uint32_t final_free_bytes = eflash_mgr_get_free_bytes();
+    uint32_t final_free_nodes = count_total_free_nodes();
     uint32_t final_ext_levels = get_ext_levels_used();
     uint32_t calculated_overhead = final_ext_levels * FREE_NODE_EXT_PAGES * USER_DATA_SIZE;
     
@@ -721,14 +743,17 @@ int test_free_list_extension_stress(void) {
     uint64_t remaining_allocated = total_allocated_space - total_freed_space;
     uint32_t expected_final_bytes = (uint32_t)(initial_free_bytes - calculated_overhead - remaining_allocated);
     
-    printf("  [INFO] Final free bytes: %lu\n", (unsigned long)final_free_bytes);
+    printf("  [INFO] Final state:\n");
+    printf("  [INFO]   Free bytes: %lu\n", (unsigned long)final_free_bytes);
+    printf("  [INFO]   Free nodes: %lu\n", (unsigned long)final_free_nodes);
+    printf("  [INFO]   Extension levels: %u\n", final_ext_levels);
     printf("  [INFO] Total allocated: %lu blocks x %d bytes = %lu bytes\n",
            (unsigned long)STRESS_NUM_BLOCKS, STRESS_BLOCK_SIZE, (unsigned long)total_allocated_space);
     printf("  [INFO] Total freed: %lu blocks x %d bytes = %lu bytes\n",
            (unsigned long)freed_count, STRESS_BLOCK_SIZE, (unsigned long)total_freed_space);
     printf("  [INFO] Remaining allocated: %lu bytes\n", (unsigned long)remaining_allocated);
-    printf("  [INFO] Extension overhead: %lu bytes (%u levels)\n",
-           (unsigned long)calculated_overhead, final_ext_levels);
+    printf("  [INFO] Extension overhead: %lu bytes (%u levels x %d pages x %d bytes)\n",
+           (unsigned long)calculated_overhead, final_ext_levels, FREE_NODE_EXT_PAGES, USER_DATA_SIZE);
     printf("  [INFO] Expected free bytes: %lu (initial %lu - overhead %lu - remaining %lu)\n",
            (unsigned long)expected_final_bytes,
            (unsigned long)initial_free_bytes,
@@ -783,7 +808,7 @@ int main(int argc, char *argv[]) {
     int failed_count = 0;
     
     // Run all extension tests
-    //RUN_TEST(test_free_list_extension);
+    RUN_TEST(test_free_list_extension);
     RUN_TEST(test_free_list_extension_stress);
     
     // Summary

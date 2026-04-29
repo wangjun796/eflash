@@ -164,8 +164,8 @@ static int verify_and_correct_page(uint8_t *page_buf) {
     // ECC stored in last 5 bytes of metadata
     uint8_t *ecc_ptr = page_buf + USER_DATA_SIZE + META_SIZE - 5;
 
-    FTL_DEBUG("[ECC] Verifying page: protected_len=%zu, ecc at offset %zu\n",
-              protected_len, (size_t)(ecc_ptr - page_buf));
+    // FTL_DEBUG("[ECC] Verifying page: protected_len=%zu, ecc at offset %zu\n",
+    //           protected_len, (size_t)(ecc_ptr - page_buf));
 
     // Create copy for correction
     uint8_t data_copy[EFLASH_PAGE_SIZE];
@@ -173,7 +173,7 @@ static int verify_and_correct_page(uint8_t *page_buf) {
 
     // First verify
     int verify_result = bch_verify(bch_cfg, data_copy, protected_len, ecc_ptr);
-    FTL_DEBUG("[ECC] Verify result: %d (0=ok, >0=errors, <1=uncorrectable)\n", verify_result);
+    // FTL_DEBUG("[ECC] Verify result: %d (0=ok, >0=errors, <1=uncorrectable)\n", verify_result);
 
     if (verify_result == 0) {
         return 0; // No error
@@ -1423,7 +1423,7 @@ int eflash_ftl_read(uint16_t sector_id, uint8_t *data) {
         }
         memcpy(&cur_meta, meta_buf + META_OFFSET, META_SIZE);
 
-        FTL_DEBUG("[READ] depth=%d, cur_sector=%d, alt[depth]=%d\n", depth, cur_meta.sector_id, cur_meta.alt[depth]);
+        // FTL_DEBUG("[READ] depth=%d, cur_sector=%d, alt[depth]=%d\n", depth, cur_meta.sector_id, cur_meta.alt[depth]);
 
         if (cur_meta.sector_id == lpn) {
             // Found matching node, data is in first USER_DATA_SIZE bytes of current page
@@ -1472,7 +1472,7 @@ int eflash_ftl_read(uint16_t sector_id, uint8_t *data) {
             }
         } else {
             // Bits same: continue to next depth level
-            FTL_DEBUG("[READ] Same bit at depth=%d\n", depth);
+            // FTL_DEBUG("[READ] Same bit at depth=%d\n", depth);
         }
         
         depth++;

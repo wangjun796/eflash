@@ -520,6 +520,49 @@ static int find_page_with_space(uint16_t *out_lpn, int *out_is_extended, int *ou
     return -1;  // All pages are full
 }
 
+// Check if free node table needs extension (pre-emptive extension)
+// Returns 1 if extension is needed, 0 otherwise
+static int check_and_extend_free_node_table(void) {
+    // Threshold: extend when remaining slots < FREE_NODE_EXT_THRESHOLD
+    #define FREE_NODE_EXT_THRESHOLD 3  // Extend when less than 3 slots remain
+    
+    uint32_t total_nodes = get_total_node_count();
+    uint32_t total_capacity = 0;
+    
+    // Calculate current capacity
+    // Base level: 4 pages x 57 nodes/page = 228 nodes
+    total_capacity += FREE_NODE_PAGE_COUNT * FREE_NODES_PER_PAGE;
+    
+    // Extended levels: each level adds 4 pages x 57 nodes/page = 228 nodes
+    for (int level = 0; level < MAX_FREE_NODE_EXT_LEVELS; level++) {
+        if (MGR->ext_free_node_addrs[level] == 0xFFFFFFFF) {
+            break;
+        }
+        total_capacity += FREE_NODE_EXT_PAGES * FREE_NODES_PER_PAGE;
+    }
+    
+    uint32_t remaining_slots = total_capacity - total_nodes;
+    
+    FTL_DEBUG("[CHECK_EXTEND] total_nodes=%u, total_capacity=%u, remaining=%u, threshold=%d\n",
+             total_nodes, total_capacity, remaining_slots, FREE_NODE_EXT_THRESHOLD);
+    
+    if (remaining_slots < FREE_NODE_EXT_THRESHOLD) {
+        FTL_DEBUG("[CHECK_EXTEND] Need extension (remaining %u < threshold %d)\n",
+                 remaining_slots, FREE_NODE_EXT_THRESHOLD);
+        
+        // Trigger extension
+        if (extend_free_node_table() != 0) {
+            FTL_DEBUG("[CHECK_EXTEND] ERROR: Extension failed\n");
+            return -1;
+        }
+        
+        FTL_DEBUG("[CHECK_EXTEND] Extension successful\n");
+        return 1;  // Extension was performed
+    }
+    
+    return 0;  // No extension needed
+}
+
 // Extend free node table by allocating a new 4-page block
 static int extend_free_node_table(void) {
     FTL_DEBUG("[EXTEND_FREE_NODE] Starting extension...\n");
@@ -538,7 +581,8 @@ static int extend_free_node_table(void) {
     // Allocate 4 pages for the extension block
     uint32_t ext_logical_addr;
     uint32_t alloc_size = FREE_NODE_EXT_PAGES * USER_DATA_SIZE;  // 4 * 464 bytes
-    if (eflash_mgr_alloc(alloc_size, &ext_logical_addr) != 0) {
+    if (eflash_mgr_alloc_pages(FREE_NODE_EXT_PAGES, &ext_logical_addr) != 0) {
+    // if (eflash_mgr_alloc(alloc_size, &ext_logical_addr) != 0) {
         FTL_DEBUG("[EXTEND_FREE_NODE] ERROR: Failed to allocate %u bytes for extension\n", alloc_size);
         return -1;
     }
@@ -548,22 +592,70 @@ static int extend_free_node_table(void) {
     FTL_DEBUG("[EXTEND_FREE_NODE] Extension block range: 0x%08X - 0x%08X (%u bytes)\n",
              ext_logical_addr, ext_logical_addr + alloc_size - 1, alloc_size);
     
-    // Initialize the 4 pages with count=0 via FTL layer
-    uint16_t start_lpn = (uint16_t)(ext_logical_addr / USER_DATA_SIZE);
-    uint8_t buf[USER_DATA_SIZE];
-    memset(buf, 0xFF, USER_DATA_SIZE);
+    // Check if the allocated address is page-aligned
+    uint32_t alignment_offset = ext_logical_addr % USER_DATA_SIZE;
+    bool is_aligned = (alignment_offset == 0);
     
-    for (int i = 0; i < FREE_NODE_EXT_PAGES; i++) {
-        // Set count to 0 for each page at offset 0
-        buf[0] = 0;
-        buf[1] = 0;
+    if (is_aligned) {
+        // Fast path: Address is aligned, safe to initialize entire pages
+        FTL_DEBUG("[EXTEND_FREE_NODE] Address is aligned, using fast path (initialize full pages)\n");
         
-        // Write through FTL layer (handles physical page allocation)
-        uint16_t lpn = start_lpn + i;
-        if (write_free_node_page(lpn, buf) != 0) {
-            FTL_DEBUG("[EXTEND_FREE_NODE] ERROR: Failed to initialize ext page LPN %d\n", lpn);
+        uint16_t start_lpn = (uint16_t)(ext_logical_addr / USER_DATA_SIZE);
+        uint8_t buf[USER_DATA_SIZE];
+        memset(buf, 0xFF, USER_DATA_SIZE);
+        
+        for (int i = 0; i < FREE_NODE_EXT_PAGES; i++) {
+            // Set count to 0 for each page at offset 0
+            buf[0] = 0;
+            buf[1] = 0;
+            
+            // Write through FTL layer (handles physical page allocation)
+            uint16_t lpn = start_lpn + i;
+            if (write_free_node_page(lpn, buf) != 0) {
+                FTL_DEBUG("[EXTEND_FREE_NODE] ERROR: Failed to initialize ext page LPN %d\n", lpn);
+                return -1;
+            }
+        }
+    } else {
+        // Safe path: Address is NOT aligned, use selective initialization
+        // Only initialize the free node table structure, preserve other data
+        FTL_DEBUG("[EXTEND_FREE_NODE] WARNING: Address not aligned (offset=%u), using safe path\n",
+                 alignment_offset);
+        FTL_DEBUG("[EXTEND_FREE_NODE] This preserves any user data in the allocated region\n");
+        
+        // Build the complete 4-page free node table data in memory
+        uint8_t ext_block_data[FREE_NODE_EXT_PAGES * USER_DATA_SIZE];
+        memset(ext_block_data, 0xFF, sizeof(ext_block_data));
+        
+        // Initialize each page's free node table structure
+        for (int i = 0; i < FREE_NODE_EXT_PAGES; i++) {
+            uint8_t *page_start = ext_block_data + (i * USER_DATA_SIZE);
+            
+            // Set count to 0 at offset 0-1
+            page_start[0] = 0;
+            page_start[1] = 0;
+            
+            // Clear node array (57 nodes * 8 bytes = 456 bytes)
+            // Node array starts at offset FREE_NODE_HEADER_SIZE (2)
+            uint16_t node_array_offset = FREE_NODE_HEADER_SIZE;
+            uint16_t node_array_size = FREE_NODES_PER_PAGE * sizeof(free_node_t);
+            memset(page_start + node_array_offset, 0xFF, node_array_size);
+            
+            // Note: The remaining bytes at the end of each page are left as 0xFF
+            // This is the padding area and won't be used by the free node table
+        }
+        
+        FTL_DEBUG("[EXTEND_FREE_NODE] Built %u bytes of initialized free node table data\n",
+                 sizeof(ext_block_data));
+        
+        // Write the entire block using eflash_ftl_write_logical
+        // This function handles cross-page writes safely with read-modify-write
+        if (eflash_ftl_write_logical(ext_logical_addr, ext_block_data, sizeof(ext_block_data)) != 0) {
+            FTL_DEBUG("[EXTEND_FREE_NODE] ERROR: Failed to write extension block via write_logical\n");
             return -1;
         }
+        
+        FTL_DEBUG("[EXTEND_FREE_NODE] Successfully wrote extension block using safe path\n");
     }
     
     // Record the extension address
@@ -604,7 +696,8 @@ static int extend_free_node_table(void) {
         }
     }
     
-    FTL_DEBUG("[EXTEND_FREE_NODE] Extension level %d completed successfully\n", level);
+    FTL_DEBUG("[EXTEND_FREE_NODE] Extension level %d completed successfully%s\n",
+             level, is_aligned ? " (fast path)" : " (safe path)");
     return 0;
 }
 
@@ -863,6 +956,174 @@ int eflash_mgr_alloc(uint32_t size, uint32_t *out_logical_addr) {
     return -1;  // Insufficient space
 }
 
+/**
+ * eflash_mgr_alloc_pages: Allocate page-aligned logical address space
+ * 
+ * This function ensures the returned address is aligned to USER_DATA_SIZE boundary.
+ * Strategy:
+ * 1. Traverse free list to find a node with size >= (pages+1) * USER_DATA_SIZE
+ * 2. Remove the node from free list
+ * 3. Check if node.addr is page-aligned
+ * 4. If not aligned, split into 3 parts:
+ *    - Part 1: [alloc_addr, align_offset) -> reinsert to free list
+ *    - Part 2: [alloc_addr + align_offset, target_size) -> return to caller (aligned)
+ *    - Part 3: [alloc_addr + align_offset + target_size, remaining) -> reinsert to free list
+ * 5. If aligned, split into 2 parts:
+ *    - Part 1: [alloc_addr, target_size) -> return to caller
+ *    - Part 2: [alloc_addr + target_size, remaining) -> reinsert to free list
+ */
+int eflash_mgr_alloc_pages(uint16_t pages, uint32_t *out_logical_addr) {
+    if (pages == 0 || out_logical_addr == NULL) {
+        FTL_DEBUG("[ALLOC_PAGES] ERROR: Invalid parameters (pages=%d)\n", pages);
+        return -1;
+    }
+    
+    uint32_t target_size = (uint32_t)pages * USER_DATA_SIZE;
+    uint32_t oversized_size = target_size + USER_DATA_SIZE;  // Need extra room for alignment
+    
+    FTL_DEBUG("[ALLOC_PAGES] Requesting %d pages (%u bytes), ensuring alignment\n", pages, target_size);
+    
+    // Step 1: Traverse all free_node pages to find a suitable node
+    for (int i = 0; i < FREE_NODE_PAGE_COUNT; i++) {
+        uint16_t lpn = SYS_FREE_LIST_BASE_LPN + i;
+        int16_t count = read_node_count(lpn);
+        if (count < 0) continue;  // Skip invalid pages
+        
+        for (int16_t j = 0; j < count; j++) {
+            free_node_t node = read_free_node(lpn, j);
+            
+            if (node.size >= oversized_size) {
+                // Found suitable node
+                uint32_t alloc_addr = node.addr;
+                
+                FTL_DEBUG("[ALLOC_PAGES] Found node at 0x%08X, size=%u from LPN %d[%d]\n",
+                         alloc_addr, node.size, lpn, j);
+                
+                // Step 2: Remove the original node from free list
+                remove_node_from_table(alloc_addr);
+                
+                // Step 3: Check alignment
+                uint32_t align_offset = alloc_addr % USER_DATA_SIZE;
+                
+                if (align_offset == 0) {
+                    // Already aligned - split into 2 parts
+                    FTL_DEBUG("[ALLOC_PAGES] Address already aligned\n");
+                    
+                    uint32_t total_remaining = node.size - target_size;
+                    
+                    // Return the first 'target_size' bytes
+                    *out_logical_addr = alloc_addr;
+                    
+                    // Reinsert remaining space (if any)
+                    if (total_remaining > 0) {
+                        insert_node_to_table(alloc_addr + target_size, total_remaining);
+                        FTL_DEBUG("[ALLOC_PAGES] Reinserted remaining %u bytes at 0x%08X\n",
+                                 total_remaining, alloc_addr + target_size);
+                    }
+                    
+                    FTL_DEBUG("[ALLOC_PAGES] Success: aligned addr=0x%08X\n", alloc_addr);
+                    assert((*out_logical_addr % USER_DATA_SIZE) == 0);
+                    return 0;
+                } else {
+                    // Not aligned - split into 3 parts
+                    uint32_t actual_align_offset = USER_DATA_SIZE - align_offset;
+                    uint32_t total_remaining = node.size - actual_align_offset - target_size;
+                    
+                    FTL_DEBUG("[ALLOC_PAGES] Address not aligned (offset=%u), splitting into 3 parts\n",
+                             align_offset);
+                    FTL_DEBUG("[ALLOC_PAGES]   Original node size: %u\n", node.size);
+                    FTL_DEBUG("[ALLOC_PAGES]   Part 1 (waste): 0x%08X, size=%u\n",
+                             alloc_addr, actual_align_offset);
+                    FTL_DEBUG("[ALLOC_PAGES]   Part 2 (return): 0x%08X, size=%u\n",
+                             alloc_addr + actual_align_offset, target_size);
+                    FTL_DEBUG("[ALLOC_PAGES]   Part 3 (remaining): 0x%08X, size=%u\n",
+                             alloc_addr + actual_align_offset + target_size, total_remaining);
+                    FTL_DEBUG("[ALLOC_PAGES]   Verification: %u + %u + %u = %u\n",
+                             actual_align_offset, target_size, total_remaining,
+                             actual_align_offset + target_size + total_remaining);
+                    
+                    // Part 1: Reinsert the misaligned prefix back to free list
+                    insert_node_to_table(alloc_addr, actual_align_offset);
+                    
+                    // Part 2: Return the aligned portion to caller
+                    *out_logical_addr = alloc_addr + actual_align_offset;
+                    
+                    // Part 3: Reinsert the remaining suffix back to free list (if any)
+                    if (total_remaining > 0) {
+                        insert_node_to_table(alloc_addr + actual_align_offset + target_size, total_remaining);
+                    }
+                    
+                    FTL_DEBUG("[ALLOC_PAGES] Success: aligned addr=0x%08X (after adjustment)\n",
+                             *out_logical_addr);
+                    
+                    // Verify alignment
+                    assert((*out_logical_addr % USER_DATA_SIZE) == 0);
+                    return 0;
+                }
+            }
+        }
+    }
+    
+    // Also search in extended levels
+    for (int level = 0; level < MAX_FREE_NODE_EXT_LEVELS; level++) {
+        if (MGR->ext_free_node_addrs[level] == 0xFFFFFFFF) break;
+        
+        uint16_t start_lpn = (uint16_t)(MGR->ext_free_node_addrs[level] / USER_DATA_SIZE);
+        for (int i = 0; i < FREE_NODE_EXT_PAGES; i++) {
+            uint16_t lpn = start_lpn + i;
+            int16_t count = read_node_count(lpn);
+            if (count < 0) continue;
+            
+            for (int16_t j = 0; j < count; j++) {
+                free_node_t node = read_free_node(lpn, j);
+                
+                if (node.size >= oversized_size) {
+                    uint32_t alloc_addr = node.addr;
+                    
+                    FTL_DEBUG("[ALLOC_PAGES] Found ext node at 0x%08X, size=%u from ext LPN %d[%d]\n",
+                             alloc_addr, node.size, lpn, j);
+                    
+                    remove_node_from_table(alloc_addr);
+                    
+                    uint32_t align_offset = alloc_addr % USER_DATA_SIZE;
+                    
+                    if (align_offset == 0) {
+                        uint32_t total_remaining = node.size - target_size;
+                        
+                        *out_logical_addr = alloc_addr;
+                        
+                        if (total_remaining > 0) {
+                            insert_node_to_table(alloc_addr + target_size, total_remaining);
+                        }
+                        
+                        FTL_DEBUG("[ALLOC_PAGES] Success: aligned addr=0x%08X (ext)\n", alloc_addr);
+                        assert((*out_logical_addr % USER_DATA_SIZE) == 0);
+                        return 0;
+                    } else {
+                        uint32_t actual_align_offset = USER_DATA_SIZE - align_offset;
+                        uint32_t total_remaining = node.size - actual_align_offset - target_size;
+                        
+                        insert_node_to_table(alloc_addr, actual_align_offset);
+                        *out_logical_addr = alloc_addr + actual_align_offset;
+                        
+                        if (total_remaining > 0) {
+                            insert_node_to_table(alloc_addr + actual_align_offset + target_size, total_remaining);
+                        }
+                        
+                        FTL_DEBUG("[ALLOC_PAGES] Success: aligned addr=0x%08X (ext, adjusted)\n",
+                                 *out_logical_addr);
+                        assert((*out_logical_addr % USER_DATA_SIZE) == 0);
+                        return 0;
+                    }
+                }
+            }
+        }
+    }
+    
+    FTL_DEBUG("[ALLOC_PAGES] ERROR: No suitable free node found for oversized_size=%u\n", oversized_size);
+    return -1;  // Insufficient space
+}
+
 // Find and remove the node that ends exactly at target_addr (i.e., node.addr + node.size == target_addr)
 // Returns the size of the removed node, or 0 if not found
 static uint32_t remove_node_ending_at(uint32_t target_addr) {
@@ -903,6 +1164,9 @@ static uint32_t remove_node_ending_at(uint32_t target_addr) {
 }
 
 void eflash_mgr_free(uint32_t logical_addr, uint32_t size) {
+    // Pre-emptive check: extend if running low on space before merging/inserting
+    // This prevents multiple extensions when inserting multiple nodes after merge
+    check_and_extend_free_node_table();
 
     MGR_PRINTF("[SPACE_FREE] Freeing logical_addr=0x%06X, size=%u\n", logical_addr, size);
     
