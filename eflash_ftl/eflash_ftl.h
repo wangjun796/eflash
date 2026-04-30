@@ -120,6 +120,9 @@ typedef struct {
     uint16_t      gc_threshold;     // GC trigger threshold (remaining free pages)
     uint32_t      total_user_pages; // Total user-available pages (excluding system reserved area)
     bool          gc_in_progress;   // GC in progress flag, prevents recursive GC triggering
+    
+    // Real-time tracking of valid pages in Radix Tree
+    uint32_t      valid_page_count; // Number of unique logical sectors currently mapped
 } eflash_ftl_t;
 
 // --- Interface Functions ---
@@ -148,9 +151,19 @@ void eflash_ftl_txn_abort(void);
 // --- GC Interface Functions ---
 int  eflash_ftl_gc_trigger(void);  // Manually trigger GC
 int  eflash_ftl_gc_collect(uint16_t pages_to_free); // Reclaim specified number of pages
-uint32_t eflash_ftl_get_free_pages(void); // Get current number of free pages
+uint32_t eflash_ftl_get_free_pages(void); // Get current number of free pages (based on Head/Tail)
+uint32_t eflash_ftl_get_real_free_pages(void); // Get REAL free pages by scanning all physical pages
 
 // --- Visualization Functions (for debugging, only available when FTL_DEBUG_ENABLE is defined) ---
+#ifdef FTL_DEBUG_ENABLE
+void eflash_ftl_print_radix_tree_mermaid(eflash_ftl_t *ftl, uint16_t root_page); // Print radix tree in Mermaid format to stdout
+void eflash_ftl_print_radix_tree_mermaid_to_file(eflash_ftl_t *ftl, uint16_t root_page); // Save radix tree to file
+#endif
+
+// --- Global FTL Instance ---
+extern eflash_ftl_t g_ftl_instance;
+#define FTL (&g_ftl_instance)
+
 #ifdef FTL_DEBUG_ENABLE
 void eflash_ftl_print_radix_tree_mermaid(eflash_ftl_t *ftl, uint16_t root_page); // Print radix tree in Mermaid format to stdout
 void eflash_ftl_print_radix_tree_mermaid_to_file(eflash_ftl_t *ftl, uint16_t root_page); // Save radix tree to file

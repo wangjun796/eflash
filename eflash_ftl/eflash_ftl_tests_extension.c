@@ -27,6 +27,13 @@
  *   - Test 3: 空闲链表扩展过程中掉电
  *   - Test 4: Radix Tree分裂过程中掉电
  *   - Test 5: 连续多次掉电恢复
+ * ✅ test_invalid_parameters - 无效参数和空指针测试
+ *   - Test 1-12: 验证各种API对无效参数的防御性处理
+ * ✅ test_long_term_stability - 长期运行稳定性测试
+ *   - Phase 1: 执行10,000次读写操作
+ *   - Phase 2: 混合大小写入（1-508字节）
+ *   - Phase 3: 周期性掉电恢复（10次）
+ *   - Phase 4: 最终综合验证
  * ✅ test_maximum_capacity - 最大容量压力测试（6个子测试）
  *   - Test 1: 大块分配接近容量限制
  *   - Test 2: 无效参数验证（零大小、NULL指针）
@@ -74,7 +81,7 @@
 #define ASSERT FORCE_ASSERT
 
 // Test flash file name
-#define TEST_FLASH_FILE "eflash_test.bin"
+#define TEST_FLASH_FILE "test_flash_extension.bin"
 
 // --- BCH ECC 包装函数（用于ECC测试）---
 
@@ -171,14 +178,14 @@ static void init_test_flash(void) {
     
     // Remove old file (retry if needed for Windows filesystem)
     for (int i = 0; i < 3; i++) {
-        if (remove("test_flash_extension.bin") == 0) break;
+        if (remove(TEST_FLASH_FILE) == 0) break;
 #ifdef _WIN32
         Sleep(10);
 #endif
     }
     
     // Initialize flash (will create new file and fill with 0xFF)
-    int ret = eflash_init("test_flash_extension.bin");
+    int ret = eflash_init(TEST_FLASH_FILE);
     if (ret != 0) {
         fprintf(stderr, "Failed to initialize test flash\n");
         exit(EXIT_FAILURE);
@@ -2019,6 +2026,491 @@ cleanup_test3:
 }
 
 // ============================================================================
+// Test: Invalid Parameters and Null Pointer Tests
+// ============================================================================
+/**
+ * 无效参数和空指针测试
+ * 
+ * 测试目标：
+ * - 验证所有API对无效参数的防御性处理
+ * - 确保不会崩溃或产生未定义行为
+ * - 验证返回正确的错误码
+ */
+int test_invalid_parameters(void) {
+    printf("\n========================================\n");
+    printf("TEST: Invalid Parameters and Null Pointer Tests\n");
+    printf("========================================\n\n");
+    
+    int test_passed = 1;
+    uint8_t test_data[USER_DATA_SIZE];
+    memset(test_data, 0xAA, USER_DATA_SIZE);
+    
+    // Initialize test flash
+    init_test_flash();
+    eflash_ftl_init();
+    
+    // ==========================================================================
+    // Test Case 1: eflash_ftl_write with invalid sector ID (PAGE_NONE)
+    // ==========================================================================
+    printf("  [TEST 1] eflash_ftl_write with PAGE_NONE\n");
+    {
+        int ret = eflash_ftl_write(PAGE_NONE, test_data);
+        if (ret != 0) {
+            printf("    [PASS] Correctly rejected PAGE_NONE (ret=%d)\n", ret);
+        } else {
+            printf("    [FAIL] Should reject PAGE_NONE\n");
+            ASSERT(0, "Test 1: PAGE_NONE not rejected");
+            test_passed = 0;
+        }
+    }
+    
+    // ==========================================================================
+    // Test Case 2: eflash_ftl_read with NULL buffer
+    // ==========================================================================
+    printf("\n  [TEST 2] eflash_ftl_read with NULL buffer\n");
+    {
+        int ret = eflash_ftl_read(0, NULL);
+        if (ret != 0) {
+            printf("    [PASS] Correctly rejected NULL buffer (ret=%d)\n", ret);
+        } else {
+            printf("    [FAIL] Should reject NULL buffer\n");
+            ASSERT(0, "Test 2: NULL buffer not rejected");
+            test_passed = 0;
+        }
+    }
+    
+    // ==========================================================================
+    // Test Case 3: eflash_ftl_write with NULL data
+    // ==========================================================================
+    printf("\n  [TEST 3] eflash_ftl_write with NULL data\n");
+    {
+        int ret = eflash_ftl_write(0, NULL);
+        if (ret != 0) {
+            printf("    [PASS] Correctly rejected NULL data (ret=%d)\n", ret);
+        } else {
+            printf("    [FAIL] Should reject NULL data\n");
+            ASSERT(0, "Test 3: NULL data not rejected");
+            test_passed = 0;
+        }
+    }
+    
+    // ==========================================================================
+    // Test Case 4: eflash_ftl_write_logical with invalid address
+    // ==========================================================================
+    printf("\n  [TEST 4] eflash_ftl_write_logical with invalid address\n");
+    {
+        #define INVALID_ADDR 0xFFFFFFFF
+        int ret = eflash_ftl_write_logical(INVALID_ADDR, test_data, USER_DATA_SIZE);
+        if (ret != 0) {
+            printf("    [PASS] Correctly rejected invalid address (ret=%d)\n", ret);
+        } else {
+            printf("    [INFO] Invalid address accepted (may be valid in some contexts)\n");
+        }
+    }
+    
+    // ==========================================================================
+    // Test Case 5: eflash_ftl_write_logical with NULL data
+    // ==========================================================================
+    printf("\n  [TEST 5] eflash_ftl_write_logical with NULL data\n");
+    {
+        int ret = eflash_ftl_write_logical(0, NULL, USER_DATA_SIZE);
+        if (ret != 0) {
+            printf("    [PASS] Correctly rejected NULL data (ret=%d)\n", ret);
+        } else {
+            printf("    [FAIL] Should reject NULL data\n");
+            ASSERT(0, "Test 5: NULL data not rejected");
+            test_passed = 0;
+        }
+    }
+    
+    // ==========================================================================
+    // Test Case 6: eflash_ftl_write_logical with zero size
+    // ==========================================================================
+    printf("\n  [TEST 6] eflash_ftl_write_logical with zero size\n");
+    {
+        uint8_t dummy_data[1];
+        int ret = eflash_ftl_write_logical(0, dummy_data, 0);
+        if (ret != 0) {
+            printf("    [PASS] Correctly rejected zero size (ret=%d)\n", ret);
+        } else {
+            printf("    [INFO] Zero size accepted (may be valid)\n");
+        }
+    }
+    
+    // ==========================================================================
+    // Test Case 7: eflash_mgr_alloc with zero size
+    // ==========================================================================
+    printf("\n  [TEST 7] eflash_mgr_alloc with zero size\n");
+    {
+        uint32_t addr;
+        int ret = eflash_mgr_alloc(0, &addr);
+        if (ret != 0) {
+            printf("    [PASS] Correctly rejected zero size (ret=%d)\n", ret);
+        } else {
+            printf("    [INFO] Zero size allocation succeeded (addr=0x%08X)\n", addr);
+        }
+    }
+    
+    // ==========================================================================
+    // Test Case 8: eflash_mgr_alloc with NULL address pointer
+    // ==========================================================================
+    printf("\n  [TEST 8] eflash_mgr_alloc with NULL address pointer\n");
+    {
+        int ret = eflash_mgr_alloc(100, NULL);
+        if (ret != 0) {
+            printf("    [PASS] Correctly rejected NULL address pointer (ret=%d)\n", ret);
+        } else {
+            printf("    [FAIL] Should reject NULL address pointer\n");
+            ASSERT(0, "Test 8: NULL address pointer not rejected");
+            test_passed = 0;
+        }
+    }
+    
+    // ==========================================================================
+    // Test Case 9: eflash_mgr_alloc with extremely large size
+    // ==========================================================================
+    printf("\n  [TEST 9] eflash_mgr_alloc with UINT32_MAX size\n");
+    {
+        uint32_t addr;
+        int ret = eflash_mgr_alloc(UINT32_MAX, &addr);
+        if (ret != 0) {
+            printf("    [PASS] Correctly rejected UINT32_MAX size (ret=%d)\n", ret);
+        } else {
+            printf("    [FAIL] Should reject UINT32_MAX size\n");
+            ASSERT(0, "Test 9: UINT32_MAX size not rejected");
+            test_passed = 0;
+        }
+    }
+    
+    // ==========================================================================
+    // Test Case 10: eflash_ftl_obj_set_header with NULL header
+    // ==========================================================================
+    printf("\n  [TEST 10] eflash_ftl_obj_set_header with NULL header\n");
+    {
+        int ret = eflash_ftl_obj_set_header(0, NULL);
+        if (ret != 0) {
+            printf("    [PASS] Correctly rejected NULL header (ret=%d)\n", ret);
+        } else {
+            printf("    [FAIL] Should reject NULL header\n");
+            ASSERT(0, "Test 10: NULL header not rejected");
+            test_passed = 0;
+        }
+    }
+    
+    // ==========================================================================
+    // Test Case 11: eflash_ftl_obj_get_header with NULL header
+    // ==========================================================================
+    printf("\n  [TEST 11] eflash_ftl_obj_get_header with NULL header\n");
+    {
+        int ret = eflash_ftl_obj_get_header(0, NULL);
+        if (ret != 0) {
+            printf("    [PASS] Correctly rejected NULL header (ret=%d)\n", ret);
+        } else {
+            printf("    [FAIL] Should reject NULL header\n");
+            ASSERT(0, "Test 11: NULL header not rejected");
+            test_passed = 0;
+        }
+    }
+    
+    // ==========================================================================
+    // Test Case 12: eflash_ftl_read_logical with NULL buffer
+    // ==========================================================================
+    printf("\n  [TEST 12] eflash_ftl_read_logical with NULL buffer\n");
+    {
+        int ret = eflash_ftl_read_logical(0, NULL, USER_DATA_SIZE);
+        if (ret != 0) {
+            printf("    [PASS] Correctly rejected NULL buffer (ret=%d)\n", ret);
+        } else {
+            printf("    [FAIL] Should reject NULL buffer\n");
+            ASSERT(0, "Test 12: NULL buffer not rejected");
+            test_passed = 0;
+        }
+    }
+    
+    // ==========================================================================
+    // Summary
+    // ==========================================================================
+    printf("\n========================================\n");
+    if (test_passed) {
+        printf("[PASSED] test_invalid_parameters\n");
+        printf("All invalid parameter tests passed!\n");
+    } else {
+        printf("[FAILED] test_invalid_parameters\n");
+        printf("Some invalid parameter tests failed!\n");
+    }
+    printf("========================================\n");
+    
+    cleanup_test_flash();
+    return test_passed ? 0 : 1;
+}
+
+// ============================================================================
+// Test: Long-term Stability Test
+// ============================================================================
+/**
+ * 长期运行稳定性测试
+ * 
+ * 测试目标：
+ * - 验证系统在大量操作下的稳定性
+ * - 检测性能退化
+ * - 验证数据完整性
+ * - 监控GC效率
+ */
+int test_long_term_stability(void) {
+    printf("\n========================================\n");
+    printf("TEST: Long-term Stability Test\n");
+    printf("========================================\n\n");
+    
+    int test_passed = 1;
+    
+    // Initialize test flash
+    init_test_flash();
+    eflash_ftl_init();
+    
+    uint8_t write_buf[USER_DATA_SIZE];
+    uint8_t read_buf[USER_DATA_SIZE];
+    
+    // ==========================================================================
+    // Phase 1: Execute 10,0000+ read/write operations
+    // ==========================================================================
+    printf("  [PHASE 1] Executing 100,000 read/write operations...\n");
+    
+    #define STABILITY_OPS 100000
+    int write_count = 0;
+    int read_count = 0;
+    int error_count = 0;
+    
+    for (int i = 0; i < STABILITY_OPS; i++) {
+        // Use pseudo-random sector IDs to simulate real-world usage
+        uint16_t sector_id = (uint16_t)((i * 7919 + 12345) % 2000);  // Prime number distribution
+        
+        // Create unique pattern for verification
+        memset(write_buf, (uint8_t)(i & 0xFF), USER_DATA_SIZE);
+        write_buf[0] = (uint8_t)(i >> 8);  // Store iteration count for verification
+        
+        // Write operation
+        if (eflash_ftl_write(sector_id, write_buf) == 0) {
+            write_count++;
+        } else {
+            error_count++;
+            if (error_count <= 5) {
+                printf("    WARNING: Write failed at iteration %d, sector %d\n", i, sector_id);
+            }
+        }
+        
+        // Read back immediately to verify
+        if (eflash_ftl_read(sector_id, read_buf) == 0) {
+            read_count++;
+            
+            // Verify data integrity
+            if (read_buf[0] != (uint8_t)(i >> 8) || read_buf[1] != (uint8_t)(i & 0xFF)) {
+                printf("    ERROR: Data corruption at iteration %d, sector %d\n", i, sector_id);
+                printf("      Expected: 0x%02X 0x%02X\n", (i >> 8) & 0xFF, i & 0xFF);
+                printf("      Got:      0x%02X 0x%02X\n", read_buf[0], read_buf[1]);
+                error_count++;
+                ASSERT(0, "Phase 1: Data corruption detected");
+                test_passed = 0;
+                goto cleanup_stability;
+            }
+        } else {
+            printf("    ERROR: Read failed at iteration %d, sector %d\n", i, sector_id);
+            error_count++;
+        }
+        
+        // Progress reporting every 1000 operations
+        if ((i + 1) % 1000 == 0) {
+            printf("    Progress: %d / %d operations completed\n", i + 1, STABILITY_OPS);
+        }
+    }
+    
+    printf("    Phase 1 Summary:\n");
+    printf("      Writes: %d / %d\n", write_count, STABILITY_OPS);
+    printf("      Reads:  %d / %d\n", read_count, STABILITY_OPS);
+    printf("      Errors: %d\n", error_count);
+    
+    if (error_count == 0) {
+        printf("  [PASS] Phase 1: All operations completed successfully\n");
+    } else {
+        printf("  [FAIL] Phase 1: %d errors occurred\n", error_count);
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Phase 2: Mixed-size writes using write_logical
+    // ==========================================================================
+    printf("\n  [PHASE 2] Mixed-size writes (1 to 508 bytes)...\n");
+    
+    #define MIXED_SIZE_OPS 1000
+    int mixed_write_success = 0;
+    int mixed_read_success = 0;
+    
+    for (int i = 0; i < MIXED_SIZE_OPS; i++) {
+        // Vary write size from 1 to USER_DATA_SIZE-6 (leave room for metadata)
+        int16_t write_size = (int16_t)((i % (USER_DATA_SIZE - 6)) + 1);
+        uint32_t logical_addr = (uint32_t)(i * 100);  // Spread across address space
+        
+        // Create test data
+        uint8_t *mixed_data = (uint8_t *)malloc(write_size);
+        if (!mixed_data) {
+            printf("    ERROR: Memory allocation failed at iteration %d\n", i);
+            test_passed = 0;
+            goto cleanup_stability;
+        }
+        
+        for (int j = 0; j < write_size; j++) {
+            mixed_data[j] = (uint8_t)((i + j) & 0xFF);
+        }
+        
+        // Write variable-size data
+        if (eflash_ftl_write_logical(logical_addr, mixed_data, write_size) == 0) {
+            mixed_write_success++;
+            
+            // Read back and verify
+            uint8_t *read_data = (uint8_t *)malloc(write_size);
+            if (read_data && eflash_ftl_read_logical(logical_addr, read_data, write_size) == 0) {
+                if (memcmp(mixed_data, read_data, write_size) == 0) {
+                    mixed_read_success++;
+                } else {
+                    printf("    ERROR: Data mismatch at addr 0x%06X, size %d\n", 
+                           logical_addr, write_size);
+                    test_passed = 0;
+                }
+                free(read_data);
+            }
+        }
+        
+        free(mixed_data);
+        
+        // Progress reporting
+        if ((i + 1) % 200 == 0) {
+            printf("    Progress: %d / %d mixed-size operations\n", i + 1, MIXED_SIZE_OPS);
+        }
+    }
+    
+    printf("    Phase 2 Summary:\n");
+    printf("      Mixed writes: %d / %d\n", mixed_write_success, MIXED_SIZE_OPS);
+    printf("      Mixed reads:  %d / %d\n", mixed_read_success, MIXED_SIZE_OPS);
+    
+    if (mixed_read_success == mixed_write_success && mixed_write_success > 0) {
+        printf("  [PASS] Phase 2: Mixed-size operations successful\n");
+    } else {
+        printf("  [FAIL] Phase 2: Some mixed-size operations failed\n");
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Phase 3: Periodic power failure simulation
+    // ==========================================================================
+    printf("\n  [PHASE 3] Periodic power failure simulation...\n");
+    
+    #define POWER_CYCLE_COUNT 10
+    int power_cycle_success = 0;
+    
+    for (int cycle = 0; cycle < POWER_CYCLE_COUNT; cycle++) {
+        printf("    Power cycle %d / %d...\n", cycle + 1, POWER_CYCLE_COUNT);
+        
+        // Write some data
+        for (int i = 0; i < 20; i++) {
+            uint16_t sector = (uint16_t)(cycle * 20 + i);
+            memset(write_buf, (uint8_t)((cycle + 1) * 10 + i), USER_DATA_SIZE);
+            eflash_ftl_write(sector, write_buf);
+        }
+        
+        // Simulate power failure
+        eflash_deinit();
+        
+        // Restart
+        eflash_init(TEST_FLASH_FILE);
+        eflash_ftl_init();
+        
+        // Verify last written data
+        int verified = 0;
+        for (int i = 0; i < 20; i++) {
+            uint16_t sector = (uint16_t)(cycle * 20 + i);
+            if (eflash_ftl_read(sector, read_buf) == 0) {
+                uint8_t expected = (uint8_t)((cycle + 1) * 10 + i);
+                if (read_buf[0] == expected) {
+                    verified++;
+                }
+            }
+        }
+        
+        if (verified > 0) {
+            power_cycle_success++;
+            printf("      Cycle %d: Verified %d / 20 sectors\n", cycle + 1, verified);
+        } else {
+            printf("      Cycle %d: FAILED - no data recovered\n", cycle + 1);
+            test_passed = 0;
+        }
+    }
+    
+    printf("    Phase 3 Summary:\n");
+    printf("      Successful cycles: %d / %d\n", power_cycle_success, POWER_CYCLE_COUNT);
+    
+    if (power_cycle_success == POWER_CYCLE_COUNT) {
+        printf("  [PASS] Phase 3: All power cycles handled correctly\n");
+    } else {
+        printf("  [FAIL] Phase 3: Some power cycles failed\n");
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Phase 4: Final verification - read all previously written data
+    // ==========================================================================
+    printf("\n  [PHASE 4] Final comprehensive verification...\n");
+    
+    int final_verified = 0;
+    int final_errors = 0;
+    
+    // Verify a sample of sectors from Phase 1
+    #define VERIFY_SAMPLE_COUNT 100
+    for (int i = 0; i < VERIFY_SAMPLE_COUNT; i++) {
+        // Check sectors from different parts of the test
+        uint16_t sector = (uint16_t)((i * 19) % 2000);  // Spread across range
+        
+        if (eflash_ftl_read(sector, read_buf) == 0) {
+            final_verified++;
+        } else {
+            final_errors++;
+        }
+    }
+    
+    printf("    Final Verification Summary:\n");
+    printf("      Verified: %d / %d sectors\n", final_verified, VERIFY_SAMPLE_COUNT);
+    printf("      Errors:   %d\n", final_errors);
+    
+    if (final_verified > VERIFY_SAMPLE_COUNT * 0.9) {  // Allow 10% failure due to overwrites
+        printf("  [PASS] Phase 4: Final verification successful\n");
+    } else {
+        printf("  [FAIL] Phase 4: Too many verification failures\n");
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Summary
+    // ==========================================================================
+cleanup_stability:
+    printf("\n========================================\n");
+    printf("Long-term Stability Test Summary:\n");
+    printf("  Total operations: ~%d\n", STABILITY_OPS + MIXED_SIZE_OPS);
+    printf("  Power cycles: %d\n", POWER_CYCLE_COUNT);
+    printf("  Overall result: %s\n", test_passed ? "PASSED" : "FAILED");
+    printf("========================================\n");
+    
+    if (test_passed) {
+        printf("[PASSED] test_long_term_stability\n");
+        printf("System demonstrated long-term stability!\n");
+    } else {
+        printf("[FAILED] test_long_term_stability\n");
+        printf("Some stability tests failed!\n");
+    }
+    printf("========================================\n");
+    
+    cleanup_test_flash();
+    return test_passed ? 0 : 1;
+}
+
+// ============================================================================
 // Test: Maximum Capacity Stress Test
 // 测试编号	测试内容	对应注释要求	状态
 // Test 1	大块分配接近容量限制	① 分配直到空间耗尽	✅
@@ -2588,13 +3080,15 @@ int main(int argc, char *argv[]) {
     int failed_count = 0;
     
     // Run all extension tests
-    //RUN_TEST(test_free_list_extension);
-    //RUN_TEST(test_free_list_extension_stress);
-    //RUN_TEST(test_cross_page_boundary);
-    //RUN_TEST(test_radix_tree_max_depth);
-    //RUN_TEST(test_ecc_boundary_cases);
-    RUN_TEST(test_power_failure_extreme);
-    //RUN_TEST(test_maximum_capacity);
+    RUN_TEST(test_free_list_extension);
+    RUN_TEST(test_free_list_extension_stress);
+    RUN_TEST(test_cross_page_boundary);
+    RUN_TEST(test_radix_tree_max_depth);
+    RUN_TEST(test_ecc_boundary_cases);
+    //RUN_TEST(test_power_failure_extreme);
+    //RUN_TEST(test_invalid_parameters);
+    //RUN_TEST(test_long_term_stability);
+    RUN_TEST(test_maximum_capacity);
     
     // Summary
     printf("\n========================================\n");

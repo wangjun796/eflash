@@ -197,6 +197,9 @@ static int verify_and_correct_page(uint8_t *page_buf) {
     return 0;
 }
 
+// --- Forward Declarations ---
+static bool is_page_still_valid(uint16_t phys_page);
+
 // --- Low-level Flash Operation Wrappers ---
 
 /**
@@ -357,6 +360,10 @@ static inline int get_bit(uint16_t sector, int depth) {
 
 // Corrected trace_tree: remove new_phys parameter
 // Responsibility: Only build metadata template for new node, do not insert any physical page
+// Returns: 
+//   1 = New write (sector_id not found in tree)
+//   0 = Update write (sector_id exists in tree)
+//  <0 = Error
 static int trace_tree(uint16_t base_root, uint16_t sector, ftl_meta_t *out_meta) {
     uint8_t meta_buf[EFLASH_PAGE_SIZE];
     ftl_meta_t cur_meta;
@@ -448,19 +455,19 @@ static int trace_tree(uint16_t base_root, uint16_t sector, ftl_meta_t *out_meta)
 
     // Loop ends normally, meaning matching sector found (or traversed all depths)
     // new_meta's alt array already fully set during traversal through Diverge and Same bit branches
-    FTL_DEBUG("[TRACE] Found match after full traversal\n");
-    return 0;
+    FTL_DEBUG("[TRACE] Found match after full traversal (UPDATE WRITE)\n");
+    return 0;  // Update write
 
 not_found:
     // Set all alt pointers from current depth to NONE
     // Note: depth++ already executed before goto not_found, so start setting from current depth
-    FTL_DEBUG("[TRACE] Not found, setting remaining alt pointers to NONE from depth=%d\n", depth);
+    FTL_DEBUG("[TRACE] Not found (NEW WRITE), setting remaining alt pointers to NONE from depth=%d\n", depth);
     while (depth < RADIX_DEPTH) {
         out_meta->alt[depth] = PAGE_NONE;
         depth++;
     }
 
-    return 0;
+    return 1;  // New write
 }
 
 // --- Object Header Management Core Logic ---
@@ -545,7 +552,10 @@ uint16_t eflash_ftl_obj_alloc_header(void) {
  * @return: 0 on success, -1 on failure
  */
 int eflash_ftl_obj_get_header(uint16_t obj_id, obj_header_t *hdr) {
-    if (!FTL || !hdr) return -1;
+    // Parameter validation
+    if (!FTL || !FTL->is_initialized) return -1;
+    if (hdr == NULL) return -1;
+    if (obj_id == PAGE_NONE) return -1;  // Invalid object ID
 
     // Boundary check: obj_id must be <= max_obj_id (allocated)
     if (obj_id > FTL->max_obj_id) {
@@ -686,7 +696,10 @@ uint16_t find_phys_page_by_sector(uint16_t sector) {
  * to maintain data integrity and ECC consistency.
  */
 int eflash_ftl_obj_set_header(uint16_t obj_id, const obj_header_t *hdr) {
-    if (!FTL || !hdr) return -1;
+    // Parameter validation
+    if (!FTL || !FTL->is_initialized) return -1;
+    if (hdr == NULL) return -1;
+    if (obj_id == PAGE_NONE) return -1;  // Invalid object ID
 
     uint16_t lpn, offset;  // LPN: Logical Page Number
     if (get_header_page_info(obj_id, &lpn, &offset) != 0) {
@@ -1071,7 +1084,8 @@ int eflash_ftl_init(void) {
     // Calculate total user pages and GC threshold
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
     FTL->total_user_pages = EFLASH_TOTAL_PAGES;  // All physical pages available
-    FTL->gc_threshold = FTL->total_user_pages / 5;  // 20% threshold
+    FTL->gc_threshold = FTL->total_user_pages / 20;  //5% threshold
+    
     FTL_DEBUG("[INIT] Total physical pages: %d (PPN 0-%d), GC threshold: %d\n",
              FTL->total_user_pages, last_user_page, FTL->gc_threshold);
 
@@ -1108,6 +1122,24 @@ int eflash_ftl_init(void) {
 
     FTL_DEBUG("[INIT] Scan complete. Root page: %d, next_count: %d, epoch: %d\n",
              FTL->root_page, FTL->next_count, FTL->current_epoch);
+
+    // Step 2.5: Initialize valid page counter by scanning all physical pages
+    // This must be done AFTER root_page is found, because is_page_still_valid() depends on Radix Tree
+    if (FTL->root_page != PAGE_NONE) {
+        // Recovery mode: count valid pages by scanning
+        uint32_t valid_count = 0;
+        for (uint16_t ppn = 0; ppn <= last_user_page; ppn++) {
+            if (is_page_still_valid(ppn)) {
+                valid_count++;
+            }
+        }
+        FTL->valid_page_count = valid_count;
+        FTL_DEBUG("[INIT] Valid page count initialized: %u (by scanning)\n", valid_count);
+    } else {
+        // First power-on: no valid pages yet
+        FTL->valid_page_count = 0;
+        FTL_DEBUG("[INIT] Valid page count initialized: 0 (first power-on)\n");
+    }
 
     // Step 3: Determine if initialization is needed
     bool need_init = false;
@@ -1341,7 +1373,19 @@ int eflash_ftl_obj_write_body(uint16_t obj_id, const uint8_t *data, uint32_t siz
 }
 
 int eflash_ftl_write(uint16_t sector_id, const uint8_t *data) {
-    if (!FTL->is_initialized) return -1;
+    // Parameter validation
+    if (!FTL || !FTL->is_initialized) return -1;
+    if (data == NULL) return -1;
+    //if (sector_id == PAGE_NONE) return -1;  // Invalid sector ID (0xFFFF)
+    
+    // Validate sector_id range: must be within logical address space
+    // Maximum logical pages = total flash size / user data size per page
+    uint32_t max_logical_pages = (EFLASH_TOTAL_PAGES * EFLASH_PAGE_SIZE) / USER_DATA_SIZE;
+    if (sector_id >= max_logical_pages) {
+        FTL_DEBUG("[WRITE] ERROR: sector_id=%d exceeds max_logical_pages=%u\n", 
+                  sector_id, max_logical_pages);
+        //return -1; //support virtual logical pages
+    }
 
     // CRITICAL: Trigger GC BEFORE tracing the tree to avoid race condition
     // If GC is triggered during allocation, it will modify the radix tree,
@@ -1361,10 +1405,14 @@ int eflash_ftl_write(uint16_t sector_id, const uint8_t *data) {
 
     // Step 1: Call trace_tree to build metadata template for new node (excluding data page info)
     ftl_meta_t new_node_meta;
-    if (trace_tree(base_root, sector_id, &new_node_meta) != 0) {
+    int trace_result = trace_tree(base_root, sector_id, &new_node_meta);
+    if (trace_result < 0) {
         FTL_DEBUG("[WRITE] ERROR: trace_tree failed!\n");
         return -1;
     }
+
+    bool is_new_write = (trace_result == 1);
+    FTL_DEBUG("[WRITE] Write type: %s\n", is_new_write ? "NEW" : "UPDATE");
 
     // Step 2: Allocate physical page using Head/Tail mechanism
     // Note: GC has already been triggered above, so this should not trigger GC again
@@ -1392,6 +1440,12 @@ int eflash_ftl_write(uint16_t sector_id, const uint8_t *data) {
         FTL->root_page = new_phys;
     }
 
+    // Step 5: Update valid page counter if this is a new write
+    if (is_new_write) {
+        FTL->valid_page_count++;
+        FTL_DEBUG("[WRITE] New sector added, valid_page_count=%u\n", FTL->valid_page_count);
+    }
+
     FTL_DEBUG("[WRITE] Success: root_page=%d, next_count=%d\n",
               (FTL->active_txn_id != TXN_ID_NONE) ? FTL->shadow_root : FTL->root_page,
               FTL->next_count);
@@ -1400,7 +1454,20 @@ int eflash_ftl_write(uint16_t sector_id, const uint8_t *data) {
 }
 
 int eflash_ftl_read(uint16_t sector_id, uint8_t *data) {
-    if (!FTL->is_initialized || FTL->root_page == PAGE_NONE) return -1;
+    // Parameter validation
+    if (!FTL || !FTL->is_initialized) return -1;
+    if (data == NULL) return -1;
+    if (sector_id == PAGE_NONE) return -1;  // Invalid sector ID (0xFFFF)
+    
+    // Validate sector_id range: must be within logical address space
+    uint32_t max_logical_pages = (EFLASH_TOTAL_PAGES * EFLASH_PAGE_SIZE) / USER_DATA_SIZE;
+    if (sector_id >= max_logical_pages) {
+        FTL_DEBUG("[READ] ERROR: sector_id=%d exceeds max_logical_pages=%u\n", 
+                  sector_id, max_logical_pages);
+        return -1;
+    }
+    
+    if (FTL->root_page == PAGE_NONE) return -1;
 
     uint16_t lpn = sector_id;  // Logical Page Number
 
@@ -1498,8 +1565,10 @@ int eflash_ftl_read(uint16_t sector_id, uint8_t *data) {
  *   - Automatically split cross-page writes into multiple single-page operations
  */
 int eflash_ftl_write_logical(uint32_t logical_addr, const uint8_t *data, int16_t size) {
-    if (!FTL->is_initialized) return -1;
-
+    // Parameter validation
+    if (!FTL || !FTL->is_initialized) return -1;
+    if (data == NULL) return -1;
+    
     // Validate size parameter
     if (size <= 0) {
         FTL_DEBUG("[WRITE_LOGICAL] ERROR: Invalid size=%d (must be > 0)\n", size);
@@ -1568,8 +1637,10 @@ int eflash_ftl_write_logical(uint32_t logical_addr, const uint8_t *data, int16_t
  *   - Automatically split cross-page reads into multiple single-page operations
  */
 int eflash_ftl_read_logical(uint32_t logical_addr, uint8_t *data, int16_t size) {
-    if (!FTL->is_initialized) return -1;
-
+    // Parameter validation
+    if (!FTL || !FTL->is_initialized) return -1;
+    if (data == NULL) return -1;
+    
     // Validate size parameter
     if (size <= 0) {
         FTL_DEBUG("[READ_LOGICAL] ERROR: Invalid size=%d (must be > 0)\n", size);
@@ -1941,6 +2012,34 @@ static bool is_page_still_valid(uint16_t phys_page) {
 }
 
 /**
+ * eflash_ftl_get_real_free_pages: Get REAL number of free pages by scanning all physical pages
+ * 
+ * ACCURATE CALCULATION:
+ * Scans ALL physical pages and uses is_page_still_valid() to count valid pages.
+ * Real Free = Total - Valid (pages still mapped in Radix Tree)
+ * 
+ * Note: This is O(N) where N = total pages, so use sparingly!
+ */
+uint32_t eflash_ftl_get_real_free_pages(void) {
+    uint32_t valid_count = 0;
+    uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
+    
+    // Scan all physical pages
+    for (uint16_t ppn = 0; ppn <= last_user_page; ppn++) {
+        if (is_page_still_valid(ppn)) {
+            valid_count++;
+        }
+    }
+    
+    uint32_t real_free_pages = FTL->total_user_pages - valid_count;
+    
+    FTL_DEBUG("[REAL_FREE_PAGES] Scanned %d pages, found %u valid, real_free=%u\n",
+             FTL->total_user_pages, valid_count, real_free_pages);
+    
+    return real_free_pages;
+}
+
+/**
  * gc_migrate_page: Migrate valid page to new location
  * @FTL: FTL instance
  * @src_page: Source physical page number
@@ -2178,10 +2277,41 @@ int eflash_ftl_gc_trigger(void) {
 
     FTL_DEBUG("[GC_TRIGGER] Triggering GC! Free space below threshold\n");
 
-    // Calculate pages to reclaim (target: restore to 10% free space)
-    uint32_t target_free_pages = FTL->total_user_pages / 10;
-    uint16_t pages_needed = (target_free_pages > free_pages) ?
-                            (uint16_t)(target_free_pages - free_pages) : 10;
+    // Calculate pages to reclaim with dynamic adjustment
+    // Strategy: Avoid excessive migration when space is critically low
+    uint32_t target_free_pages = FTL->total_user_pages / 10;  // Target: 10% free
+    uint32_t pages_to_reclaim = (target_free_pages > free_pages) ?
+                                (target_free_pages - free_pages) : 10;
+    
+    // CRITICAL: Limit migration to avoid write amplification
+    // When space is critically low, only reclaim a small batch
+    uint16_t max_migration_batch;
+    
+    // Adaptive batch size based on urgency
+    if (free_pages < FTL->total_user_pages / 20) {
+        // Critical: Less than 5% free - use smaller batches to maintain responsiveness
+        max_migration_batch = FTL->total_user_pages / 100;  // 1% of total
+        FTL_DEBUG("[GC_TRIGGER] CRITICAL space level!");
+    } else if (free_pages < FTL->total_user_pages / 10) {
+        // Warning: 5-10% free - moderate batch size
+        max_migration_batch = FTL->total_user_pages / 50;   // 2% of total
+        FTL_DEBUG("[GC_TRIGGER] WARNING space level");
+    } else {
+        // Normal: Above 10% - can use larger batches for efficiency
+        max_migration_batch = FTL->total_user_pages / 30;   // ~3.3% of total
+        FTL_DEBUG("[GC_TRIGGER] Normal space level");
+    }
+    
+    // Ensure minimum batch size for effectiveness
+    if (max_migration_batch < 10) max_migration_batch = 10;
+    // Cap maximum to prevent excessive migration
+    if (max_migration_batch > 100) max_migration_batch = 100;
+    
+    uint16_t pages_needed = (uint16_t)(pages_to_reclaim > max_migration_batch ? 
+                                       max_migration_batch : pages_to_reclaim);
+    
+    FTL_DEBUG("[GC_TRIGGER] Space critical: free=%u, target=%u, reclaim=%u, limited to %u\n",
+              free_pages, target_free_pages, pages_to_reclaim, pages_needed);
 
     // Set GC flag
     FTL->gc_in_progress = true;

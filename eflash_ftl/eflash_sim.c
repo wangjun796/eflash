@@ -30,7 +30,7 @@ int eflash_init(const char *filename) {
     flash_file_handle = CreateFileA(
         filename,
         GENERIC_READ | GENERIC_WRITE,
-        0,  // No sharing
+        FILE_SHARE_READ,  // Allow other processes to read while we have it open
         NULL,
         OPEN_ALWAYS,  // Open existing or create new
         FILE_ATTRIBUTE_NORMAL,

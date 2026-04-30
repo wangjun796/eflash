@@ -904,6 +904,12 @@ int eflash_mgr_alloc(uint32_t size, uint32_t *out_logical_addr) {
         return -1;
     }
     
+    // Check for unreasonably large size (e.g., UINT32_MAX)
+    if (size > (EFLASH_TOTAL_PAGES * EFLASH_PAGE_SIZE)) {
+        FTL_DEBUG("[SPACE_ALLOC] ERROR: Size %u exceeds total flash capacity\n", size);
+        return -1;
+    }
+    
     // Traverse all free_node pages, find first node that satisfies size requirement
     for (int i = 0; i < FREE_NODE_PAGE_COUNT; i++) {
         uint16_t lpn = SYS_FREE_LIST_BASE_LPN + i;
