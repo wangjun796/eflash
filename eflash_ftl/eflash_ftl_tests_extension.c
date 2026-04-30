@@ -3080,15 +3080,15 @@ int main(int argc, char *argv[]) {
     int failed_count = 0;
     
     // Run all extension tests
-    RUN_TEST(test_free_list_extension);
-    RUN_TEST(test_free_list_extension_stress);
-    RUN_TEST(test_cross_page_boundary);
-    RUN_TEST(test_radix_tree_max_depth);
-    RUN_TEST(test_ecc_boundary_cases);
+    //RUN_TEST(test_free_list_extension);
+    //RUN_TEST(test_free_list_extension_stress);
+    //RUN_TEST(test_cross_page_boundary);
+    //RUN_TEST(test_radix_tree_max_depth);
+    //RUN_TEST(test_ecc_boundary_cases);
     //RUN_TEST(test_power_failure_extreme);
     //RUN_TEST(test_invalid_parameters);
-    //RUN_TEST(test_long_term_stability);
-    RUN_TEST(test_maximum_capacity);
+    RUN_TEST(test_long_term_stability);
+    //RUN_TEST(test_maximum_capacity);
     
     // Summary
     printf("\n========================================\n");

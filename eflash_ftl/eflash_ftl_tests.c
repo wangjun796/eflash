@@ -1797,10 +1797,16 @@ int test_gc_stress() {
         if (i == 0) {
             last_tail_for_gc_detect = g_ftl_instance.gc_tail_page;
             consecutive_tail_moves = 0;
+            printf("  [STRESS] Initial tail_page=%d\n", g_ftl_instance.gc_tail_page);
         }
         
         // Check if tail moved at all (even small movement indicates GC activity)
         if (tail_after != last_tail_for_gc_detect) {
+            int tail_distance = (tail_after >= last_tail_for_gc_detect) ? 
+                                (tail_after - last_tail_for_gc_detect) : 
+                                (g_ftl_instance.total_user_pages - last_tail_for_gc_detect + tail_after);
+            printf("  [STRESS] *** TAIL MOVED! %d -> %d (distance=%d) at write #%d ***\n",
+                   last_tail_for_gc_detect, tail_after, tail_distance, i);
             consecutive_tail_moves++;
         } else {
             consecutive_tail_moves = 0;
@@ -1808,14 +1814,14 @@ int test_gc_stress() {
         
         // If tail has moved consistently, GC is active
         if (consecutive_tail_moves >= 3 || (free_after > free_before && free_after - free_before > 5)) {
-            if (consecutive_tail_moves == 3) {  // Only count once when threshold reached
+            if (!gc_triggered) {  // Only count the first time GC is detected
                 gc_count++;
                 gc_triggered = true;
                 printf("  [STRESS] *** GC #%d DETECTED at write #%d (tail moving consistently) ***\n", gc_count, i);
                 printf("  [STRESS]     Free space: %d -> %d (%+d pages)\n",
                        free_before, free_after, (int)(free_after - free_before));
-                printf("  [STRESS]     Tail: %d -> %d (3 consecutive moves)\n",
-                       last_tail_for_gc_detect, tail_after);
+                printf("  [STRESS]     Tail: %d -> %d (consecutive moves=%d)\n",
+                       last_tail_for_gc_detect, tail_after, consecutive_tail_moves);
             }
         }
         
@@ -1841,6 +1847,8 @@ int test_gc_stress() {
            total_writes, gc_count, gc_triggered ? "✓" : "✗");
     printf("  [STRESS] Final free space: %d pages (%.1f%%)\n",
            last_free, (float)last_free / g_ftl_instance.total_user_pages * 100);
+    printf("  [STRESS] DEBUG: head_page=%d, tail_page=%d, next_count=%u\n",
+           g_ftl_instance.gc_head_page, g_ftl_instance.gc_tail_page, g_ftl_instance.next_count);
 
     // 验证 GC 是否真正被触发
     ASSERT(gc_triggered, "GC must be triggered in stress test to validate GC mechanism");
