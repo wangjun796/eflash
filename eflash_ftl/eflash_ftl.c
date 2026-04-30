@@ -1457,7 +1457,7 @@ int eflash_ftl_read(uint16_t sector_id, uint8_t *data) {
     // Parameter validation
     if (!FTL || !FTL->is_initialized) return -1;
     if (data == NULL) return -1;
-    if (sector_id == PAGE_NONE) return -1;  // Invalid sector ID (0xFFFF)
+    //if (sector_id == PAGE_NONE) return -1;  // Invalid sector ID (0xFFFF)
     
     // Validate sector_id range: must be within logical address space
     uint32_t max_logical_pages = (EFLASH_TOTAL_PAGES * EFLASH_PAGE_SIZE) / USER_DATA_SIZE;

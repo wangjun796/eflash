@@ -1,5 +1,255 @@
 # 版本历史记录 (Changelog)
 
+## v1.6.0 (2026-04-29) - GC 空闲页统计优化与 trace_tree 返回值改进
+
+### 🔧 重大改进
+
+实现了精确的空闲页统计机制，优化了 `trace_tree` 的返回值语义，并添加了基于 Radix Tree 遍历的真正空闲页计算功能。
+
+### 📝 问题描述
+
+**根本原因：**
+1. **空闲页统计不准确**：原有的 Head/Tail 指针计算方法只能估算物理上连续的空闲空间，无法反映 Radix Tree 中实际映射的有效页数
+2. **GC 触发决策不精确**：基于估算的空闲页数可能导致过早或过晚触发 GC
+3. **写入放大风险**：当剩余空间很少时，如果一次性回收过多页面（如 170 页），会导致写入放大失控
+4. **trace_tree 缺乏新/旧页判断**：调用者无法区分是新页写还是更新写，无法精确维护有效页计数器
+
+**影响范围：**
+- ❌ GC 触发时机可能不准确
+- ❌ 无法精确控制系统资源使用
+- ❌ 潜在的性能退化风险
+- ❌ 写入放大不可控
+
+### ✅ 修正内容
+
+#### 1. 新增 `valid_page_count` 字段
+
+**位置：** `eflash_ftl.h` 第 125 行
+
+```c
+typedef struct {
+    // ... existing fields ...
+    uint32_t valid_page_count; // Number of unique logical sectors currently mapped
+} eflash_ftl_t;
+```
+
+**作用：**
+- 实时跟踪 Radix Tree 中映射的唯一逻辑扇区数量
+- 用于精确计算真正空闲的页数
+- O(1) 时间复杂度查询
+
+#### 2. 优化 `trace_tree` 返回值语义
+
+**修改位置：** `eflash_ftl.c` 第 358-468 行
+
+**新的返回值定义：**
+```c
+static int trace_tree(uint16_t base_root, uint16_t sector, ftl_meta_t *out_meta) {
+    // Returns:
+    //   1 = New write (sector_id not found in tree)
+    //   0 = Update write (sector_id exists in tree)
+    //  <0 = Error
+}
+```
+
+**实现逻辑：**
+- **返回 1**：执行到 `not_found` 标签，表示该 sector_id 之前未被写过（新页写）
+- **返回 0**：完整遍历 16 层深度找到匹配节点（更新写）
+- **返回 <0**：读取失败或 ECC 验证失败
+
+**关键代码：**
+```c
+// 正常退出（更新写）
+FTL_DEBUG("[TRACE] Found match after full traversal (UPDATE WRITE)\n");
+return 0;  // Update write
+
+not_found:
+// 路径中断（新页写）
+FTL_DEBUG("[TRACE] Not found (NEW WRITE), setting remaining alt pointers to NONE from depth=%d\n", depth);
+// ... 设置剩余的 alt[] 为 PAGE_NONE ...
+return 1;  // New write
+```
+
+#### 3. 新增 `eflash_ftl_get_real_free_pages()` 函数
+
+**位置：** `eflash_ftl.c` 第 2007-2037 行
+
+**功能：** 通过扫描所有物理页并使用 `is_page_still_valid()` 来精确统计真正空闲的页数
+
+**实现：**
+```c
+uint32_t eflash_ftl_get_real_free_pages(void) {
+    uint32_t valid_count = 0;
+    uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
+    
+    // Scan all physical pages
+    for (uint16_t ppn = 0; ppn <= last_user_page; ppn++) {
+        if (is_page_still_valid(ppn)) {
+            valid_count++;
+        }
+    }
+    
+    uint32_t real_free_pages = FTL->total_user_pages - valid_count;
+    
+    FTL_DEBUG("[REAL_FREE_PAGES] Scanned %d pages, found %u valid, real_free=%u\n",
+             FTL->total_user_pages, valid_count, real_free_pages);
+    
+    return real_free_pages;
+}
+```
+
+**特点：**
+- ✅ **最准确**：直接检查每个物理页是否仍在 Radix Tree 中被引用
+- ⚠️ **O(N) 复杂度**：需要遍历所有物理页（N=2048）
+- 💡 **适用场景**：调试、验证、定期健康检查、初始化时计算
+
+#### 4. `valid_page_count` 正确初始化
+
+**位置：** `eflash_ftl.c` 第 1123-1141 行
+
+**关键设计：** 必须在找到 `root_page` **之后**进行初始化，因为 `is_page_still_valid()` 依赖 Radix Tree
+
+```c
+// Step 2.5: Initialize valid page counter by scanning all physical pages
+if (FTL->root_page != PAGE_NONE) {
+    // Recovery mode: count valid pages by scanning
+    uint32_t valid_count = 0;
+    for (uint16_t ppn = 0; ppn <= last_user_page; ppn++) {
+        if (is_page_still_valid(ppn)) {
+            valid_count++;
+        }
+    }
+    FTL->valid_page_count = valid_count;
+    FTL_DEBUG("[INIT] Valid page count initialized: %u (by scanning)\n", valid_count);
+} else {
+    // First power-on: no valid pages yet
+    FTL->valid_page_count = 0;
+    FTL_DEBUG("[INIT] Valid page count initialized: 0 (first power-on)\n");
+}
+```
+
+#### 5. 写入时更新计数器
+
+**位置：** `eflash_ftl.c` 第 1387-1431 行
+
+```c
+// Step 1: Call trace_tree to determine write type
+int trace_result = trace_tree(base_root, sector_id, &new_node_meta);
+if (trace_result < 0) {
+    FTL_DEBUG("[WRITE] ERROR: trace_tree failed!\n");
+    return -1;
+}
+
+bool is_new_write = (trace_result == 1);
+FTL_DEBUG("[WRITE] Write type: %s\n", is_new_write ? "NEW" : "UPDATE");
+
+// ... 分配物理页、写入数据、更新 root ...
+
+// Step 5: Update valid page counter if this is a new write
+if (is_new_write) {
+    FTL->valid_page_count++;
+    FTL_DEBUG("[WRITE] New sector added, valid_page_count=%u\n", FTL->valid_page_count);
+}
+```
+
+**逻辑说明：**
+- **新页写**：`valid_page_count++`（Radix Tree 中新增一个映射）
+- **更新写**：`valid_page_count` 不变（旧页会被 GC 异步回收，但逻辑映射仍存在）
+
+#### 6. 添加前向声明解决编译错误
+
+**位置：** `eflash_ftl.c` 第 202 行
+
+**问题：** `is_page_still_valid()` 在第 1129 行被调用，但在第 1950 行才定义，导致隐式声明类型冲突
+
+**解决方案：**
+```c
+// --- Forward Declarations ---
+static bool is_page_still_valid(uint16_t phys_page);
+```
+
+### 📊 改进效果对比
+
+#### 空闲页统计方法对比
+
+| 方法 | 函数 | 复杂度 | 准确性 | 用途 |
+|------|------|--------|--------|------|
+| **Head/Tail 方法** | `eflash_ftl_get_free_pages()` | O(1) | 近似值 | GC 触发决策（快速） |
+| **全扫描方法** | `eflash_ftl_get_real_free_pages()` | O(N) | 精确值 | 调试验证、初始化 |
+| **计数器方法** | `FTL->valid_page_count` | O(1) | 精确值 | 运行时查询 |
+
+#### 修复前后对比
+
+**修复前：**
+```
+空闲页计算：基于 Head/Tail 指针
+- 无法区分新页写和更新写
+- 无法精确统计有效页数
+- GC 触发可能不准确
+```
+
+**修复后：**
+```
+空闲页计算：三种方法并存
+1. eflash_ftl_get_free_pages()      - O(1), 快速估算
+2. eflash_ftl_get_real_free_pages() - O(N), 精确扫描
+3. FTL->valid_page_count            - O(1), 实时计数
+
+优势：
+✅ 精确跟踪 Radix Tree 中的有效映射
+✅ 区分新页写和更新写
+✅ GC 触发决策更准确
+✅ 支持多种场景需求
+```
+
+### 🎯 技术亮点
+
+1. **返回值语义化**：`trace_tree` 返回值明确表示新/旧页写，无需额外参数
+2. **多层级统计**：提供 O(1) 快速查询和 O(N) 精确扫描两种方法
+3. **初始化策略**：恢复模式下通过扫描初始化，首次上电直接设为 0
+4. **实时更新**：写入时根据 `trace_tree` 返回值动态更新计数器
+5. **避免递归**：通过前向声明解决隐式声明导致的类型冲突
+
+### 📁 修改文件
+
+- `eflash_ftl/eflash_ftl.h`：
+  - 新增 `valid_page_count` 字段（第 125 行）
+  - 新增 `eflash_ftl_get_real_free_pages()` 函数声明（第 152 行）
+
+- `eflash_ftl/eflash_ftl.c`：
+  - 添加前向声明（第 202 行）
+  - 修改 `trace_tree` 返回值语义（第 358-468 行）
+  - 修改 `eflash_ftl_init` 添加初始化逻辑（第 1123-1141 行）
+  - 修改 `eflash_ftl_write` 添加计数器更新（第 1387-1431 行）
+  - 新增 `eflash_ftl_get_real_free_pages()` 函数（第 2007-2037 行）
+
+### 🧪 测试验证
+
+- ✅ 编译成功，无警告
+- ✅ 所有扩展测试用例通过
+- ✅ `test_maximum_capacity` 测试通过
+- ✅ `test_radix_tree_max_depth` 测试通过
+- ✅ `test_ecc_boundary_cases` 测试通过
+- ✅ `test_free_list_extension` 测试通过
+- ✅ `test_free_list_extension_stress` 测试通过
+- ✅ `test_cross_page_boundary` 测试通过
+
+### ⚠️ 兼容性说明
+
+**无破坏性变更：**
+- API 保持不变
+- 数据格式兼容
+- 向后兼容，旧代码仍可正常工作
+- `valid_page_count` 仅在内部使用，不影响外部接口
+
+### 📌 相关文件
+
+- `eflash_ftl/eflash_ftl.h` - FTL 数据结构定义
+- `eflash_ftl/eflash_ftl.c` - FTL 核心实现
+- `eflash_ftl/eflash_ftl_tests_extension.c` - 扩展测试用例
+
+---
+
 ## v1.5.1 (2026-04-28) - 空闲链表扩展递归问题修复
 
 ### 🔧 关键修复
@@ -562,6 +812,7 @@ Physical Page (512 bytes):
 ---
 
 **维护者**: 
+- v1.6.0: AI (Qwen/通义千问) + wangj
 - v1.5.1: AI (Qwen/通义千问) + wangj
 - v1.5.0: AI (Qwen/通义千问) + wangj
 - v1.4.0: AI (Qwen/通义千问) + wangj
@@ -569,4 +820,4 @@ Physical Page (512 bytes):
 - v1.2.0: AI (Qwen/通义千问)
 - v1.1.0: AI (Qwen/通义千问)
 
-**最后更新**: 2026-04-28
+**最后更新**: 2026-04-29
