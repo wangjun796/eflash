@@ -1464,7 +1464,7 @@ int eflash_ftl_read(uint16_t sector_id, uint8_t *data) {
     if (sector_id >= max_logical_pages) {
         FTL_DEBUG("[READ] ERROR: sector_id=%d exceeds max_logical_pages=%u\n", 
                   sector_id, max_logical_pages);
-        return -1;
+        //return -1; //support virtual logical pages
     }
     
     if (FTL->root_page == PAGE_NONE) return -1;
