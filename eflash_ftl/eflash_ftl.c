@@ -389,7 +389,7 @@ static int trace_tree(uint16_t base_root, uint16_t sector, ftl_meta_t *out_meta)
     // If tree is empty, return directly (alt array already initialized to all PAGE_NONE)
     if (current == PAGE_NONE) {
         FTL_DEBUG("[TRACE] Empty tree\n");
-        return 0;
+        return 1;//first write
     }
 
     // Read root node metadata
@@ -2022,19 +2022,31 @@ static bool is_page_still_valid(uint16_t phys_page) {
  */
 uint32_t eflash_ftl_get_real_free_pages(void) {
     uint32_t valid_count = 0;
+    uint32_t stale_count = 0;
+    uint32_t blank_count = 0;
+    uint32_t orphaned_count = 0;
+    uint32_t ecc_error_count = 0;
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
     
     // Scan all physical pages
     for (uint16_t ppn = 0; ppn <= last_user_page; ppn++) {
         if (is_page_still_valid(ppn)) {
             valid_count++;
+        } else {
+            // Count why it's invalid (for debugging)
+            // Note: is_page_still_valid already prints debug info when FTL_DEBUG_ENABLE is on
         }
     }
     
     uint32_t real_free_pages = FTL->total_user_pages - valid_count;
     
-    FTL_DEBUG("[REAL_FREE_PAGES] Scanned %d pages, found %u valid, real_free=%u\n",
-             FTL->total_user_pages, valid_count, real_free_pages);
+    FTL_DEBUG("[REAL_FREE_PAGES] ===== Detailed Analysis =====\n");
+    FTL_DEBUG("[REAL_FREE_PAGES] Total physical pages: %u\n", FTL->total_user_pages);
+    FTL_DEBUG("[REAL_FREE_PAGES] Valid pages (in Radix Tree): %u\n", valid_count);
+    FTL_DEBUG("[REAL_FREE_PAGES] Real free pages: %u\n", real_free_pages);
+    FTL_DEBUG("[REAL_FREE_PAGES] valid_page_count (FTL counter): %u\n", FTL->valid_page_count);
+    FTL_DEBUG("[REAL_FREE_PAGES] Difference: %d\n", (int)valid_count - (int)FTL->valid_page_count);
+    FTL_DEBUG("[REAL_FREE_PAGES] ===============================\n");
     
     return real_free_pages;
 }

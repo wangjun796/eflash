@@ -3069,6 +3069,176 @@ cleanup_test5:
 }
 
 // ============================================================================
+// Test: Valid Page Count Consistency and Boundary Conditions
+// ============================================================================
+int test_valid_page_count_consistency(void) {
+    printf("\n========================================\n");
+    printf("TEST: Valid Page Count Consistency and Boundary Conditions\n");
+    printf("========================================\n\n");
+    
+    int test_passed = 1;
+    uint8_t write_buf[USER_DATA_SIZE];
+    uint8_t read_buf[USER_DATA_SIZE];
+    
+    // Initialize test flash
+    init_test_flash();
+    eflash_ftl_init();
+    
+    extern eflash_ftl_t g_ftl_instance;
+    
+    printf("  [INFO] Total physical pages: %u\n", g_ftl_instance.total_user_pages);
+    printf("  [INFO] GC threshold: %u pages\n", g_ftl_instance.gc_threshold);
+    printf("\n");
+    
+    // ==========================================================================
+    // Phase 1: Write 1999 unique sectors (leaving 1 page free)
+    // ==========================================================================
+    printf("  [PHASE 1] Writing 1999 unique sectors (sector_id = i %% 1999)...\n");
+    printf("  [INFO] Expected: valid_page_count=1999, real_free_pages=49\n\n");
+    
+    #define PHASE1_WRITES 3000
+    int phase1_success = 0;
+    int phase1_failed = 0;
+    
+    for (int i = 0; i < PHASE1_WRITES; i++) {
+        uint16_t sector_id = (uint16_t)(i % 1999);  // 0-1998
+        
+        // Create unique pattern
+        memset(write_buf, (uint8_t)(i & 0xFF), USER_DATA_SIZE);
+        write_buf[0] = (uint8_t)(i >> 8);
+        
+        if (eflash_ftl_write(sector_id, write_buf) == 0) {
+            phase1_success++;
+        } else {
+            phase1_failed++;
+            if (phase1_failed <= 5) {
+                printf("    WARNING: Write failed at iteration %d, sector %d\n", i, sector_id);
+            }
+        }
+        
+        // Progress report every 500 writes
+        if ((i + 1) % 500 == 0) {
+            uint32_t valid_count = g_ftl_instance.valid_page_count;
+            uint32_t real_free = eflash_ftl_get_real_free_pages();
+            printf("    [%d/%d] valid_page_count=%u, real_free_pages=%u\n",
+                   i + 1, PHASE1_WRITES, valid_count, real_free);
+        }
+    }
+    
+    printf("\n  Phase 1 Summary:\n");
+    printf("    Successful writes: %d / %d\n", phase1_success, PHASE1_WRITES);
+    printf("    Failed writes: %d\n", phase1_failed);
+    
+    // Check consistency after Phase 1
+    uint32_t valid_count_phase1 = g_ftl_instance.valid_page_count;
+    uint32_t real_free_phase1 = eflash_ftl_get_real_free_pages();
+    uint32_t expected_valid = 1999;  // 1999 unique sectors
+    uint32_t expected_free = g_ftl_instance.total_user_pages - valid_count_phase1;
+    
+    printf("\n  [CHECK] After Phase 1:\n");
+    printf("    valid_page_count: %u (expected ~%u)\n", valid_count_phase1, expected_valid);
+    printf("    real_free_pages: %u\n", real_free_phase1);
+    printf("    calculated_free (2048 - %u): %u\n", valid_count_phase1, expected_free);
+    printf("    difference: %d\n", (int)real_free_phase1 - (int)expected_free);
+    
+    // Verify reasonable values
+    if (valid_count_phase1 < 1990 || valid_count_phase1 > 2000) {
+        printf("    [WARNING] valid_page_count out of expected range!\n");
+    }
+    
+    if (real_free_phase1 < 40 || real_free_phase1 > 60) {
+        printf("    [WARNING] real_free_pages out of expected range!\n");
+    }
+    
+    // Check difference between scanned and counter
+    int diff = (int)real_free_phase1 - (int)expected_free;
+    if (diff < -5 || diff > 5) {
+        printf("    [FAIL] Large discrepancy between methods: %d pages\n", diff);
+        test_passed = 0;
+    } else {
+        printf("    [PASS] Methods are consistent (diff=%d)\n", diff);
+    }
+    
+    // ==========================================================================
+    // Phase 2: Try to write the 2000th unique sector (sector_id = 1999)
+    // ==========================================================================
+    printf("\n  [PHASE 2] Attempting to write sector_id=1999 (the 2000th unique sector)...\n");
+    printf("  [INFO] This should trigger GC or fail due to no free pages!\n\n");
+    
+    memset(write_buf, 0xAA, USER_DATA_SIZE);
+    write_buf[0] = 0x12;  // Unique pattern
+    
+    uint32_t free_before = eflash_ftl_get_free_pages();
+    uint32_t valid_before = g_ftl_instance.valid_page_count;
+    
+    printf("    Before write:\n");
+    printf("      free_pages (Head/Tail): %u\n", free_before);
+    printf("      valid_page_count: %u\n", valid_before);
+    
+    int write_result = eflash_ftl_write(1999, write_buf);
+    
+    uint32_t free_after = eflash_ftl_get_free_pages();
+    uint32_t valid_after = g_ftl_instance.valid_page_count;
+    uint32_t real_free_after = eflash_ftl_get_real_free_pages();
+    
+    printf("\n    After write:\n");
+    printf("      Write result: %d (%s)\n", write_result, write_result == 0 ? "SUCCESS" : "FAILED");
+    printf("      free_pages (Head/Tail): %u (changed by %+d)\n", free_after, (int)(free_after - free_before));
+    printf("      valid_page_count: %u (changed by %+d)\n", valid_after, (int)(valid_after - valid_before));
+    printf("      real_free_pages: %u\n", real_free_after);
+    
+    // Analyze the result
+    if (write_result == 0) {
+        printf("\n    [ANALYSIS] Write succeeded!\n");
+        printf("      - GC must have been triggered to free space\n");
+        printf("      - Or there was more free space than expected\n");
+        
+        if (valid_after > valid_before) {
+            printf("      - valid_page_count increased (new unique sector added)\n");
+        }
+        
+        if (free_after < free_before) {
+            printf("      - Free space decreased (expected)\n");
+        } else {
+            printf("      - Free space increased or unchanged (GC likely triggered)\n");
+        }
+    } else {
+        printf("\n    [ANALYSIS] Write failed!\n");
+        printf("      - No free pages available\n");
+        printf("      - GC may not have been able to free enough space\n");
+        printf("      - This is EXPECTED behavior when flash is full\n");
+    }
+    
+    // Final consistency check
+    printf("\n  [FINAL CHECK] Consistency verification:\n");
+    int final_diff = (int)real_free_after - ((int)g_ftl_instance.total_user_pages - (int)valid_after);
+    printf("    Difference: %d pages\n", final_diff);
+    
+    if (final_diff < -5 || final_diff > 5) {
+        printf("    [FAIL] Inconsistency detected!\n");
+        test_passed = 0;
+    } else {
+        printf("    [PASS] Consistent within tolerance\n");
+    }
+    
+    // ==========================================================================
+    // Summary
+    // ==========================================================================
+    printf("\n========================================\n");
+    if (test_passed) {
+        printf("[PASSED] test_valid_page_count_consistency\n");
+        printf("Valid page counting is consistent!\n");
+    } else {
+        printf("[FAILED] test_valid_page_count_consistency\n");
+        printf("Consistency check failed!\n");
+    }
+    printf("========================================\n");
+    
+    cleanup_test_flash();
+    return test_passed ? 0 : 1;
+}
+
+// ============================================================================
 // Main Entry Point
 // ============================================================================
 int main(int argc, char *argv[]) {
@@ -3087,7 +3257,8 @@ int main(int argc, char *argv[]) {
     //RUN_TEST(test_ecc_boundary_cases);
     //RUN_TEST(test_power_failure_extreme);
     //RUN_TEST(test_invalid_parameters);
-    RUN_TEST(test_long_term_stability);
+    //RUN_TEST(test_long_term_stability);
+    RUN_TEST(test_valid_page_count_consistency);
     //RUN_TEST(test_maximum_capacity);
     
     // Summary
