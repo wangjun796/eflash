@@ -77,7 +77,7 @@ static void print_to_both(FILE *fp, const char *format, ...) {
  * 
  * Output format:
  *   - Each node shows: PPN (physical page), SID (sector_id), Epoch, Count
- *   - Edges labeled with alt:0 through alt:15
+ *   - Edges labeled with adr:0 through adr:15
  *   - Root node highlighted in yellow
  *   - Can be rendered in any Mermaid viewer
  *   - Also saves to file: root{root_page}_whole_tree.txt
@@ -164,13 +164,13 @@ void eflash_ftl_print_radix_tree_mermaid(eflash_ftl_t *ftl, uint16_t root_page) 
             fprintf(fp, "    class N%d %s;\n", current_ppn, style);
         }
 
-        // Process alt pointers and create edges
+        // Process adr pointers and create edges
         print_to_both(fp, "    %%%% Alt pointers for N%d:\n", current_ppn);
         for (int depth = 0; depth < RADIX_DEPTH; depth++) {
-            uint16_t alt_ppn = meta.alt[depth];
+            uint16_t alt_ppn = meta.adr[depth];
             if (alt_ppn != PAGE_NONE) {
                 // Create labeled edge (use colon instead of brackets for Mermaid compatibility)
-                print_to_both(fp, "    N%d -->|alt:%d| N%d\n", current_ppn, depth, alt_ppn);
+                print_to_both(fp, "    N%d -->|adr:%d| N%d\n", current_ppn, depth, alt_ppn);
 
                 // Add to BFS queue if not visited
                 if (!visited[alt_ppn]) {
@@ -322,19 +322,19 @@ void eflash_ftl_print_radix_tree_mermaid_to_file(eflash_ftl_t *ftl, uint16_t roo
         node->epoch = meta.epoch;
         node->global_count = meta.global_count;
 
-        // Process alt pointers
+        // Process adr pointers
         for (int i = 0; i < RADIX_DEPTH; i++) {
-            if (meta.alt[i] != PAGE_NONE) {
+            if (meta.adr[i] != PAGE_NONE) {
                 // Add edge
                 all_edges[total_edges].from_ppn = current_ppn;
                 all_edges[total_edges].alt_index = i;
-                all_edges[total_edges].to_ppn = meta.alt[i];
+                all_edges[total_edges].to_ppn = meta.adr[i];
                 total_edges++;
 
                 // Add to queue if not visited
-                if (!visited[meta.alt[i]]) {
-                    queue[rear++] = meta.alt[i];
-                    visited[meta.alt[i]] = true;
+                if (!visited[meta.adr[i]]) {
+                    queue[rear++] = meta.adr[i];
+                    visited[meta.adr[i]] = true;
                 }
             }
         }
@@ -415,7 +415,7 @@ void eflash_ftl_print_radix_tree_mermaid_to_file(eflash_ftl_t *ftl, uint16_t roo
             }
             
             if (from_in_range && to_in_range) {
-                fprintf(fp, "    N%d -->|alt:%d| N%d\n", 
+                fprintf(fp, "    N%d -->|adr:%d| N%d\n", 
                         edge->from_ppn, edge->alt_index, edge->to_ppn);
                 edges_in_file++;
             }

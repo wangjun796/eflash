@@ -1086,20 +1086,20 @@ static void print_radix_tree_node(uint16_t page, int depth, int max_depth) {
 
     // Indent based on depth
     for (int i = 0; i < depth; i++) printf("  ");
-    printf("Page %d: sector=%d, gc=%d, alt[", page, meta.sector_id, meta.global_count);
+    printf("Page %d: sector=%d, gc=%d, adr[", page, meta.sector_id, meta.global_count);
 
-    // Show first few alt pointers
+    // Show first few adr pointers
     for (int i = 0; i < 4 && i < RADIX_DEPTH; i++) {
         if (i > 0) printf(", ");
-        printf("%d:%d", i, meta.alt[i]);
+        printf("%d:%d", i, meta.adr[i]);
     }
     if (RADIX_DEPTH > 4) printf(", ...");
     printf("]\n");
 
     // Recursively print children (only non-NONE alts)
     for (int i = depth; i < RADIX_DEPTH && i < depth + 2; i++) {
-        if (meta.alt[i] != PAGE_NONE) {
-            print_radix_tree_node(meta.alt[i], depth + 1, max_depth);
+        if (meta.adr[i] != PAGE_NONE) {
+            print_radix_tree_node(meta.adr[i], depth + 1, max_depth);
         }
     }
 }
@@ -1113,7 +1113,7 @@ static void print_radix_tree(void) {
     printf("===========================\n\n");
 }
 
-// Helper: Verify tree integrity by checking all alt pointers form valid paths
+// Helper: Verify tree integrity by checking all adr pointers form valid paths
 static int verify_tree_integrity(void) {
     if (FTL->root_page == PAGE_NONE) return 0; // Empty tree is valid
 
@@ -1141,18 +1141,18 @@ static int verify_tree_integrity(void) {
             return -1;
         }
 
-        // Check all alt pointers
+        // Check all adr pointers
         for (int i = 0; i < RADIX_DEPTH; i++) {
-            if (meta.alt[i] != PAGE_NONE) {
-                if (meta.alt[i] >= EFLASH_TOTAL_PAGES) {
-                    printf("  [ERROR] Page %d has invalid alt[%d]=%d (out of range)!\n",
-                           current, i, meta.alt[i]);
+            if (meta.adr[i] != PAGE_NONE) {
+                if (meta.adr[i] >= EFLASH_TOTAL_PAGES) {
+                    printf("  [ERROR] Page %d has invalid adr[%d]=%d (out of range)!\n",
+                           current, i, meta.adr[i]);
                     return -1;
                 }
 
-                if (!visited[meta.alt[i]]) {
-                    visited[meta.alt[i]] = true;
-                    queue[tail++] = meta.alt[i];
+                if (!visited[meta.adr[i]]) {
+                    visited[meta.adr[i]] = true;
+                    queue[tail++] = meta.adr[i];
 
                     if (tail >= 1024) {
                         printf("  [WARNING] Tree too large, stopping BFS\n");

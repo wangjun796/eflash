@@ -65,8 +65,8 @@ return 0;  // Update write
 
 not_found:
 // 路径中断（新页写）
-FTL_DEBUG("[TRACE] Not found (NEW WRITE), setting remaining alt pointers to NONE from depth=%d\n", depth);
-// ... 设置剩余的 alt[] 为 PAGE_NONE ...
+FTL_DEBUG("[TRACE] Not found (NEW WRITE), setting remaining adr pointers to NONE from depth=%d\n", depth);
+// ... 设置剩余的 adr[] 为 PAGE_NONE ...
 return 1;  // New write
 ```
 
@@ -768,7 +768,7 @@ User Data Region (464 bytes):
 
 Physical Page (512 bytes):
 ├─ [0 ... 463]   : User Data (上述内容)
-├─ [464 ... 506] : META (43 bytes: sector_id, alt[] 等)
+├─ [464 ... 506] : META (43 bytes: sector_id, adr[] 等)
 └─ [507 ... 511] : ECC (5 bytes: BCH 纠错码)
 ```
 

@@ -31,7 +31,7 @@ static void scan_and_rebuild_ext_headers();
 // Global static FTL instance (no dynamic allocation - suitable for embedded systems)
 eflash_ftl_t g_ftl_instance;
 static bool g_ftl_initialized = false;
-
+ftl_page_t *g_ftl_page_ptr = NULL; // Pointer to FTL page buffer for debugging
 
 /**
  * eflash_get_ftl: Get the global FTL instance
@@ -198,7 +198,7 @@ static int verify_and_correct_page(uint8_t *page_buf) {
 }
 
 // --- Forward Declarations ---
-static bool is_page_still_valid(uint16_t phys_page);
+static bool is_page_still_valid(uint16_t ppn);
 
 // --- Low-level Flash Operation Wrappers ---
 
@@ -372,7 +372,7 @@ static int trace_tree(uint16_t base_root, uint16_t sector, ftl_meta_t *out_meta)
 
     FTL_DEBUG("[TRACE] sector=%d, base_root=%d\n", sector, base_root);
 
-    // Initialize new node's metadata (alt array initialized to all 0xFF/PAGE_NONE)
+    // Initialize new node's metadata (adr array initialized to all 0xFF/PAGE_NONE)
     memset(out_meta, 0xFF, sizeof(ftl_meta_t));
     out_meta->sector_id = sector;
     out_meta->global_count = FTL->next_count++;
@@ -386,7 +386,7 @@ static int trace_tree(uint16_t base_root, uint16_t sector, ftl_meta_t *out_meta)
         out_meta->status = TXN_STATUS_COMMITTED;  // Non-transaction mode commits directly
     }
 
-    // If tree is empty, return directly (alt array already initialized to all PAGE_NONE)
+    // If tree is empty, return directly (adr array already initialized to all PAGE_NONE)
     if (current == PAGE_NONE) {
         FTL_DEBUG("[TRACE] Empty tree\n");
         return 1;//first write
@@ -412,17 +412,17 @@ static int trace_tree(uint16_t base_root, uint16_t sector, ftl_meta_t *out_meta)
         int target_bit = (sector & bit_mask) ? 1 : 0;
         int current_bit = (cur_meta.sector_id & bit_mask) ? 1 : 0;
 
-        FTL_DEBUG("[TRACE] depth=%d, target_bit=%d, current_bit=%d, alt[%d]=%d\n",
-                  depth, target_bit, current_bit, depth, cur_meta.alt[depth]);
+        FTL_DEBUG("[TRACE] depth=%d, target_bit=%d, current_bit=%d, adr[%d]=%d\n",
+                  depth, target_bit, current_bit, depth, cur_meta.adr[depth]);
 
         if (target_bit != current_bit) {
             // Bits differ: divergence occurs
-            // Save current physical page as new node's alt pointer (record divergence point)
-            out_meta->alt[depth] = current;
-            FTL_DEBUG("[TRACE] Diverge: out_meta->alt[%d]=%d\n", depth, current);
+            // Save current physical page as new node's adr pointer (record divergence point)
+            out_meta->adr[depth] = current;
+            FTL_DEBUG("[TRACE] Diverge: out_meta->adr[%d]=%d\n", depth, current);
 
-            // Get current node's alt pointer, continue searching downward
-            uint16_t next_ppn = cur_meta.alt[depth];  // Next Physical Page Number
+            // Get current node's adr pointer, continue searching downward
+            uint16_t next_ppn = cur_meta.adr[depth];  // Next Physical Page Number
             if (next_ppn == PAGE_NONE) {
                 // Path interrupted, jump to not_found to handle remaining depth
                 FTL_DEBUG("[TRACE] Path interrupted at depth=%d\n", depth);
@@ -430,7 +430,7 @@ static int trace_tree(uint16_t base_root, uint16_t sector, ftl_meta_t *out_meta)
                 goto not_found;
             }
 
-            FTL_DEBUG("[TRACE] Follow alt[%d]=%d\n", depth, next_ppn);
+            FTL_DEBUG("[TRACE] Follow adr[%d]=%d\n", depth, next_ppn);
 
             // Read next node's metadata
             if (eflash_hw_read(next_ppn, meta_buf) != 0) {
@@ -445,25 +445,25 @@ static int trace_tree(uint16_t base_root, uint16_t sector, ftl_meta_t *out_meta)
 
             current = next_ppn;
         } else {
-            // Bits same: inherit alt pointer from current node
-            out_meta->alt[depth] = cur_meta.alt[depth];
-            FTL_DEBUG("[TRACE] Same bit, inherit alt[%d]=%d\n", depth, out_meta->alt[depth]);
+            // Bits same: inherit adr pointer from current node
+            out_meta->adr[depth] = cur_meta.adr[depth];
+            FTL_DEBUG("[TRACE] Same bit, inherit adr[%d]=%d\n", depth, out_meta->adr[depth]);
         }
 
         depth++;
     }
 
     // Loop ends normally, meaning matching sector found (or traversed all depths)
-    // new_meta's alt array already fully set during traversal through Diverge and Same bit branches
+    // new_meta's adr array already fully set during traversal through Diverge and Same bit branches
     FTL_DEBUG("[TRACE] Found match after full traversal (UPDATE WRITE)\n");
     return 0;  // Update write
 
 not_found:
-    // Set all alt pointers from current depth to NONE
+    // Set all adr pointers from current depth to NONE
     // Note: depth++ already executed before goto not_found, so start setting from current depth
-    FTL_DEBUG("[TRACE] Not found (NEW WRITE), setting remaining alt pointers to NONE from depth=%d\n", depth);
+    FTL_DEBUG("[TRACE] Not found (NEW WRITE), setting remaining adr pointers to NONE from depth=%d\n", depth);
     while (depth < RADIX_DEPTH) {
-        out_meta->alt[depth] = PAGE_NONE;
+        out_meta->adr[depth] = PAGE_NONE;
         depth++;
     }
 
@@ -646,8 +646,8 @@ uint16_t find_phys_page_by_sector(uint16_t sector) {
         }
         memcpy(&cur_meta, meta_buf + META_OFFSET, META_SIZE);
 
-        FTL_DEBUG("[FIND_PHYS] depth=%d, cur_sector=%d, target=%d, alt[%d]=%d\n",
-                 depth, cur_meta.sector_id, sector, depth, cur_meta.alt[depth]);
+        FTL_DEBUG("[FIND_PHYS] depth=%d, cur_sector=%d, target=%d, adr[%d]=%d\n",
+                 depth, cur_meta.sector_id, sector, depth, cur_meta.adr[depth]);
 
         // Check if current node matches the target sector
         if (cur_meta.sector_id == sector) {
@@ -662,13 +662,13 @@ uint16_t find_phys_page_by_sector(uint16_t sector) {
         int current_bit = (cur_meta.sector_id & bit_mask) ? 1 : 0;
 
         if (target_bit != current_bit) {
-            // Bits differ: need to jump to alt[depth]
-            FTL_DEBUG("[FIND_PHYS] Bit mismatch at depth=%d (target=%d, current=%d), jumping to alt[%d]\n",
+            // Bits differ: need to jump to adr[depth]
+            FTL_DEBUG("[FIND_PHYS] Bit mismatch at depth=%d (target=%d, current=%d), jumping to adr[%d]\n",
                      depth, target_bit, current_bit, depth);
             
-            current = cur_meta.alt[depth];
+            current = cur_meta.adr[depth];
             if (current == PAGE_NONE) {
-                FTL_DEBUG("[FIND_PHYS] Sector %d not found (alt[%d]=NONE)\n", sector, depth);
+                FTL_DEBUG("[FIND_PHYS] Sector %d not found (adr[%d]=NONE)\n", sector, depth);
                 return PAGE_NONE;
             }
             // After jump, continue comparing same depth bit with new node
@@ -1490,7 +1490,7 @@ int eflash_ftl_read(uint16_t sector_id, uint8_t *data) {
         }
         memcpy(&cur_meta, meta_buf + META_OFFSET, META_SIZE);
 
-        // FTL_DEBUG("[READ] depth=%d, cur_sector=%d, alt[depth]=%d\n", depth, cur_meta.sector_id, cur_meta.alt[depth]);
+        // FTL_DEBUG("[READ] depth=%d, cur_sector=%d, adr[depth]=%d\n", depth, cur_meta.sector_id, cur_meta.adr[depth]);
 
         if (cur_meta.sector_id == lpn) {
             // Found matching node, data is in first USER_DATA_SIZE bytes of current page
@@ -1506,10 +1506,10 @@ int eflash_ftl_read(uint16_t sector_id, uint8_t *data) {
         int current_bit = (cur_meta.sector_id & bit_mask) ? 1 : 0;
 
         if (target_bit != current_bit) {
-            // Bits differ: divergence occurs, need to jump to alt pointer
+            // Bits differ: divergence occurs, need to jump to adr pointer
             FTL_DEBUG("[READ] Diverge at depth=%d\n", depth);
             
-            uint16_t next_ppn = cur_meta.alt[depth];
+            uint16_t next_ppn = cur_meta.adr[depth];
             if (next_ppn == PAGE_NONE) {
                 FTL_DEBUG("[READ] ERROR: Path not found at depth=%d\n", depth);
                 return -1;
@@ -1517,7 +1517,7 @@ int eflash_ftl_read(uint16_t sector_id, uint8_t *data) {
             
             // Jump to next physical page and read it immediately
             current = next_ppn;
-            FTL_DEBUG("[READ] Following alt[%d]=%d\n", depth, current);
+            FTL_DEBUG("[READ] Following adr[%d]=%d\n", depth, current);
             
             // Read next node's metadata (same as trace_tree)
             if (eflash_hw_read(current, meta_buf) != 0) {

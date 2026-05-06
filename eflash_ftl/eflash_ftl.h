@@ -89,11 +89,19 @@ typedef struct {
     uint16_t        sector_id;
     uint32_t        global_count;
     uint16_t        epoch;
-    uint16_t        alt[RADIX_DEPTH];
+    uint16_t        adr[RADIX_DEPTH];
     uint16_t        txn_id;
     uint8_t         status;
     uint8_t         ecc[5];
 } ATTRIBUTE_PACKED ftl_meta_t;
+PACKED_STRUCT_END
+
+// --- Complete Page Structure (512 bytes = 464 user data + 48 metadata) ---
+PACKED_STRUCT
+typedef struct {
+    uint8_t         user_data[USER_DATA_SIZE];  // 464 bytes user data
+    ftl_meta_t      meta;                        // 48 bytes metadata
+} ATTRIBUTE_PACKED ftl_page_t;
 PACKED_STRUCT_END
 
 // --- FTL Context ---
