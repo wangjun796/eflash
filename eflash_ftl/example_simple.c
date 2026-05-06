@@ -44,7 +44,7 @@ int main() {
     // Step 2: Initialize FTL
     // ========================================================================
     printf("\n2. Initializing FTL...\n");
-    if (eflash_ftl_init(ftl) != 0) {
+    if (eflash_ftl_init() != 0) {
         printf("   ERROR: FTL initialization failed\n");
         eflash_deinit();
         return -1;
@@ -84,34 +84,34 @@ int main() {
     uint8_t test_data[USER_DATA_SIZE];
     memset(test_data, 0xAA, USER_DATA_SIZE);
     
-    eflash_ftl_txn_begin(ftl);
+    eflash_ftl_txn_begin();
     if (eflash_ftl_write( 100, test_data) != 0) {
         printf("   ERROR: Write failed\n");
-        eflash_ftl_txn_abort(ftl);
+        eflash_ftl_txn_abort();
         eflash_deinit();
         return -1;
     }
     
-    int ret = eflash_ftl_txn_commit(ftl);
+    int ret = eflash_ftl_txn_commit();
     printf("   Commit result (universal): %s\n", ret == 0 ? "SUCCESS" : "FAILED");
     
     // Method 2: Optimized version (requires hardware support for word update)
     printf("\n   --- Method 2: Word Update (Optimized) ---\n");
     memset(test_data, 0xBB, USER_DATA_SIZE);
     
-    eflash_ftl_txn_begin(ftl);
+    eflash_ftl_txn_begin();
     if (eflash_ftl_write( 101, test_data) != 0) {
         printf("   ERROR: Write failed\n");
-        eflash_ftl_txn_abort(ftl);
+        eflash_ftl_txn_abort();
         eflash_deinit();
         return -1;
     }
     
-    ret = eflash_ftl_txn_commit_with_update(ftl);
+    ret = eflash_ftl_txn_commit_with_update();
     if (ret != 0) {
         printf("   Note: Word update not supported, using universal commit instead\n");
         // Fallback to universal commit
-        ret = eflash_ftl_txn_commit(ftl);
+        ret = eflash_ftl_txn_commit();
     }
     printf("   Commit result (optimized): %s\n", ret == 0 ? "SUCCESS" : "FAILED");
     printf("   Note: Word update avoids full page erase, extending Flash lifespan!\n");
@@ -149,7 +149,7 @@ int main() {
     
     // Re-initialize (simulates reboot after power loss)
     eflash_init(flash_file);
-    if (eflash_ftl_init(ftl) != 0) {
+    if (eflash_ftl_init() != 0) {
         printf("   ERROR: FTL re-initialization failed\n");
         return -1;
     }
@@ -172,7 +172,7 @@ int main() {
     // Step 8: Check GC status
     // ========================================================================
     printf("\n8. Garbage Collection Status\n");
-    uint32_t free_pages = eflash_ftl_get_free_pages(ftl);
+    uint32_t free_pages = eflash_ftl_get_free_pages();
     printf("   Free pages: %lu\n", (unsigned long)free_pages);
     
     // ========================================================================

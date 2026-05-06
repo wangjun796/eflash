@@ -205,17 +205,17 @@ void eflash_deinit() {
     }
 }
 
-int eflash_hw_erase(uint16_t page_addr) {
-    if (!flash_mem_map || page_addr >= EFLASH_TOTAL_PAGES) return -1;
+int eflash_hw_erase(uint16_t ppn) {
+    if (!flash_mem_map || ppn >= EFLASH_TOTAL_PAGES) return -1;
     
     // Optimization: Check if page is already all 0xFF, skip erase if so
-    if (eflash_hw_is_blank(page_addr) == 1) {
+    if (eflash_hw_is_blank(ppn) == 1) {
         // Page is already all 0xFF, no need to erase
         return 0;
     }
     
     // Perform erase operation via memory-mapped access
-    uint8_t *page_ptr = flash_mem_map + (page_addr * EFLASH_PAGE_SIZE);
+    uint8_t *page_ptr = flash_mem_map + (ppn * EFLASH_PAGE_SIZE);
     memset(page_ptr, 0xFF, EFLASH_PAGE_SIZE);
     
     // Sync to file immediately
@@ -228,11 +228,11 @@ int eflash_hw_erase(uint16_t page_addr) {
     return 0;
 }
 
-int eflash_hw_prog(uint16_t page_addr, const uint8_t *data) {
-    if (!flash_mem_map || page_addr >= EFLASH_TOTAL_PAGES) return -1;
+int eflash_hw_prog(uint16_t ppn, const uint8_t *data) {
+    if (!flash_mem_map || ppn >= EFLASH_TOTAL_PAGES) return -1;
     
     // Write via memory-mapped access
-    uint8_t *page_ptr = flash_mem_map + (page_addr * EFLASH_PAGE_SIZE);
+    uint8_t *page_ptr = flash_mem_map + (ppn * EFLASH_PAGE_SIZE);
     memcpy(page_ptr, data, EFLASH_PAGE_SIZE);
     
     // Sync to file immediately
@@ -245,11 +245,11 @@ int eflash_hw_prog(uint16_t page_addr, const uint8_t *data) {
     return 0;
 }
 
-int eflash_hw_read(uint16_t page_addr, uint8_t *data) {
-    if (!flash_mem_map || page_addr >= EFLASH_TOTAL_PAGES) return -1;
+int eflash_hw_read(uint16_t ppn, uint8_t *data) {
+    if (!flash_mem_map || ppn >= EFLASH_TOTAL_PAGES) return -1;
     
     // Read via memory-mapped access
-    uint8_t *page_ptr = flash_mem_map + (page_addr * EFLASH_PAGE_SIZE);
+    uint8_t *page_ptr = flash_mem_map + (ppn * EFLASH_PAGE_SIZE);
     memcpy(data, page_ptr, EFLASH_PAGE_SIZE);
     
     return 0;
@@ -258,12 +258,12 @@ int eflash_hw_read(uint16_t page_addr, uint8_t *data) {
 // Simulate rule: Update a 16-bit word at specified offset
 // This function simulates Flash's ability to update specific bytes without full erase
 // It directly writes the new value (bypassing 1->0 rule for simulation purposes)
-int eflash_hw_word_update(uint16_t page_addr, uint16_t offset, uint16_t data) {
-    if (!flash_mem_map || page_addr >= EFLASH_TOTAL_PAGES) return -1;
+int eflash_hw_word_update(uint16_t ppn, uint16_t offset, uint16_t data) {
+    if (!flash_mem_map || ppn >= EFLASH_TOTAL_PAGES) return -1;
     if (offset + 2 > EFLASH_PAGE_SIZE) return -1;
 
     // Write the new value directly in big-endian format via memory-mapped access
-    uint8_t *page_ptr = flash_mem_map + (page_addr * EFLASH_PAGE_SIZE);
+    uint8_t *page_ptr = flash_mem_map + (ppn * EFLASH_PAGE_SIZE);
     page_ptr[offset] = (uint8_t)((data >> 8) & 0xFF);
     page_ptr[offset + 1] = (uint8_t)(data & 0xFF);
     
@@ -278,11 +278,11 @@ int eflash_hw_word_update(uint16_t page_addr, uint16_t offset, uint16_t data) {
 }
 
 // Check if page is all 0xFF (blank page)
-int eflash_hw_is_blank(uint16_t page_addr) {
-    if (!flash_mem_map || page_addr >= EFLASH_TOTAL_PAGES) return -1;
+int eflash_hw_is_blank(uint16_t ppn) {
+    if (!flash_mem_map || ppn >= EFLASH_TOTAL_PAGES) return -1;
 
     // Check via memory-mapped access
-    uint8_t *page_ptr = flash_mem_map + (page_addr * EFLASH_PAGE_SIZE);
+    uint8_t *page_ptr = flash_mem_map + (ppn * EFLASH_PAGE_SIZE);
     
     // Quick check: verify each byte is 0xFF
     for (int i = 0; i < EFLASH_PAGE_SIZE; i++) {

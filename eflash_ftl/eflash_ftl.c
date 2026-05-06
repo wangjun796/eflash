@@ -1950,12 +1950,12 @@ uint32_t eflash_ftl_get_free_pages(void) {
  *   3. Compare: if current mapping == phys_page, it's valid (latest version)
  *              if current mapping != phys_page, it's invalid (stale/obsolete)
  */
-static bool is_page_still_valid(uint16_t phys_page) {
+static bool is_page_still_valid(uint16_t ppn) {
     if (!FTL) return false;
 
     // Optimization 1: Quick check for blank page
-    if (is_blank_page(phys_page)) {
-        FTL_DEBUG("[GC_VALID] Page %d: BLANK (all 0xFF), invalid\n", phys_page);
+    if (is_blank_page(ppn)) {
+        FTL_DEBUG("[GC_VALID] Page %d: BLANK (all 0xFF), invalid\n", ppn);
         return false;
     }
 
@@ -1963,8 +1963,8 @@ static bool is_page_still_valid(uint16_t phys_page) {
     uint8_t meta_buf[EFLASH_PAGE_SIZE];
     ftl_meta_t meta;
     
-    if (eflash_hw_read(phys_page, meta_buf) != 0) {
-        FTL_DEBUG("[GC_VALID] Page %d: read failed, invalid\n", phys_page);
+    if (eflash_hw_read(ppn, meta_buf) != 0) {
+        FTL_DEBUG("[GC_VALID] Page %d: read failed, invalid\n", ppn);
         return false;
     }
 
@@ -1972,18 +1972,18 @@ static bool is_page_still_valid(uint16_t phys_page) {
     int ecc_result = verify_and_correct_page(meta_buf);
     if (ecc_result != 0) {
         FTL_DEBUG("[GC_VALID] Page %d: ECC verification failed (result=%d), invalid\n", 
-                 phys_page, ecc_result);
+                 ppn, ecc_result);
         return false;
     }
 
     memcpy(&meta, meta_buf + META_OFFSET, META_SIZE);
 
     FTL_DEBUG("[GC_VALID] Page %d: sector_id=%d, status=0x%02X, count=%d\n",
-             phys_page, meta.sector_id, meta.status, meta.global_count);
+             ppn, meta.sector_id, meta.status, meta.global_count);
 
     // Check status: must be COMMITTED or READY to be potentially valid
     if (meta.status != TXN_STATUS_COMMITTED && meta.status != TXN_STATUS_READY) {
-        FTL_DEBUG("[GC_VALID] Page %d: invalid status 0x%02X\n", phys_page, meta.status);
+        FTL_DEBUG("[GC_VALID] Page %d: invalid status 0x%02X\n", ppn, meta.status);
         return false;
     }
 
@@ -1993,20 +1993,20 @@ static bool is_page_still_valid(uint16_t phys_page) {
     if (current_ppn == PAGE_NONE) {
         // Sector not found in Radix Tree, this page is orphaned
         FTL_DEBUG("[GC_VALID] Page %d: sector_id=%d NOT FOUND in Radix Tree, invalid\n",
-                 phys_page, meta.sector_id);
+                 ppn, meta.sector_id);
         return false;
     }
 
     // Step 3: Compare current mapping with this physical page
-    if (current_ppn == phys_page) {
+    if (current_ppn == ppn) {
         // This page is still the latest mapping - VALID (needs migration)
         FTL_DEBUG("[GC_VALID] Page %d: VALID (sector_id=%d maps to PPN %d)\n",
-                 phys_page, meta.sector_id, current_ppn);
+                 ppn, meta.sector_id, current_ppn);
         return true;
     } else {
         // This page is stale/obsolete - INVALID (can be erased directly)
         FTL_DEBUG("[GC_VALID] Page %d: STALE (sector_id=%d now maps to PPN %d, not %d)\n",
-                 phys_page, meta.sector_id, current_ppn, phys_page);
+                 ppn, meta.sector_id, current_ppn, ppn);
         return false;
     }
 }
