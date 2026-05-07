@@ -1709,7 +1709,7 @@ int test_gc_round_wrap() {
             verified_count++;
         } else {
             read_errors++;
-            if (read_errors <= 5) {
+            {
                 printf("  [WRAP] WARNING: Read failed for sector %d\n", sector);
             }
         }

@@ -12,7 +12,7 @@
 #endif
 
 // Memory-mapped flash simulation
-static uint8_t *flash_mem_map = NULL;  // Memory-mapped address (base: 0x80000000)
+static uint8_t *flash_mem_map = NULL;  // Memory-mapped address (base: FLASH_FILE_REMAP_ADDR)
 static size_t flash_file_size = 0;
 
 #ifdef _WIN32
@@ -86,18 +86,18 @@ int eflash_init(const char *filename) {
         return -1;
     }
     
-    // Map view of file at base address 0x80000000
+    // Map view of file at base address FLASH_FILE_REMAP_ADDR
     flash_mem_map = (uint8_t *)MapViewOfFileEx(
         flash_mapping_handle,
         FILE_MAP_ALL_ACCESS,
         0,  // High DWORD of offset
         0,  // Low DWORD of offset
         flash_file_size,
-        (LPVOID)0x80000000  // Requested base address
+        (LPVOID)FLASH_FILE_REMAP_ADDR  // Requested base address
     );
     
     if (flash_mem_map == NULL) {
-        printf("[EFLASH_INIT] WARNING: Cannot map to 0x80000000, using system-assigned address\n");
+        printf("[EFLASH_INIT] WARNING: Cannot map to FLASH_FILE_REMAP_ADDR, using system-assigned address\n");
         flash_mem_map = (uint8_t *)MapViewOfFile(
             flash_mapping_handle,
             FILE_MAP_ALL_ACCESS,
@@ -110,7 +110,7 @@ int eflash_init(const char *filename) {
             return -1;
         }
     } else {
-        printf("[EFLASH_INIT] Successfully mapped to base address 0x%08X\n", (unsigned int)0x80000000);
+        printf("[EFLASH_INIT] Successfully mapped to base address 0x%08X\n", (unsigned int)FLASH_FILE_REMAP_ADDR);
     }
     
 #else
@@ -145,9 +145,9 @@ int eflash_init(const char *filename) {
         printf("[EFLASH_INIT] Opening existing file: %s (size=%ld bytes)\n", filename, file_size);
     }
     
-    // Map file to memory at base address 0x80000000
+    // Map file to memory at base address FLASH_FILE_REMAP_ADDR
     flash_mem_map = (uint8_t *)mmap(
-        (void *)0x80000000,  // Requested address
+        (void *)FLASH_FILE_REMAP_ADDR,  // Requested address
         flash_file_size,
         PROT_READ | PROT_WRITE,
         MAP_SHARED,
@@ -156,7 +156,7 @@ int eflash_init(const char *filename) {
     );
     
     if (flash_mem_map == MAP_FAILED) {
-        printf("[EFLASH_INIT] WARNING: Cannot map to 0x80000000, using system-assigned address\n");
+        printf("[EFLASH_INIT] WARNING: Cannot map to FLASH_FILE_REMAP_ADDR, using system-assigned address\n");
         flash_mem_map = (uint8_t *)mmap(
             NULL,  // Let system choose address
             flash_file_size,
@@ -171,7 +171,7 @@ int eflash_init(const char *filename) {
             return -1;
         }
     } else {
-        printf("[EFLASH_INIT] Successfully mapped to base address 0x%08X\n", (unsigned int)0x80000000);
+        printf("[EFLASH_INIT] Successfully mapped to base address 0x%08X\n", (unsigned int)FLASH_FILE_REMAP_ADDR);
     }
 #endif
     

@@ -31,7 +31,7 @@ static void scan_and_rebuild_ext_headers();
 // Global static FTL instance (no dynamic allocation - suitable for embedded systems)
 eflash_ftl_t g_ftl_instance;
 static bool g_ftl_initialized = false;
-ftl_page_t *g_ftl_page_ptr = NULL; // Pointer to FTL page buffer for debugging
+ftl_page_t *g_ftl_page_ptr = (ftl_page_t*)FLASH_FILE_REMAP_ADDR; // Pointer to FTL page buffer for debugging(g_ftl_page_ptr,2048 or g_ftl_page_ptr[ppn])
 
 /**
  * eflash_get_ftl: Get the global FTL instance
@@ -323,7 +323,8 @@ static int write_full_page(uint16_t ppn, const uint8_t *data, const ftl_meta_t *
  */
 static int allocate_physical_page(void) {
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
-
+    //if (last_user_page == FTL->valid_page_count)
+    //    return -1;//full error,1 page reserved for ftl write(continue write in full state will write cover valid old page)
     // Handle wraparound: reset head to 0 WITHOUT triggering GC
     // GC should have been triggered by the caller before allocation
     if (FTL->gc_head_page > last_user_page) {
@@ -688,6 +689,76 @@ uint16_t find_phys_page_by_sector(uint16_t sector) {
     // Reached maximum depth without finding exact match
     FTL_DEBUG("[FIND_PHYS] Sector %d not found after full traversal\n", sector);
     return PAGE_NONE;
+}
+
+/**
+ * find_sector_by_phys_page: Get logical sector ID from physical page number
+ * @ppn: Physical Page Number
+ * @return: Logical sector ID if valid, PAGE_NONE if invalid or error
+ *
+ * Description:
+ *   Directly reads the physical page and extracts sector_id from metadata.
+ *   Returns PAGE_NONE if:
+ *   - Page is blank (all 0xFF)
+ *   - ECC verification fails
+ *   - Read operation fails
+ *
+ * This is the inverse operation of find_phys_page_by_sector().
+ */
+uint16_t find_sector_by_phys_page(uint16_t ppn) {
+    if (!FTL || !FTL->is_initialized) {
+        FTL_DEBUG("[FIND_SECTOR] ERROR: FTL not initialized\n");
+        return PAGE_NONE;
+    }
+
+    // Validate physical page number range
+    uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
+    if (ppn > last_user_page) {
+        FTL_DEBUG("[FIND_SECTOR] ERROR: Invalid PPN %d (max=%d)\n", ppn, last_user_page);
+        return PAGE_NONE;
+    }
+
+    uint8_t page_buf[EFLASH_PAGE_SIZE];
+    ftl_meta_t meta;
+
+    // Step 1: Read physical page
+    if (eflash_hw_read(ppn, page_buf) != 0) {
+        FTL_DEBUG("[FIND_SECTOR] ERROR: Failed to read PPN %d\n", ppn);
+        return PAGE_NONE;
+    }
+
+    // Step 2: Check if page is blank (all 0xFF)
+    bool is_blank = true;
+    for (int i = 0; i < EFLASH_PAGE_SIZE; i++) {
+        if (page_buf[i] != 0xFF) {
+            is_blank = false;
+            break;
+        }
+    }
+    if (is_blank) {
+        FTL_DEBUG("[FIND_SECTOR] PPN %d is blank (no valid data)\n", ppn);
+        return PAGE_NONE;
+    }
+
+    // Step 3: Verify and correct ECC
+    if (verify_and_correct_page(page_buf) != 0) {
+        FTL_DEBUG("[FIND_SECTOR] ERROR: ECC verification failed for PPN %d\n", ppn);
+        return PAGE_NONE;
+    }
+
+    // Step 4: Extract metadata
+    memcpy(&meta, page_buf + META_OFFSET, META_SIZE);
+
+    // Step 5: Validate sector_id (PAGE_NONE = 0xFFFF is invalid)
+    if (meta.sector_id == PAGE_NONE) {
+        FTL_DEBUG("[FIND_SECTOR] WARNING: Invalid sector_id PAGE_NONE in PPN %d\n", ppn);
+        return PAGE_NONE;
+    }
+
+    FTL_DEBUG("[FIND_SECTOR] PPN %d -> Sector %d (gc_count=%d)\n", 
+             ppn, meta.sector_id, meta.global_count);
+
+    return meta.sector_id;
 }
 
 /**
@@ -1462,6 +1533,8 @@ int eflash_ftl_write(uint16_t sector_id, const uint8_t *data) {
     uint16_t old_phys_page = (uint16_t)((trace_result == EFLASH_TOTAL_PAGES) ? 0 : trace_result);  // For update write, this is the old page number
     
     if (is_new_write) {
+        if ((EFLASH_TOTAL_PAGES - 1)  == FTL->valid_page_count)
+            return -1;
         FTL_DEBUG("[WRITE] Write type: NEW (sector_id=%d not in tree)\n", sector_id);
     } else {
         FTL_DEBUG("[WRITE] Write type: UPDATE (sector_id=%d found at page %d)\n", sector_id, old_phys_page);
