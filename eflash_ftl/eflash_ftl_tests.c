@@ -40,18 +40,18 @@
 // Then include public API header
 #include "eflash.h"
 
-// --- 强制断言宏（不受NDEBUG影响）---
-// 在Release模式下，标准assert()会被禁用，导致测试失败时不退出而卡死
-// 使用此宏确保任何模式下都能正确终止
-#define FORCE_ASSERT(expr, msg) do { \
-    if (!(expr)) { \
-        fprintf(stderr, "\n[ASSERTION FAILED] %s\n", msg); \
-        fprintf(stderr, "  File: %s, Line: %d\n", __FILE__, __LINE__); \
-        fprintf(stderr, "  Expression: %s\n\n", #expr); \
-        fflush(stderr); \
-        abort(); \
-    } \
-} while(0)
+// // --- 强制断言宏（不受NDEBUG影响）---
+// // 在Release模式下，标准assert()会被禁用，导致测试失败时不退出而卡死
+// // 使用此宏确保任何模式下都能正确终止
+// #define FORCE_ASSERT(expr, msg) do { \
+//     if (!(expr)) { \
+//         fprintf(stderr, "\n[ASSERTION FAILED] %s\n", msg); \
+//         fprintf(stderr, "  File: %s, Line: %d\n", __FILE__, __LINE__); \
+//         fprintf(stderr, "  Expression: %s\n\n", #expr); \
+//         fflush(stderr); \
+//         abort(); \
+//     } \
+// } while(0)
 
 // --- BCH ECC 包装函数（用于测试）---
 
@@ -109,19 +109,6 @@ static int bch_decode(const struct bch_def *bch, uint8_t *data, size_t len, cons
 
 // Test macros (same as in original tests)
 #define TEST(name) printf("  [TEST] %s...\n", #name)
-#define ASSERT(cond, msg) do { \
-    if (!(cond)) { \
-        printf("  [FAIL] Assertion failed: %s\n", msg); \
-        return -1; \
-    } \
-} while(0)
-
-#define ASSERT_FMT(cond, fmt, ...) do { \
-    if (!(cond)) { \
-        printf("  [FAIL] Assertion failed: " fmt "\n", ##__VA_ARGS__); \
-        return -1; \
-    } \
-} while(0)
 
 #define PASS() do { \
     printf("  [PASS]\n"); \

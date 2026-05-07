@@ -181,4 +181,31 @@ void eflash_ftl_print_radix_tree_mermaid_to_file(eflash_ftl_t *ftl, uint16_t roo
 extern eflash_ftl_t g_ftl_instance;
 #define FTL (&g_ftl_instance)
 
+#define ASSERT(cond, msg) do { \
+    if (!(cond)) { \
+        printf("  [FAIL] Assertion failed: %s\n", msg); \
+        while(1); \
+    } \
+} while(0)
+
+#define ASSERT_FMT(cond, fmt, ...) do { \
+    if (!(cond)) { \
+        printf("  [FAIL] Assertion failed: " fmt "\n", ##__VA_ARGS__); \
+        while(1); \
+    } \
+} while(0)
+
+// --- Force Assert Macro (Unaffected by NDEBUG) ---
+// In Release mode, standard assert() is disabled, causing tests to hang on failure
+// Use this macro to ensure proper termination in all build modes
+#define FORCE_ASSERT(expr, msg) do { \
+    if (!(expr)) { \
+        fprintf(stderr, "\n[ASSERTION FAILED] %s\n", msg); \
+        fprintf(stderr, "  File: %s, Line: %d\n", __FILE__, __LINE__); \
+        fprintf(stderr, "  Expression: %s\n\n", #expr); \
+        fflush(stderr); \
+        abort(); \
+    } \
+} while(0)
+
 #endif

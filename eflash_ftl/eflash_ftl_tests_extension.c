@@ -67,18 +67,20 @@
 #include "eflash.h"
 
 // --- 强制断言宏（不受NDEBUG影响）---
-#define FORCE_ASSERT(expr, msg) do { \
-    if (!(expr)) { \
-        fprintf(stderr, "\n[ASSERTION FAILED] %s\n", msg); \
-        fprintf(stderr, "  File: %s, Line: %d\n", __FILE__, __LINE__); \
-        fprintf(stderr, "  Expression: %s\n\n", #expr); \
-        fflush(stderr); \
-        while(1);       \
-        exit(EXIT_FAILURE); \
-    } \
-} while(0)
+// 在Release模式下，标准assert()会被禁用，导致测试失败时不退出而卡死
+// 使用此宏确保任何模式下都能正确终止
+// #define FORCE_ASSERT(expr, msg) do { \
+//     if (!(expr)) { \
+//         fprintf(stderr, "\n[ASSERTION FAILED] %s\n", msg); \
+//         fprintf(stderr, "  File: %s, Line: %d\n", __FILE__, __LINE__); \
+//         fprintf(stderr, "  Expression: %s\n\n", #expr); \
+//         fflush(stderr); \
+//         while(1);       \
+//         exit(EXIT_FAILURE); \
+//     } \
+// } while(0)
 
-#define ASSERT FORCE_ASSERT
+// #define ASSERT FORCE_ASSERT
 
 // Test flash file name
 #define TEST_FLASH_FILE "test_flash_extension.bin"
