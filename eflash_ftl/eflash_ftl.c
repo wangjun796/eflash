@@ -361,8 +361,8 @@ static inline int get_bit(uint16_t sector, int depth) {
 // Corrected trace_tree: remove new_phys parameter
 // Responsibility: Only build metadata template for new node, do not insert any physical page
 // Returns: 
-//   1 = New write (sector_id not found in tree)
-//   0 = Update write (sector_id exists in tree)
+//   >0 = Update write: returns the physical page number of the found node
+//   0  = New write: sector_id not found in tree
 //  <0 = Error
 static int trace_tree(uint16_t base_root, uint16_t sector, ftl_meta_t *out_meta) {
     uint8_t meta_buf[EFLASH_PAGE_SIZE];
@@ -389,7 +389,7 @@ static int trace_tree(uint16_t base_root, uint16_t sector, ftl_meta_t *out_meta)
     // If tree is empty, return directly (adr array already initialized to all PAGE_NONE)
     if (current == PAGE_NONE) {
         FTL_DEBUG("[TRACE] Empty tree\n");
-        return 1;//first write
+        return 0;  // New write
     }
 
     // Read root node metadata
@@ -455,8 +455,13 @@ static int trace_tree(uint16_t base_root, uint16_t sector, ftl_meta_t *out_meta)
 
     // Loop ends normally, meaning matching sector found (or traversed all depths)
     // new_meta's adr array already fully set during traversal through Diverge and Same bit branches
-    FTL_DEBUG("[TRACE] Found match after full traversal (UPDATE WRITE)\n");
-    return 0;  // Update write
+    FTL_DEBUG("[TRACE] Found match after full traversal at page %d (UPDATE WRITE)\n", current);
+    if (current != 0){
+        return current;  // Update write: return the physical page number of found node
+    } else{
+        return EFLASH_TOTAL_PAGES;  // Update write: return the physical page number of found node
+    }
+    
 
 not_found:
     // Set all adr pointers from current depth to NONE
@@ -467,7 +472,7 @@ not_found:
         depth++;
     }
 
-    return 1;  // New write
+    return 0;  // New write
 }
 
 // --- Object Header Management Core Logic ---
@@ -1123,10 +1128,51 @@ int eflash_ftl_init(void) {
     FTL_DEBUG("[INIT] Scan complete. Root page: %d, next_count: %d, epoch: %d\n",
              FTL->root_page, FTL->next_count, FTL->current_epoch);
 
-    // Step 2.5: Initialize valid page counter by scanning all physical pages
-    // This must be done AFTER root_page is found, because is_page_still_valid() depends on Radix Tree
+    // Step 2.5: Recover Head/Tail pointers and initialize valid page counter
+    // This must be done AFTER root_page is found
     if (FTL->root_page != PAGE_NONE) {
-        // Recovery mode: count valid pages by scanning
+        // Recovery mode: reconstruct Head/Tail pointers from physical state
+        
+        // Strategy: 
+        // 1. Set Head = Tail = root_page + 1 (next page after root)
+        // 2. Scan forward from Tail to find first non-blank page
+        // 3. That position is the recovered Tail (boundary between used and free space)
+        
+        uint16_t initial_tail = FTL->root_page + 1;
+        if (initial_tail > last_user_page) {
+            initial_tail = 0;  // Wrap around
+        }
+        ASSERT(!is_page_still_valid(initial_tail),"head should be invalid");
+        FTL_DEBUG("[INIT] Starting Head/Tail recovery from page %d\n", initial_tail);
+        
+        // Scan forward to find the boundary between used and free space
+        uint16_t recovered_tail = initial_tail;
+        uint32_t scan_count = 0;
+        
+        while (scan_count < FTL->total_user_pages) {
+            if (is_blank_page(recovered_tail)) {
+                // This page is blank (all 0xFF), continue scanning
+                recovered_tail++;
+                if (recovered_tail > last_user_page) {
+                    recovered_tail = 0;  // Wrap around
+                }
+                scan_count++;
+            } else {
+                // Found first non-blank page, this is the boundary
+                FTL_DEBUG("[INIT] Found non-blank page at %d after scanning %u pages\n", 
+                         recovered_tail, scan_count);
+                break;
+            }
+        }
+        
+        // Set Head and Tail to the recovered position
+        FTL->gc_head_page = initial_tail;
+        FTL->gc_tail_page = recovered_tail;
+        
+        FTL_DEBUG("[INIT] Recovered Head/Tail pointers: head=%d, tail=%d\n",
+                 FTL->gc_head_page, FTL->gc_tail_page);
+        
+        // Now count valid pages using the recovered state
         uint32_t valid_count = 0;
         for (uint16_t ppn = 0; ppn <= last_user_page; ppn++) {
             if (is_page_still_valid(ppn)) {
@@ -1135,6 +1181,7 @@ int eflash_ftl_init(void) {
         }
         FTL->valid_page_count = valid_count;
         FTL_DEBUG("[INIT] Valid page count initialized: %u (by scanning)\n", valid_count);
+        FTL_DEBUG("[INIT] Free pages calculated: %u\n", eflash_ftl_get_free_pages());
     } else {
         // First power-on: no valid pages yet
         FTL->valid_page_count = 0;
@@ -1411,8 +1458,14 @@ int eflash_ftl_write(uint16_t sector_id, const uint8_t *data) {
         return -1;
     }
 
-    bool is_new_write = (trace_result == 1);
-    FTL_DEBUG("[WRITE] Write type: %s\n", is_new_write ? "NEW" : "UPDATE");
+    bool is_new_write = (trace_result == 0);
+    uint16_t old_phys_page = (uint16_t)((trace_result == EFLASH_TOTAL_PAGES) ? 0 : trace_result);  // For update write, this is the old page number
+    
+    if (is_new_write) {
+        FTL_DEBUG("[WRITE] Write type: NEW (sector_id=%d not in tree)\n", sector_id);
+    } else {
+        FTL_DEBUG("[WRITE] Write type: UPDATE (sector_id=%d found at page %d)\n", sector_id, old_phys_page);
+    }
 
     // Step 2: Allocate physical page using Head/Tail mechanism
     // Note: GC has already been triggered above, so this should not trigger GC again
@@ -1444,6 +1497,12 @@ int eflash_ftl_write(uint16_t sector_id, const uint8_t *data) {
     if (is_new_write) {
         FTL->valid_page_count++;
         FTL_DEBUG("[WRITE] New sector added, valid_page_count=%u\n", FTL->valid_page_count);
+    }
+    else {
+        if (FTL->active_txn_id == TXN_ID_NONE){
+            if (old_phys_page != 0)
+                ;// eflash_hw_erase(old_phys_page);//TODO:not erase page in gc 
+        }            
     }
 
     FTL_DEBUG("[WRITE] Success: root_page=%d, next_count=%d\n",
@@ -2127,7 +2186,7 @@ static int gc_migrate_page(uint16_t src_page) {
  * gc_collect_one_page: Collect (reclaim) a single physical page during GC
  * @FTL: FTL instance
  * @ppn: Physical Page Number to collect
- * @return: 0 on success, -1 on failure
+ * @return: 0/1 on success(0 migrate,1 collect invalid page), -1 on failure
  *
  * Description:
  *   1. Check if the page is still valid (not stale)
@@ -2163,7 +2222,7 @@ static int gc_collect_one_page(uint16_t ppn) {
     }
 
     FTL_DEBUG("[GC_COLLECT] Erased physical page %d\n", ppn);
-    return 0;
+    return (valid? 0 : 1);
 }
 
 /**
@@ -2200,7 +2259,8 @@ int eflash_ftl_gc_collect(uint16_t pages_to_free) {
     // Traverse entire physical page space at most twice to prevent infinite loop
     // Reason for *2: In worst case, tail may need to wrap around and scan all pages again
     // to ensure we don't miss any reclaimable pages or get stuck in a cycle
-    uint16_t max_iterations = EFLASH_TOTAL_PAGES * 2;
+    //uint16_t max_iterations = EFLASH_TOTAL_PAGES * 2;
+    uint16_t max_iterations = EFLASH_TOTAL_PAGES * 1;
     uint16_t iterations = 0;
 
     while (pages_freed < pages_to_free && iterations < max_iterations) {
@@ -2216,9 +2276,11 @@ int eflash_ftl_gc_collect(uint16_t pages_to_free) {
         // Execute single page reclamation (all physical pages are valid for GC)
         int ret = gc_collect_one_page(current_page);
 
-        if (ret == 0) {
+        if (ret >= 0) {
             // ? Successfully reclaimed, move tail pointer
-            pages_freed++;
+            
+            // pages_freed+=ret;
+            pages_freed+=1;
 
             FTL->gc_tail_page++;
             if (FTL->gc_tail_page > last_user_page) {
@@ -2226,14 +2288,14 @@ int eflash_ftl_gc_collect(uint16_t pages_to_free) {
                 FTL_DEBUG("[GC] Round-wrap: tail_page reset to 0\n");
             }
         } else {
-            // ? Reclamation failed, but still move tail to avoid infinite loop
-            FTL_DEBUG("[GC] WARNING: Failed to collect page %d, skipping\n", current_page);
-
-            FTL->gc_tail_page++;
-            if (FTL->gc_tail_page > last_user_page) {
-                FTL->gc_tail_page = 0;  // Wrap around to PPN 0
-                FTL_DEBUG("[GC] Round-wrap on error: tail_page reset to 0\n");
-            }
+            // ✗ Reclamation failed - CRITICAL ERROR!
+            // DO NOT move tail pointer! This indicates a hardware failure or serious error.
+            // Moving tail would skip this page permanently and cause data inconsistency.
+            FTL_DEBUG("[GC] CRITICAL ERROR: Failed to collect page %d\n", current_page);
+            FTL_DEBUG("[GC] Stopping GC to prevent data corruption\n");
+            
+            // Stop GC immediately - do not advance tail on failure
+            break;
         }
 
         iterations++;
@@ -2251,6 +2313,65 @@ int eflash_ftl_gc_collect(uint16_t pages_to_free) {
 #endif
 
     return pages_freed;
+}
+
+/**
+ * calculate_gc_pages_to_reclaim: Calculate how many pages GC should reclaim
+ * @free_pages: Current number of free pages
+ * @out_pages_needed: Output parameter for calculated pages to reclaim
+ * @return: 0 = no GC needed, 1 = GC needed with calculated pages
+ *
+ * This function implements the GC reclamation strategy.
+ * It can be easily modified or extended with additional parameters.
+ */
+static int calculate_gc_pages_to_reclaim(uint32_t free_pages, uint16_t *out_pages_needed) {
+    if (!out_pages_needed) return -1;
+    
+    // Check if GC is needed
+    if (free_pages >= FTL->gc_threshold) {
+        // Sufficient space, no GC needed
+        return 0;
+    }
+    
+    FTL_DEBUG("[GC_TRIGGER] Triggering GC! Free space below threshold\n");
+    
+    // Calculate pages to reclaim with dynamic adjustment
+    // Strategy: Avoid excessive migration when space is critically low
+    uint32_t target_free_pages = FTL->total_user_pages / 10;  // Target: 10% free
+    uint32_t pages_to_reclaim = (target_free_pages > free_pages) ?
+                                (target_free_pages - free_pages) : 10;
+    
+    // CRITICAL: Limit migration to avoid write amplification
+    // When space is critically low, only reclaim a small batch
+    uint16_t max_migration_batch;
+    
+    // Adaptive batch size based on urgency
+    if (free_pages < FTL->total_user_pages / 20) {
+        // Critical: Less than 5% free - use smaller batches to maintain responsiveness
+        max_migration_batch = FTL->total_user_pages / 100;  // 1% of total
+        FTL_DEBUG("[GC_TRIGGER] CRITICAL space level!");
+    } else if (free_pages < FTL->total_user_pages / 10) {
+        // Warning: 5-10% free - moderate batch size
+        max_migration_batch = FTL->total_user_pages / 50;   // 2% of total
+        FTL_DEBUG("[GC_TRIGGER] WARNING space level");
+    } else {
+        // Normal: Above 10% - can use larger batches for efficiency
+        max_migration_batch = FTL->total_user_pages / 30;   // ~3.3% of total
+        FTL_DEBUG("[GC_TRIGGER] Normal space level");
+    }
+    
+    // Ensure minimum batch size for effectiveness
+    if (max_migration_batch < 10) max_migration_batch = 10;
+    // Cap maximum to prevent excessive migration
+    if (max_migration_batch > 100) max_migration_batch = 100;
+    
+    *out_pages_needed = (uint16_t)(pages_to_reclaim > max_migration_batch ? 
+                                   max_migration_batch : pages_to_reclaim);
+    
+    FTL_DEBUG("[GC_TRIGGER] Space critical: free=%u, target=%u, reclaim=%u, limited to %u\n",
+              free_pages, target_free_pages, pages_to_reclaim, *out_pages_needed);
+    
+    return 1;  // GC needed
 }
 
 /**
@@ -2282,54 +2403,20 @@ int eflash_ftl_gc_trigger(void) {
     FTL_DEBUG("[GC_TRIGGER] Checking GC: free_pages=%d, threshold=%d\n",
               free_pages, FTL->gc_threshold);
 
-    if (free_pages >= FTL->gc_threshold) {
+    // Use extracted function to calculate pages to reclaim
+    uint16_t pages_needed = 0;
+    int gc_needed = calculate_gc_pages_to_reclaim(free_pages, &pages_needed);
+    
+    if (!gc_needed) {
         // Sufficient space, no GC needed
         return 0;
     }
-
-    FTL_DEBUG("[GC_TRIGGER] Triggering GC! Free space below threshold\n");
-
-    // Calculate pages to reclaim with dynamic adjustment
-    // Strategy: Avoid excessive migration when space is critically low
-    uint32_t target_free_pages = FTL->total_user_pages / 10;  // Target: 10% free
-    uint32_t pages_to_reclaim = (target_free_pages > free_pages) ?
-                                (target_free_pages - free_pages) : 10;
-    
-    // CRITICAL: Limit migration to avoid write amplification
-    // When space is critically low, only reclaim a small batch
-    uint16_t max_migration_batch;
-    
-    // Adaptive batch size based on urgency
-    if (free_pages < FTL->total_user_pages / 20) {
-        // Critical: Less than 5% free - use smaller batches to maintain responsiveness
-        max_migration_batch = FTL->total_user_pages / 100;  // 1% of total
-        FTL_DEBUG("[GC_TRIGGER] CRITICAL space level!");
-    } else if (free_pages < FTL->total_user_pages / 10) {
-        // Warning: 5-10% free - moderate batch size
-        max_migration_batch = FTL->total_user_pages / 50;   // 2% of total
-        FTL_DEBUG("[GC_TRIGGER] WARNING space level");
-    } else {
-        // Normal: Above 10% - can use larger batches for efficiency
-        max_migration_batch = FTL->total_user_pages / 30;   // ~3.3% of total
-        FTL_DEBUG("[GC_TRIGGER] Normal space level");
-    }
-    
-    // Ensure minimum batch size for effectiveness
-    if (max_migration_batch < 10) max_migration_batch = 10;
-    // Cap maximum to prevent excessive migration
-    if (max_migration_batch > 100) max_migration_batch = 100;
-    
-    uint16_t pages_needed = (uint16_t)(pages_to_reclaim > max_migration_batch ? 
-                                       max_migration_batch : pages_to_reclaim);
-    
-    FTL_DEBUG("[GC_TRIGGER] Space critical: free=%u, target=%u, reclaim=%u, limited to %u\n",
-              free_pages, target_free_pages, pages_to_reclaim, pages_needed);
 
     // Set GC flag
     FTL->gc_in_progress = true;
 
     // Execute GC
-    int result = eflash_ftl_gc_collect( pages_needed);
+    int result = eflash_ftl_gc_collect(pages_needed);
 
     // Clear GC flag
     FTL->gc_in_progress = false;
