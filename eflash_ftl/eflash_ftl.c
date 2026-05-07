@@ -1971,7 +1971,7 @@ uint32_t eflash_ftl_get_free_pages(void) {
         // In our design, we trigger GC before flash gets completely full,
         // so head==tail typically means "empty" (all pages available)
         // However, to be safe, we check next_count to see if any writes occurred
-        if (FTL->next_count == 0) {
+        if (FTL->next_count == 1) {
             // No writes yet, flash is completely empty
             free_pages = total_pages;
         } else {
@@ -2200,6 +2200,15 @@ static int gc_collect_one_page(uint16_t ppn) {
     bool valid = is_page_still_valid(ppn);
 
     if (valid) {
+        //if head == tail directly move pointers
+        if (FTL->gc_head_page == FTL->gc_tail_page) {
+            FTL->gc_head_page++;
+            if (FTL->gc_head_page == EFLASH_TOTAL_PAGES)
+            {
+                FTL->gc_head_page = 0;
+            }
+            return 0;
+        }
         FTL_DEBUG("[GC_COLLECT] Page %d is VALID, migrating...\n", ppn);
 
         // 2. Migrate valid page
