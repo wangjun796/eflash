@@ -86,11 +86,11 @@ PACKED_STRUCT_END
 // --- Metadata Structure (48 bytes) ---
 PACKED_STRUCT
 typedef struct {
-    uint16_t        sector_id;
     uint32_t        global_count;
+    uint16_t        sector_id;
     uint16_t        epoch;
-    uint16_t        adr[RADIX_DEPTH];
     uint16_t        txn_id;
+    uint16_t        adr[RADIX_DEPTH];
     uint8_t         status;
     uint8_t         ecc[5];
 } ATTRIBUTE_PACKED ftl_meta_t;
@@ -167,6 +167,10 @@ uint32_t eflash_ftl_get_real_free_pages(void); // Get REAL free pages by scannin
 void eflash_ftl_print_radix_tree_mermaid(eflash_ftl_t *ftl, uint16_t root_page); // Print radix tree in Mermaid format to stdout
 void eflash_ftl_print_radix_tree_mermaid_to_file(eflash_ftl_t *ftl, uint16_t root_page); // Save radix tree to file
 #endif
+
+// --- Helper Functions (internal use, exposed for testing) ---
+uint16_t find_phys_page_by_sector(uint16_t sector);  // Find physical page by logical sector ID
+uint16_t find_sector_by_phys_page(uint16_t ppn);     // Find logical sector ID by physical page number
 
 // --- Global FTL Instance ---
 extern eflash_ftl_t g_ftl_instance;

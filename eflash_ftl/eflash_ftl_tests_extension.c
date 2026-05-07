@@ -3260,8 +3260,8 @@ int main(int argc, char *argv[]) {
     //RUN_TEST(test_power_failure_extreme);
     //RUN_TEST(test_invalid_parameters);
     //RUN_TEST(test_long_term_stability);
-    RUN_TEST(test_valid_page_count_consistency);
-    //RUN_TEST(test_maximum_capacity);
+    //RUN_TEST(test_valid_page_count_consistency);
+    RUN_TEST(test_maximum_capacity);
     
     // Summary
     printf("\n========================================\n");

@@ -6,7 +6,7 @@
 
 #define EFLASH_PAGE_SIZE    512
 #define EFLASH_TOTAL_PAGES  2048 // 1MB / 512B (reduced from 8192 to 2048 to speed up testing)
-
+#define FLASH_FILE_REMAP_ADDR 0x80000000
 // Initialize simulated Flash file
 int eflash_init(const char *filename);
 
