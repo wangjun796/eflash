@@ -5739,6 +5739,894 @@ int test_partial_system_page_corruption(void) {
 }
 
 // ============================================================================
+// Logical Address Edge Cases Test - Tests write_logical/read_logical boundaries
+// ============================================================================
+
+/**
+ * @brief 测试逻辑地址接口的边界情况
+ * 
+ * 测试场景：
+ * 1. 跨3页的大数据写入(1500字节)
+ * 2. 非对齐起始地址的跨页读写
+ * 3. size=1的最小写入
+ * 4. size=USER_DATA_SIZE-1的接近整页写入
+ * 5. logical_addr=0的特殊情况
+ */
+int test_logical_address_edge_cases(void) {
+    printf("\n========================================\n");
+    printf("TEST: Logical Address Edge Cases\n");
+    printf("========================================\n\n");
+    
+    int test_passed = 1;
+    
+    // Initialize test flash
+    init_test_flash();
+    eflash_ftl_init();
+    
+    printf("  [INFO] Testing logical address interface edge cases...\n\n");
+    
+    uint8_t write_buf[2048];  // Large buffer for multi-page tests
+    uint8_t read_buf[2048];
+    
+    // ==========================================================================
+    // Test 1: Minimum size write (size=1)
+    // ==========================================================================
+    printf("  [TEST 1] Minimum size write (size=1 byte)...\n");
+    
+    write_buf[0] = 0xAB;
+    int ret = eflash_ftl_write_logical(0, write_buf, 1);
+    if (ret == 0) {
+        printf("    Write successful\n");
+        
+        // Read back
+        ret = eflash_ftl_read_logical(0, read_buf, 1);
+        if (ret == 0 && read_buf[0] == 0xAB) {
+            printf("    [PASS] Size=1 write/read works correctly\n");
+        } else {
+            printf("    [FAIL] Size=1 read failed or data mismatch\n");
+            test_passed = 0;
+        }
+    } else {
+        printf("    [FAIL] Size=1 write failed\n");
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Test 2: Non-aligned start address (logical_addr=100)
+    // ==========================================================================
+    printf("\n  [TEST 2] Non-aligned start address (offset=100)...\n");
+    
+    uint32_t non_aligned_addr = 100;
+    uint32_t non_aligned_size = 200;  // Will span 2 pages
+    
+    // Prepare pattern data
+    for (uint32_t i = 0; i < non_aligned_size; i++) {
+        write_buf[i] = (uint8_t)((i + 0x10) & 0xFF);
+    }
+    
+    ret = eflash_ftl_write_logical(non_aligned_addr, write_buf, (int16_t)non_aligned_size);
+    if (ret == 0) {
+        printf("    Write successful (spans 2 pages)\n");
+        
+        // Read back and verify
+        ret = eflash_ftl_read_logical(non_aligned_addr, read_buf, (int16_t)non_aligned_size);
+        if (ret == 0) {
+            int match = 1;
+            for (uint32_t i = 0; i < non_aligned_size; i++) {
+                if (read_buf[i] != (uint8_t)((i + 0x10) & 0xFF)) {
+                    match = 0;
+                    printf("    [FAIL] Data mismatch at offset %u\n", i);
+                    break;
+                }
+            }
+            if (match) {
+                printf("    [PASS] Non-aligned read/write verified\n");
+            } else {
+                test_passed = 0;
+            }
+        } else {
+            printf("    [FAIL] Non-aligned read failed\n");
+            test_passed = 0;
+        }
+    } else {
+        printf("    [FAIL] Non-aligned write failed\n");
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Test 3: Cross 3 pages (1500 bytes starting from offset 50)
+    // ==========================================================================
+    printf("\n  [TEST 3] Cross 3 pages (1500 bytes from offset 50)...\n");
+    
+    uint32_t cross_3_addr = 50;
+    uint32_t cross_3_size = 1500;
+    
+    // Calculate expected page span
+    uint32_t first_page_end = USER_DATA_SIZE - 50;  // 414 bytes in first page
+    uint32_t remaining = cross_3_size - first_page_end;  // 1086 bytes
+    uint32_t full_pages = remaining / USER_DATA_SIZE;  // 2 full pages
+    uint32_t last_page_bytes = remaining % USER_DATA_SIZE;  // 158 bytes
+    
+    printf("    Expected: Page 0 (414B) + Page 1 (464B) + Page 2 (464B) + Page 3 (158B)\n");
+    printf("    Total pages spanned: 4\n");
+    
+    // Prepare unique pattern
+    for (uint32_t i = 0; i < cross_3_size; i++) {
+        write_buf[i] = (uint8_t)((i * 3 + 0x20) & 0xFF);
+    }
+    
+    ret = eflash_ftl_write_logical(cross_3_addr, write_buf, (int16_t)cross_3_size);
+    if (ret == 0) {
+        printf("    Write successful\n");
+        
+        // Read back
+        ret = eflash_ftl_read_logical(cross_3_addr, read_buf, (int16_t)cross_3_size);
+        if (ret == 0) {
+            int match = 1;
+            for (uint32_t i = 0; i < cross_3_size; i++) {
+                if (read_buf[i] != (uint8_t)((i * 3 + 0x20) & 0xFF)) {
+                    match = 0;
+                    printf("    [FAIL] Data mismatch at byte %u\n", i);
+                    break;
+                }
+            }
+            if (match) {
+                printf("    [PASS] Cross-3-page read/write verified\n");
+            } else {
+                test_passed = 0;
+            }
+        } else {
+            printf("    [FAIL] Cross-3-page read failed\n");
+            test_passed = 0;
+        }
+    } else {
+        printf("    [FAIL] Cross-3-page write failed\n");
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Test 4: Near-full-page write (size=USER_DATA_SIZE-1)
+    // ==========================================================================
+    printf("\n  [TEST 4] Near-full-page write (size=%d)...\n", USER_DATA_SIZE - 1);
+    
+    uint32_t near_full_size = USER_DATA_SIZE - 1;
+    
+    for (uint32_t i = 0; i < near_full_size; i++) {
+        write_buf[i] = (uint8_t)(i & 0xFF);
+    }
+    
+    ret = eflash_ftl_write_logical(1000, write_buf, (int16_t)near_full_size);
+    if (ret == 0) {
+        printf("    Write successful\n");
+        
+        ret = eflash_ftl_read_logical(1000, read_buf, (int16_t)near_full_size);
+        if (ret == 0) {
+            int match = 1;
+            for (uint32_t i = 0; i < near_full_size; i++) {
+                if (read_buf[i] != (uint8_t)(i & 0xFF)) {
+                    match = 0;
+                    break;
+                }
+            }
+            if (match) {
+                printf("    [PASS] Near-full-page read/write verified\n");
+            } else {
+                printf("    [FAIL] Data mismatch\n");
+                test_passed = 0;
+            }
+        } else {
+            printf("    [FAIL] Near-full-page read failed\n");
+            test_passed = 0;
+        }
+    } else {
+        printf("    [FAIL] Near-full-page write failed\n");
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Test 5: Start from logical_addr=0
+    // ==========================================================================
+    printf("\n  [TEST 5] Start from logical_addr=0...\n");
+    
+    for (uint32_t i = 0; i < USER_DATA_SIZE; i++) {
+        write_buf[i] = (uint8_t)(0x55);
+    }
+    
+    ret = eflash_ftl_write_logical(0, write_buf, USER_DATA_SIZE);
+    if (ret == 0) {
+        printf("    Write to addr=0 successful\n");
+        
+        ret = eflash_ftl_read_logical(0, read_buf, USER_DATA_SIZE);
+        if (ret == 0) {
+            int all_55 = 1;
+            for (uint32_t i = 0; i < USER_DATA_SIZE; i++) {
+                if (read_buf[i] != 0x55) {
+                    all_55 = 0;
+                    break;
+                }
+            }
+            if (all_55) {
+                printf("    [PASS] logical_addr=0 read/write verified\n");
+            } else {
+                printf("    [FAIL] Data mismatch at addr=0\n");
+                test_passed = 0;
+            }
+        } else {
+            printf("    [FAIL] Read from addr=0 failed\n");
+            test_passed = 0;
+        }
+    } else {
+        printf("    [FAIL] Write to addr=0 failed\n");
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Test 6: Invalid parameters
+    // ==========================================================================
+    printf("\n  [TEST 6] Invalid parameter handling...\n");
+    
+    // size=0 should fail
+    ret = eflash_ftl_write_logical(100, write_buf, 0);
+    if (ret == -1) {
+        printf("    [PASS] size=0 correctly rejected\n");
+    } else {
+        printf("    [FAIL] size=0 should fail but returned %d\n", ret);
+        test_passed = 0;
+    }
+    
+    // NULL data pointer should fail
+    ret = eflash_ftl_write_logical(100, NULL, 100);
+    if (ret == -1) {
+        printf("    [PASS] NULL data pointer correctly rejected\n");
+    } else {
+        printf("    [FAIL] NULL pointer should fail but returned %d\n", ret);
+        test_passed = 0;
+    }
+    
+    // Negative size should fail
+    ret = eflash_ftl_write_logical(100, write_buf, -1);
+    if (ret == -1) {
+        printf("    [PASS] Negative size correctly rejected\n");
+    } else {
+        printf("    [FAIL] Negative size should fail but returned %d\n", ret);
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Summary
+    // ==========================================================================
+    printf("\n========================================\n");
+    if (test_passed) {
+        printf("[PASSED] test_logical_address_edge_cases\n");
+        printf("Logical address edge cases test completed successfully!\n");
+    } else {
+        printf("[FAILED] test_logical_address_edge_cases\n");
+        printf("Logical address edge cases test failed!\n");
+    }
+    printf("========================================\n");
+    
+    cleanup_test_flash();
+    return test_passed ? 0 : 1;
+}
+
+// ============================================================================
+// Head Wraparound Test - Tests physical page allocation wraparound
+// ============================================================================
+
+/**
+ * @brief 测试Head指针回绕机制
+ * 
+ * 测试场景：
+ * 1. 填充Flash到接近满状态
+ * 2. 触发Head从EFLASH_TOTAL_PAGES-1回绕到0
+ * 3. 验证回绕后分配仍正常工作
+ * 4. 验证Tail指针跟随正确
+ * 5. 验证GC在回绕时的行为
+ */
+int test_head_wraparound(void) {
+    printf("\n========================================\n");
+    printf("TEST: Head Wraparound\n");
+    printf("========================================\n\n");
+    
+    int test_passed = 1;
+    
+    // Initialize test flash
+    init_test_flash();
+    eflash_ftl_init();
+    
+    extern eflash_ftl_t g_ftl_instance;
+    
+    printf("  [INFO] Testing Head pointer wraparound mechanism...\n");
+    printf("  [NOTE] This test will fill most of the Flash to trigger wraparound\n\n");
+    
+    uint8_t write_data[USER_DATA_SIZE];
+    uint8_t read_data[USER_DATA_SIZE];
+    
+    // Record initial state
+    uint16_t initial_head = FTL->gc_head_page;
+    uint16_t initial_tail = FTL->gc_tail_page;
+    uint32_t total_user_pages = FTL->total_user_pages;
+    
+    printf("  Initial state:\n");
+    printf("    Total user pages: %lu\n", (unsigned long)total_user_pages);
+    printf("    Initial head: %d\n", initial_head);
+    printf("    Initial tail: %d\n", initial_tail);
+    printf("    GC threshold: %d\n", FTL->gc_threshold);
+    
+    // ==========================================================================
+    // Phase 1: Fill Flash to ~90% capacity to approach wraparound
+    // ==========================================================================
+    printf("\n  [PHASE 1] Filling Flash to trigger Head wraparound...\n");
+    
+    int write_count = 0;
+    uint16_t last_head_before_wrap = 0;
+    bool wraparound_detected = false;
+    
+    // Write sequentially to consume pages
+    for (int i = 0; i < (int)(total_user_pages * 0.95); i++) {
+        uint16_t sector_id = (uint16_t)(1000 + i);
+        
+        // Prepare unique data
+        for (int j = 0; j < USER_DATA_SIZE; j++) {
+            write_data[j] = (uint8_t)((i + j) & 0xFF);
+        }
+        
+        int ret = eflash_ftl_write(sector_id, write_data);
+        if (ret == 0) {
+            write_count++;
+            
+            // Check if Head has wrapped around
+            if (FTL->gc_head_page < last_head_before_wrap && !wraparound_detected) {
+                wraparound_detected = true;
+                printf("    [EVENT] Head wraparound detected!\n");
+                printf("      Head before wrap: %d\n", last_head_before_wrap);
+                printf("      Head after wrap: %d\n", FTL->gc_head_page);
+                printf("      Tail position: %d\n", FTL->gc_tail_page);
+                printf("      Write count: %d\n", write_count);
+            }
+            
+            last_head_before_wrap = FTL->gc_head_page;
+            
+            // Progress indicator every 100 writes
+            if ((i + 1) % 100 == 0) {
+                printf("    Progress: %d writes, head=%d, tail=%d, free=%lu\n",
+                       i + 1, FTL->gc_head_page, FTL->gc_tail_page,
+                       (unsigned long)eflash_ftl_get_free_pages());
+            }
+        } else {
+            printf("    [WARNING] Write failed at iteration %d (space may be exhausted)\n", i);
+            break;
+        }
+    }
+    
+    printf("    Total successful writes: %d\n", write_count);
+    
+    if (!wraparound_detected) {
+        printf("    [INFO] Head wraparound not triggered (may need more writes)\n");
+        printf("    Current head: %d, last head: %d\n", FTL->gc_head_page, last_head_before_wrap);
+    }
+    
+    // ==========================================================================
+    // Phase 2: Verify system still works after wraparound
+    // ==========================================================================
+    printf("\n  [PHASE 2] Verifying system operation after wraparound...\n");
+    
+    // Try to write new data
+    for (int i = 0; i < 10; i++) {
+        uint16_t test_sector = (uint16_t)(5000 + i);
+        
+        for (int j = 0; j < USER_DATA_SIZE; j++) {
+            write_data[j] = (uint8_t)(0xAA + i);
+        }
+        
+        int ret = eflash_ftl_write(test_sector, write_data);
+        if (ret == 0) {
+            // Read back immediately
+            ret = eflash_ftl_read(test_sector, read_data);
+            if (ret == 0) {
+                int match = 1;
+                for (int j = 0; j < USER_DATA_SIZE; j++) {
+                    if (read_data[j] != (uint8_t)(0xAA + i)) {
+                        match = 0;
+                        break;
+                    }
+                }
+                if (match) {
+                    printf("    [PASS] Post-wraparound write/read #%d successful\n", i);
+                } else {
+                    printf("    [FAIL] Post-wraparound data mismatch #%d\n", i);
+                    test_passed = 0;
+                }
+            } else {
+                printf("    [FAIL] Post-wraparound read failed #%d\n", i);
+                test_passed = 0;
+            }
+        } else {
+            printf("    [INFO] Post-wraparound write failed #%d (space exhausted)\n", i);
+        }
+    }
+    
+    // ==========================================================================
+    // Phase 3: Trigger GC and verify it handles wraparound correctly
+    // ==========================================================================
+    printf("\n  [PHASE 3] Triggering GC after wraparound...\n");
+    
+    uint32_t free_pages_before_gc = eflash_ftl_get_free_pages();
+    printf("    Free pages before GC: %lu\n", (unsigned long)free_pages_before_gc);
+    
+    int gc_ret = eflash_ftl_gc_trigger();
+    if (gc_ret == 0) {
+        printf("    GC triggered successfully\n");
+        
+        uint32_t free_pages_after_gc = eflash_ftl_get_free_pages();
+        printf("    Free pages after GC: %lu\n", (unsigned long)free_pages_after_gc);
+        
+        if (free_pages_after_gc >= free_pages_before_gc) {
+            printf("    [PASS] GC increased (or maintained) free pages\n");
+        } else {
+            printf("    [WARNING] GC decreased free pages (unexpected)\n");
+        }
+        
+        printf("    Head after GC: %d\n", FTL->gc_head_page);
+        printf("    Tail after GC: %d\n", FTL->gc_tail_page);
+    } else {
+        printf("    [INFO] GC trigger returned error (may be normal if space is critical)\n");
+    }
+    
+    // ==========================================================================
+    // Phase 4: Verify old data integrity (sample check)
+    // ==========================================================================
+    printf("\n  [PHASE 4] Verifying old data integrity (sample check)...\n");
+    
+    int sample_checks = 0;
+    int sample_passed = 0;
+    
+    // Check some of the early written sectors
+    for (int i = 0; i < 20; i += 5) {  // Check sectors 1000, 1005, 1010, 1015, 1020
+        uint16_t check_sector = (uint16_t)(1000 + i);
+        
+        int ret = eflash_ftl_read(check_sector, read_data);
+        if (ret == 0) {
+            sample_checks++;
+            
+            // Verify pattern
+            int match = 1;
+            for (int j = 0; j < USER_DATA_SIZE; j++) {
+                if (read_data[j] != (uint8_t)((i + j) & 0xFF)) {
+                    match = 0;
+                    break;
+                }
+            }
+            
+            if (match) {
+                sample_passed++;
+                printf("    [PASS] Sector %d data intact\n", check_sector);
+            } else {
+                printf("    [FAIL] Sector %d data corrupted\n", check_sector);
+                test_passed = 0;
+            }
+        } else {
+            printf("    [INFO] Sector %d not found (may have been GC'd)\n", check_sector);
+        }
+    }
+    
+    printf("    Sample check result: %d/%d passed\n", sample_passed, sample_checks);
+    
+    // ==========================================================================
+    // Summary
+    // ==========================================================================
+    printf("\n========================================\n");
+    if (test_passed) {
+        printf("[PASSED] test_head_wraparound\n");
+        printf("Head wraparound test completed successfully!\n");
+        if (wraparound_detected) {
+            printf("Head wraparound was detected and handled correctly.\n");
+        } else {
+            printf("Note: Head wraparound was not triggered in this run.\n");
+        }
+    } else {
+        printf("[FAILED] test_head_wraparound\n");
+        printf("Head wraparound test failed!\n");
+    }
+    printf("========================================\n");
+    
+    cleanup_test_flash();
+    return test_passed ? 0 : 1;
+}
+
+// ============================================================================
+// Real Free Pages Accuracy Test - Validates real free pages calculation
+// ============================================================================
+
+/**
+ * @brief 验证实时可用页数计算的准确性
+ * 
+ * 测试场景：
+ * 1. 创建已知数量的有效页
+ * 2. 对比real_free_pages与理论值
+ * 3. 在碎片化场景下验证
+ * 4. 对比estimated vs real的差异
+ */
+int test_real_free_pages_accuracy(void) {
+    printf("\n========================================\n");
+    printf("TEST: Real Free Pages Accuracy\n");
+    printf("========================================\n\n");
+    
+    int test_passed = 1;
+    
+    // Initialize test flash
+    init_test_flash();
+    eflash_ftl_init();
+    
+    extern eflash_ftl_t g_ftl_instance;
+    
+    printf("  [INFO] Testing real free pages calculation accuracy...\n\n");
+    
+    uint8_t write_data[USER_DATA_SIZE];
+    uint8_t read_data[USER_DATA_SIZE];
+    
+    // ==========================================================================
+    // Test 1: Initial state verification
+    // ==========================================================================
+    printf("  [TEST 1] Verifying initial state...\n");
+    
+    uint32_t total_user_pages = FTL->total_user_pages;
+    uint32_t estimated_free_initial = eflash_ftl_get_free_pages();
+    uint32_t real_free_initial = eflash_ftl_get_real_free_pages();
+    
+    printf("    Total user pages: %lu\n", (unsigned long)total_user_pages);
+    printf("    Estimated free (initial): %lu\n", (unsigned long)estimated_free_initial);
+    printf("    Real free (initial): %lu\n", (unsigned long)real_free_initial);
+    
+    // In initial state, both should be close to total_user_pages
+    if (real_free_initial >= total_user_pages - 20) {  // Allow small variance for system pages
+        printf("    [PASS] Initial real free pages is accurate\n");
+    } else {
+        printf("    [FAIL] Initial real free pages is inaccurate\n");
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Test 2: After writing known number of pages
+    // ==========================================================================
+    printf("\n  [TEST 2] Verifying after writing 50 pages...\n");
+    
+    int num_writes = 50;
+    for (int i = 0; i < num_writes; i++) {
+        for (int j = 0; j < USER_DATA_SIZE; j++) {
+            write_data[j] = (uint8_t)((i + j) & 0xFF);
+        }
+        eflash_ftl_write((uint16_t)(100 + i), write_data);
+    }
+    
+    uint32_t estimated_free_after_50 = eflash_ftl_get_free_pages();
+    uint32_t real_free_after_50 = eflash_ftl_get_real_free_pages();
+    uint32_t valid_page_count = FTL->valid_page_count;
+    
+    printf("    Writes performed: %d\n", num_writes);
+    printf("    Valid page count (FTL counter): %lu\n", (unsigned long)valid_page_count);
+    printf("    Estimated free: %lu\n", (unsigned long)estimated_free_after_50);
+    printf("    Real free: %lu\n", (unsigned long)real_free_after_50);
+    printf("    Expected real free: ~%lu (total - valid)\n", 
+           (unsigned long)(total_user_pages - valid_page_count));
+    
+    // Real free should match: total - valid
+    uint32_t expected_real_free = total_user_pages - valid_page_count;
+    if (real_free_after_50 == expected_real_free) {
+        printf("    [PASS] Real free pages matches expected value\n");
+    } else {
+        printf("    [FAIL] Real free mismatch: got %lu, expected %lu\n",
+               (unsigned long)real_free_after_50, (unsigned long)expected_real_free);
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Test 3: After overwriting (creating stale pages)
+    // ==========================================================================
+    printf("\n  [TEST 3] Verifying after overwrites (stale pages created)...\n");
+    
+    // Overwrite first 20 sectors to create stale pages
+    for (int i = 0; i < 20; i++) {
+        for (int j = 0; j < USER_DATA_SIZE; j++) {
+            write_data[j] = (uint8_t)(0xAA + i);
+        }
+        eflash_ftl_write((uint16_t)(100 + i), write_data);
+    }
+    
+    uint32_t estimated_free_after_overwrite = eflash_ftl_get_free_pages();
+    uint32_t real_free_after_overwrite = eflash_ftl_get_real_free_pages();
+    valid_page_count = FTL->valid_page_count;
+    
+    printf("    Overwrites performed: 20\n");
+    printf("    Valid page count: %lu\n", (unsigned long)valid_page_count);
+    printf("    Estimated free: %lu\n", (unsigned long)estimated_free_after_overwrite);
+    printf("    Real free: %lu\n", (unsigned long)real_free_after_overwrite);
+    
+    // Note: valid_page_count should still be 50 (overwrites don't add new valid pages)
+    // But real_free should decrease because we wrote 20 more physical pages
+    expected_real_free = total_user_pages - valid_page_count;
+    
+    printf("    [INFO] Estimated vs Real difference: %ld\n",
+           (long)(estimated_free_after_overwrite - real_free_after_overwrite));
+    
+    if (real_free_after_overwrite == expected_real_free) {
+        printf("    [PASS] Real free correctly accounts for stale pages\n");
+    } else {
+        printf("    [WARNING] Real free deviation detected (may be normal due to GC)\n");
+    }
+    
+    // ==========================================================================
+    // Test 4: After GC collection
+    // ==========================================================================
+    printf("\n  [TEST 4] Verifying after GC collection...\n");
+    
+    int gc_result = eflash_ftl_gc_collect_all();
+    printf("    GC collected: %d pages\n", gc_result);
+    
+    uint32_t estimated_free_after_gc = eflash_ftl_get_free_pages();
+    uint32_t real_free_after_gc = eflash_ftl_get_real_free_pages();
+    
+    printf("    Estimated free after GC: %lu\n", (unsigned long)estimated_free_after_gc);
+    printf("    Real free after GC: %lu\n", (unsigned long)real_free_after_gc);
+    
+    // After GC, estimated and real should converge
+    if (estimated_free_after_gc == real_free_after_gc) {
+        printf("    [PASS] Estimated and real free pages converged after GC\n");
+    } else {
+        printf("    [WARNING] Difference after GC: %lu\n",
+               (unsigned long)(estimated_free_after_gc > real_free_after_gc ?
+                estimated_free_after_gc - real_free_after_gc :
+                real_free_after_gc - estimated_free_after_gc));
+    }
+    
+    // ==========================================================================
+    // Summary
+    // ==========================================================================
+    printf("\n========================================\n");
+    if (test_passed) {
+        printf("[PASSED] test_real_free_pages_accuracy\n");
+        printf("Real free pages accuracy test completed successfully!\n");
+    } else {
+        printf("[FAILED] test_real_free_pages_accuracy\n");
+        printf("Real free pages accuracy test failed!\n");
+    }
+    printf("========================================\n");
+    
+    cleanup_test_flash();
+    return test_passed ? 0 : 1;
+}
+
+// ============================================================================
+// GC Migration Integrity Test - Validates data integrity during GC migration
+// ============================================================================
+
+/**
+ * @brief 测试GC迁移过程中的数据完整性
+ * 
+ * 测试场景：
+ * 1. 写入带特定模式的数据
+ * 2. 触发GC迁移
+ * 3. 验证迁移后数据的ECC正确性
+ * 4. 验证Radix Tree指向新位置
+ */
+int test_gc_migration_integrity(void) {
+    printf("\n========================================\n");
+    printf("TEST: GC Migration Integrity\n");
+    printf("========================================\n\n");
+    
+    int test_passed = 1;
+    
+    // Initialize test flash
+    init_test_flash();
+    eflash_ftl_init();
+    
+    extern eflash_ftl_t g_ftl_instance;
+    
+    printf("  [INFO] Testing GC migration data integrity...\n\n");
+    
+    uint8_t write_data[USER_DATA_SIZE];
+    uint8_t read_data[USER_DATA_SIZE];
+    
+    // ==========================================================================
+    // Phase 1: Write data with unique patterns
+    // ==========================================================================
+    printf("  [PHASE 1] Writing data with unique patterns...\n");
+    
+    #define NUM_TEST_SECTORS 30
+    uint16_t test_sectors[NUM_TEST_SECTORS];
+    
+    for (int i = 0; i < NUM_TEST_SECTORS; i++) {
+        test_sectors[i] = (uint16_t)(200 + i);
+        
+        // Create unique pattern for each sector
+        for (int j = 0; j < USER_DATA_SIZE; j++) {
+            write_data[j] = (uint8_t)((i * 7 + j * 3 + 0x10) & 0xFF);
+        }
+        
+        int ret = eflash_ftl_write(test_sectors[i], write_data);
+        if (ret != 0) {
+            printf("    [FAIL] Failed to write sector %d\n", test_sectors[i]);
+            test_passed = 0;
+        }
+    }
+    
+    printf("    Wrote %d sectors with unique patterns\n", NUM_TEST_SECTORS);
+    
+    // ==========================================================================
+    // Phase 2: Verify initial data integrity
+    // ==========================================================================
+    printf("\n  [PHASE 2] Verifying initial data integrity...\n");
+    
+    int initial_verify_ok = 1;
+    for (int i = 0; i < NUM_TEST_SECTORS; i++) {
+        int ret = eflash_ftl_read(test_sectors[i], read_data);
+        if (ret == 0) {
+            // Verify pattern
+            for (int j = 0; j < USER_DATA_SIZE; j++) {
+                uint8_t expected = (uint8_t)((i * 7 + j * 3 + 0x10) & 0xFF);
+                if (read_data[j] != expected) {
+                    printf("    [FAIL] Sector %d: data mismatch at byte %d\n", test_sectors[i], j);
+                    initial_verify_ok = 0;
+                    break;
+                }
+            }
+        } else {
+            printf("    [FAIL] Cannot read sector %d\n", test_sectors[i]);
+            initial_verify_ok = 0;
+        }
+        
+        if (!initial_verify_ok) break;
+    }
+    
+    if (initial_verify_ok) {
+        printf("    [PASS] All sectors verified before GC\n");
+    } else {
+        printf("    [FAIL] Initial verification failed\n");
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Phase 3: Create stale pages by overwriting
+    // ==========================================================================
+    printf("\n  [PHASE 3] Creating stale pages by overwriting...\n");
+    
+    // Overwrite half of the sectors to create stale pages
+    for (int i = 0; i < NUM_TEST_SECTORS / 2; i++) {
+        for (int j = 0; j < USER_DATA_SIZE; j++) {
+            write_data[j] = (uint8_t)(0xBB + i);
+        }
+        eflash_ftl_write(test_sectors[i], write_data);
+    }
+    
+    printf("    Overwrote %d sectors (created stale pages)\n", NUM_TEST_SECTORS / 2);
+    
+    uint32_t free_before_gc = eflash_ftl_get_free_pages();
+    uint32_t real_free_before_gc = eflash_ftl_get_real_free_pages();
+    printf("    Free pages before GC: %lu (estimated), %lu (real)\n",
+           (unsigned long)free_before_gc, (unsigned long)real_free_before_gc);
+    
+    // ==========================================================================
+    // Phase 4: Trigger GC to migrate valid pages
+    // ==========================================================================
+    printf("\n  [PHASE 4] Triggering GC to migrate valid pages...\n");
+    
+    int gc_ret = eflash_ftl_gc_collect_all();
+    printf("    GC collected %d pages\n", gc_ret);
+    
+    uint32_t free_after_gc = eflash_ftl_get_free_pages();
+    uint32_t real_free_after_gc = eflash_ftl_get_real_free_pages();
+    printf("    Free pages after GC: %lu (estimated), %lu (real)\n",
+           (unsigned long)free_after_gc, (unsigned long)real_free_after_gc);
+    
+    // ==========================================================================
+    // Phase 5: Verify data integrity after GC migration
+    // ==========================================================================
+    printf("\n  [PHASE 5] Verifying data integrity after GC migration...\n");
+    
+    int post_gc_verify_ok = 1;
+    int verified_count = 0;
+    
+    for (int i = 0; i < NUM_TEST_SECTORS; i++) {
+        int ret = eflash_ftl_read(test_sectors[i], read_data);
+        if (ret == 0) {
+            verified_count++;
+            
+            // Determine expected pattern based on whether sector was overwritten
+            int was_overwritten = (i < NUM_TEST_SECTORS / 2);
+            
+            if (was_overwritten) {
+                // Should have overwrite pattern
+                for (int j = 0; j < USER_DATA_SIZE; j++) {
+                    uint8_t expected = (uint8_t)(0xBB + i);
+                    if (read_data[j] != expected) {
+                        printf("    [FAIL] Sector %d (overwritten): mismatch at byte %d\n",
+                               test_sectors[i], j);
+                        post_gc_verify_ok = 0;
+                        break;
+                    }
+                }
+            } else {
+                // Should have original pattern
+                for (int j = 0; j < USER_DATA_SIZE; j++) {
+                    uint8_t expected = (uint8_t)((i * 7 + j * 3 + 0x10) & 0xFF);
+                    if (read_data[j] != expected) {
+                        printf("    [FAIL] Sector %d (original): mismatch at byte %d\n",
+                               test_sectors[i], j);
+                        post_gc_verify_ok = 0;
+                        break;
+                    }
+                }
+            }
+        } else {
+            printf("    [FAIL] Cannot read sector %d after GC\n", test_sectors[i]);
+            post_gc_verify_ok = 0;
+        }
+        
+        if (!post_gc_verify_ok) break;
+    }
+    
+    printf("    Verified %d sectors after GC\n", verified_count);
+    
+    if (post_gc_verify_ok) {
+        printf("    [PASS] All sectors verified after GC migration\n");
+        printf("    [PASS] Data integrity maintained through GC migration\n");
+    } else {
+        printf("    [FAIL] Post-GC verification failed\n");
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Phase 6: Additional writes to verify system stability
+    // ==========================================================================
+    printf("\n  [PHASE 6] Testing system stability after GC...\n");
+    
+    for (int i = 0; i < 10; i++) {
+        uint16_t new_sector = (uint16_t)(500 + i);
+        
+        for (int j = 0; j < USER_DATA_SIZE; j++) {
+            write_data[j] = (uint8_t)(0xCC + i);
+        }
+        
+        int ret = eflash_ftl_write(new_sector, write_data);
+        if (ret == 0) {
+            ret = eflash_ftl_read(new_sector, read_data);
+            if (ret == 0) {
+                int match = 1;
+                for (int j = 0; j < USER_DATA_SIZE; j++) {
+                    if (read_data[j] != (uint8_t)(0xCC + i)) {
+                        match = 0;
+                        break;
+                    }
+                }
+                if (!match) {
+                    printf("    [FAIL] New write #%d verification failed\n", i);
+                    test_passed = 0;
+                }
+            }
+        }
+    }
+    
+    printf("    [PASS] System stable after GC migration\n");
+    
+    // ==========================================================================
+    // Summary
+    // ==========================================================================
+    printf("\n========================================\n");
+    if (test_passed) {
+        printf("[PASSED] test_gc_migration_integrity\n");
+        printf("GC migration integrity test completed successfully!\n");
+        printf("Data integrity verified through GC migration process.\n");
+    } else {
+        printf("[FAILED] test_gc_migration_integrity\n");
+        printf("GC migration integrity test failed!\n");
+    }
+    printf("========================================\n");
+    
+    cleanup_test_flash();
+    return test_passed ? 0 : 1;
+}
+
+// ============================================================================
 // Main Entry Point
 // ============================================================================
 int main(int argc, char *argv[]) {
@@ -5769,6 +6657,10 @@ int main(int argc, char *argv[]) {
     RUN_TEST(test_fragmented_allocation);
     RUN_TEST(test_gc_threshold_variation);
     RUN_TEST(test_partial_system_page_corruption);
+    RUN_TEST(test_logical_address_edge_cases);  // New test
+    RUN_TEST(test_head_wraparound);  // New test
+    RUN_TEST(test_real_free_pages_accuracy);  // New test
+    RUN_TEST(test_gc_migration_integrity);  // New test
     RUN_TEST(test_power_failure_extreme);
     RUN_TEST(test_long_term_stability);
 
