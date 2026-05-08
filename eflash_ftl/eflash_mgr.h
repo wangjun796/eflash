@@ -72,6 +72,15 @@ typedef struct {
 void eflash_mgr_init(uint16_t total_pages);
 
 /**
+ * eflash_mgr_recover_ext_free_nodes: Recover extended free node table from Flash
+ * @return: Number of extension levels recovered, -1 on failure
+ * 
+ * Note: This function scans the LINK chain in base and extended free node pages
+ *       to rebuild the ext_free_node_addrs array after power failure.
+ */
+int eflash_mgr_recover_ext_free_nodes(void);
+
+/**
  * eflash_mgr_alloc: Allocate specified size of logical address space
  * @size: Requested size in bytes
  * @out_logical_addr: Output allocated starting logical address (24-bit)

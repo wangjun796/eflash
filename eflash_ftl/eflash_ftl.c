@@ -1199,6 +1199,13 @@ int eflash_ftl_init(void) {
     FTL_DEBUG("[INIT] Scan complete. Root page: %d, next_count: %d, epoch: %d\n",
              FTL->root_page, FTL->next_count, FTL->current_epoch);
 
+    // Step 2.3: Recover extended free node table from Flash
+    // This must be done AFTER root_page is found (Radix Tree is functional)
+    int recovered_levels = eflash_mgr_recover_ext_free_nodes();
+    if (recovered_levels > 0) {
+        FTL_DEBUG("[INIT] Recovered %d extension levels for free node table\n", recovered_levels);
+    }
+
     // Step 2.5: Recover Head/Tail pointers and initialize valid page counter
     // This must be done AFTER root_page is found
     if (FTL->root_page != PAGE_NONE) {

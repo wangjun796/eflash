@@ -8,7 +8,7 @@
 
 
 #ifndef FTL_DEBUG
-#define FTL_DEBUG(...) do {} while(0)  // Disable debug output
+#define FTL_DEBUG(...) printf("[MGR_DEBUG] " __VA_ARGS__)  // Enable debug output for recovery analysis
 #endif
 
 // Disable all printf debug output in eflash_mgr.c for better performance
@@ -744,6 +744,57 @@ void eflash_mgr_init(uint16_t total_pages) {
     FTL_DEBUG("[SPACE_INIT] Memory initialization complete (waiting for FTL to write system pages)\n");
     
     MGR->next_alloc_page = reserved_logic_page_count;  // Next logical page to allocate (LPN 12)
+}
+
+/**
+ * eflash_mgr_recover_ext_free_nodes: Recover extended free node table from Flash
+ * @return: Number of extension levels recovered, -1 on failure
+ */
+int eflash_mgr_recover_ext_free_nodes(void) {
+    FTL_DEBUG("[RECOVER_EXT] Starting recovery of extended free node table...\n");
+    
+    int level = 0;
+    uint32_t current_ext_addr = 0xFFFFFFFF;
+    
+    // Step 1: Check if base block has an extension link
+    // Pass the START address of base block, read_ext_link will calculate last page
+    uint32_t base_block_addr = (uint32_t)SYS_FREE_LIST_BASE_LPN * USER_DATA_SIZE;
+    
+    free_node_link_t link;
+    
+    if (read_ext_link(base_block_addr, &link) == 0 && link.magic == LINK_FREE_NODE_MAGIC) {
+        // Base block has a link to first extension
+        current_ext_addr = link.next_ext_addr;
+        MGR->ext_free_node_addrs[level] = current_ext_addr;
+        level++;
+        
+        FTL_DEBUG("[RECOVER_EXT] Found extension level 0 at addr=0x%08X\n", current_ext_addr);
+    } else {
+        FTL_DEBUG("[RECOVER_EXT] No extension found in base block\n");
+        return 0;  // No extensions
+    }
+    
+    // Step 2: Follow the LINK chain to find all extension levels
+    while (level < MAX_FREE_NODE_EXT_LEVELS) {
+        // Read link from the last page of previous extension block
+        // current_ext_addr is already a logical address, calculate last page address
+        uint32_t prev_ext_last_page_addr = current_ext_addr + (FREE_NODE_EXT_PAGES - 1) * USER_DATA_SIZE;
+        
+        if (read_ext_link(prev_ext_last_page_addr, &link) == 0 && link.magic == LINK_FREE_NODE_MAGIC) {
+            // Found next extension
+            current_ext_addr = link.next_ext_addr;
+            MGR->ext_free_node_addrs[level] = current_ext_addr;
+            level++;
+            
+            FTL_DEBUG("[RECOVER_EXT] Found extension level %d at addr=0x%08X\n", level - 1, current_ext_addr);
+        } else {
+            // No more extensions
+            break;
+        }
+    }
+    
+    FTL_DEBUG("[RECOVER_EXT] Recovery complete. Total extension levels: %d\n", level);
+    return level;
 }
 
 bool eflash_mgr_check_initialized(void) {
