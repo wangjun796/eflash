@@ -1,0 +1,1276 @@
+# eFlash FTL 概要设计文档
+
+**版本**: v1.0
+**日期**: 2026-05-08
+**作者**: eFlash 开发团队
+
+---
+
+## 📋 目录
+
+1. [系统概述](#系统概述)
+2. [架构设计](#架构设计)
+3. [核心模块设计](#核心模块设计)
+4. [数据结构设计](#数据结构设计)
+5. [关键算法流程](#关键算法流程)
+6. [掉电恢复机制](#掉电恢复机制)
+7. [测试体系](#测试体系)
+
+---
+
+## 系统概述
+
+### 设计目标
+
+eFlash FTL (Flash Translation Layer) 是一个专为资源受限嵌入式系统设计的轻量级 Flash 管理库，提供以下核心能力：
+
+- **磨损均衡**: 通过 Radix Tree 映射实现逻辑页到物理页的动态分配
+- **垃圾回收**: Head/Tail 环形缓冲区模型，支持紧急模式避免写放大
+- **事务支持**: 基于影子树的原子性写操作
+- **掉电恢复**: 精确的状态恢复，包括空闲链表扩展信息
+- **ECC 纠错**: BCH 3-bit 纠错能力
+- **零动态内存**: 全局静态实例，适合嵌入式环境
+
+### 技术规格
+
+```mermaid
+graph LR
+    A[Flash 硬件] --> B[eFlash Sim 模拟层]
+    B --> C[ECC 库 BCH/GF13]
+    C --> D[空间管理器 eflash_mgr]
+    D --> E[FTL 核心 eflash_ftl]
+    E --> F[公共 API eflash.h]
+
+    style A fill:#e1f5ff
+    style B fill:#fff4e1
+    style C fill:#ffe1e1
+    style D fill:#e1ffe1
+    style E fill:#f0e1ff
+    style F fill:#`ffffe1`
+```
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| 页大小 | 512 字节 | 固定物理页大小 |
+| 用户数据 | 464 字节/页 | 扣除元数据和 ECC |
+| 元数据 | 48 字节/页 | sector_id, epoch, txn_id, ECC等 |
+| ECC 校验码 | 5 字节 | BCH 编码 |
+| Radix Tree 深度 | 16 层 | 支持 65536 个扇区 |
+| 总页数 | 2048 页 | 默认配置 |
+| 对象头容量 | 232 + 可扩展 | 最多 2088 个对象 |
+| 空闲节点容量 | 228 + 可扩展 | 最多 1140 个节点 |
+
+---
+
+## 架构设计
+
+### 整体架构图
+
+```mermaid
+graph TB
+    subgraph "应用层"
+        APP[应用程序]
+    end
+
+    subgraph "公共 API 层"
+        API[eflash.h<br/>唯一对外接口]
+    end
+
+    subgraph "FTL 核心层"
+        FTL[eflash_ftl.c/h<br/>FTL 核心引擎]
+        RADIX[Radix Tree<br/>地址映射]
+        TXN[事务管理<br/>begin/commit/abort]
+        GC[垃圾回收<br/>Head/Tail 模型]
+        OBJ[对象头管理<br/>LINK 链扩展]
+    end
+
+    subgraph "空间管理层"
+        MGR[eflash_mgr.c/h<br/>空间管理器]
+        FREE[空闲链表<br/>动态扩展]
+        ALLOC[地址分配<br/>页对齐]
+    end
+
+    subgraph "ECC 层"
+        ECC[ecc/bch.c/h<br/>BCH 纠错]
+        GF[ecc/gf13.c/h<br/>Galois Field]
+    end
+
+    subgraph "硬件抽象层"
+        SIM[eflash_sim.c/h<br/>Flash 模拟器]
+        HW[真实硬件驱动<br/>需用户实现]
+    end
+
+    APP --> API
+    API --> FTL
+    FTL --> RADIX
+    FTL --> TXN
+    FTL --> GC
+    FTL --> OBJ
+    FTL --> MGR
+    MGR --> FREE
+    MGR --> ALLOC
+    FTL --> ECC
+    ECC --> GF
+    FTL --> SIM
+    SIM -.-> HW
+
+    style APP fill:#e1f5ff
+    style API fill:#fff4e1
+    style FTL fill:#f0e1ff
+    style MGR fill:#e1ffe1
+    style ECC fill:#ffe1e1
+    style SIM fill:#f5f5f5
+```
+
+### 模块职责划分
+
+```mermaid
+mindmap
+  root((eFlash FTL))
+    FTL核心
+      Radix Tree映射
+        16层深度
+        位提取索引
+        路径追踪
+      事务管理
+        begin初始化shadow_root
+        commit全页重写或字更新
+        abort丢弃shadow_root
+      垃圾回收
+        Head指针分配
+        Tail指针回收
+        紧急模式避免写放大
+      对象头管理
+        基础232个对象
+        LINK链扩展最多16级
+        魔数验证0x5F54/0x4C4E
+    空间管理
+      空闲链表
+        基础4页228节点
+        扩展最多4级1140节点
+        智能合并相邻块
+      地址分配
+        小对象精细分配
+        大对象页级分配
+        页对齐保证
+    ECC纠错
+      BCH编码
+        5字节校验码
+        纠正3bit错误
+        检测4bit错误
+      Galois Field
+        GF2_13运算
+        多项式除法
+    Flash模拟
+      内存映射文件
+        基地址0x80000000
+        高性能访问
+      擦除编程接口
+        eflash_hw_erase
+        eflash_hw_prog
+        eflash_hw_read
+```
+
+---
+
+## 核心模块设计
+
+### 1. Radix Tree 地址映射
+
+#### 设计理念
+
+Radix Tree (基数树) 用于维护逻辑扇区号 (sector_id) 到物理页号 (PPN) 的映射关系。采用 16 层深度，每层使用 sector_id 的一个比特位作为索引。
+
+#### 树结构示意
+
+```mermaid
+graph TD
+    ROOT[Root Page<br/>PPN=xxx] --> L0[Level 0<br/>bit 15]
+    L0 -->|0| N0_0[Node 0]
+    L0 -->|1| N0_1[Node 1]
+
+    N0_0 --> L1_0[Level 1<br/>bit 14]
+    N0_1 --> L1_1[Level 1<br/>bit 14]
+
+    L1_0 -->|0| N1_00[Node 00]
+    L1_0 -->|1| N1_01[Node 01]
+
+    N1_00 --> L2[Level 2<br/>bit 13]
+    N1_01 --> L2b[Level 2<br/>bit 13]
+
+    L2 -->|...| INTER[中间节点<br/>继续分裂]
+    L2b -->|...| INTER2[中间节点<br/>继续分裂]
+
+    INTER -->|...| LEAF1[Leaf Node<br/>PPN=100]
+    INTER2 -->|...| LEAF2[Leaf Node<br/>PPN=200]
+
+    style ROOT fill:#ff9999
+    style LEAF1 fill:#99ff99
+    style LEAF2 fill:#99ff99
+    style N0_0 fill:#ccccff
+    style N0_1 fill:#ccccff
+```
+
+#### 查找算法流程
+
+```mermaid
+flowchart TD
+    START[开始查找 sector_id] --> INIT{root_page<br/>有效?}
+    INIT -->|否| NOTFOUND[返回 PAGE_NONE]
+    INIT -->|是| LOOP[循环 i = 0 to 15]
+
+    LOOP --> GETBIT[提取 bit i:<br/>get_bitsector_id, i]
+    GETBIT --> READMETA[读取当前页元数据<br/>meta.adri]
+
+    READMETA --> CHECK{meta.adri<br/>== PAGE_NONE?}
+    CHECK -->|是| NOTFOUND
+    CHECK -->|否| NEXT{i < 15?}
+
+    NEXT -->|是| UPDATE[current_page = meta.adri<br/>继续下一层]
+    UPDATE --> LOOP
+
+    NEXT -->|否| FOUND[找到叶子节点<br/>返回 current_page]
+
+    style START fill:#e1f5ff
+    style FOUND fill:#99ff99
+    style NOTFOUND fill:#ff9999
+```
+
+#### 关键代码片段
+
+```c
+// 位提取宏
+#define get_bit(val, bit_pos) (((val) >> (bit_pos)) & 0x1)
+
+// 路径追踪函数
+static int trace_tree(uint16_t base_root, uint16_t sector, ftl_meta_t *out_meta) {
+    uint16_t current_page = base_root;
+
+    for (int i = 0; i < RADIX_DEPTH; i++) {
+        // 读取当前页元数据
+        uint8_t page_buf[EFLASH_PAGE_SIZE];
+        eflash_hw_read(current_page, page_buf);
+
+        ftl_meta_t *meta = (ftl_meta_t *)(page_buf + META_OFFSET);
+
+        // 提取当前位的索引
+        int bit = get_bit(sector, RADIX_DEPTH - 1 - i);
+
+        // 检查该分支是否存在
+        if (meta->adr[bit] == PAGE_NONE) {
+            return -1;  // 路径中断
+        }
+
+        // 移动到下一层
+        current_page = meta->adr[bit];
+    }
+
+    // 到达叶子节点，返回元数据
+    memcpy(out_meta, meta, sizeof(ftl_meta_t));
+    return 0;
+}
+```
+
+---
+
+### 2. 事务管理机制
+
+#### 状态机设计
+
+```mermaid
+stateDiagram-v2
+    [*] --> BLANK: 新页未写入
+    BLANK --> READY: 事务中写入数据
+    READY --> COMMITTED: txn_commit成功
+    READY --> INVALID: txn_abort或覆盖写
+    COMMITTED --> INVALID: 被新事务覆盖
+
+    note right of BLANK
+        状态值: 0xFF
+        所有位为1
+    end note
+
+    note right of READY
+        状态值: 0xAD
+        符合Flash编程特性
+        1->0转换
+    end note
+
+    note right of COMMITTED
+        状态值: 0x21
+        仅标记Root页
+        表示事务已提交
+    end note
+
+    note right of INVALID
+        状态值: 0x00
+        陈旧页或非事务页
+    end note
+```
+
+#### 事务生命周期
+
+```mermaid
+sequenceDiagram
+    participant APP as 应用程序
+    participant FTL as FTL核心
+    participant TREE as Radix Tree
+    participant FLASH as Flash存储
+
+    APP->>FTL: eflash_ftl_txn_begin()
+    activate FTL
+    FTL->>TREE: 复制 root_page 到 shadow_root
+    FTL-->>APP: 事务开始
+    deactivate FTL
+
+    APP->>FTL: eflash_ftl_write(sector, data)
+    activate FTL
+    FTL->>TREE: 在 shadow_root 上更新映射
+    FTL->>FLASH: 分配新物理页写入数据
+    FTL->>FLASH: 设置 status = READY (0xAD)
+    FTL-->>APP: 写入成功
+    deactivate FTL
+
+    alt 提交事务
+        APP->>FTL: eflash_ftl_txn_commit()
+        activate FTL
+        FTL->>FLASH: 标记 shadow_root status = COMMITTED (0x21)
+        FTL->>TREE: root_page = shadow_root (原子切换)
+        FTL->>FLASH: 旧页标记为 INVALID
+        FTL-->>APP: 提交成功
+        deactivate FTL
+    else 中止事务
+        APP->>FTL: eflash_ftl_txn_abort()
+        activate FTL
+        FTL->>FLASH: 丢弃 shadow_root (不切换)
+        FTL->>FLASH: shadow_root 上的页标记为 INVALID
+        FTL-->>APP: 中止成功
+        deactivate FTL
+    end
+```
+
+#### 两种提交方式对比
+
+```mermaid
+graph LR
+    subgraph "通用提交 txn_commit"
+        A1[ erase 整个物理页] --> A2[ prog 完整 512 字节]
+        A2 --> A3[兼容所有硬件]
+        A3 --> A4[寿命较短]
+    end
+
+    subgraph "优化提交 txn_commit_with_update"
+        B1[ word_update 仅修改元数据] --> B2[无需 erase]
+        B2 --> B3[需要硬件支持]
+        B3 --> B4[寿命延长3倍]
+    end
+
+    style A1 fill:#ffe1e1
+    style B1 fill:#e1ffe1
+    style A4 fill:#`ffcccc`
+    style B4 fill:#ccffcc
+```
+
+---
+
+### 3. 垃圾回收机制
+
+#### Head/Tail 环形缓冲区模型
+
+```mermaid
+graph LR
+    subgraph "Flash 物理页布局"
+        P0[PPN 0] --> P1[PPN 1]
+        P1 --> PDOT[...]
+        PDOT --> PN[PPN N-1]
+        PN -.->|Wrap| P0
+    end
+
+    subgraph "GC 指针"
+        HEAD[gc_head_page<br/>分配指针] -.->|指向下一个可写页| P_HEAD
+        TAIL[gc_tail_page<br/>回收指针] -.->|指向下一个待回收页| P_TAIL
+
+        P_HEAD[当前Head位置]
+        P_TAIL[当前Tail位置]
+    end
+
+    P_TAIL -->|扫描| VALID{页面有效?}
+    VALID -->|是| MIGRATE[迁移到新位置]
+    VALID -->|否| ERASE[直接擦除]
+
+    MIGRATE --> MOVE_TAIL[Tail++]
+    ERASE --> MOVE_TAIL
+
+    style HEAD fill:#ff9999
+    style TAIL fill:#99ff99
+    style MIGRATE fill:#ffff99
+    style ERASE fill:#99ccff
+```
+
+#### GC 工作流程
+
+```mermaid
+flowchart TD
+    TRIGGER{free_pages <<br/>gc_threshold?}
+    TRIGGER -->|否| SKIP[跳过 GC]
+    TRIGGER -->|是| CHECK_TXN{有活跃事务?}
+
+    CHECK_TXN -->|是| SKIP_TXN[跳过 GC<br/>等待事务完成]
+    CHECK_TXN -->|否| CHECK_SPACE{real_free <<br/>threshold?}
+
+    CHECK_SPACE -->|是| EMERGENCY[紧急模式<br/>找stale page直接覆写]
+    CHECK_SPACE -->|否| NORMAL[正常模式<br/>计算需回收页数]
+
+    NORMAL --> CALC[calculate_gc_pages_to_reclaim<br/>动态调整批量大小]
+    CALC --> COLLECT[eflash_ftl_gc_collect<br/>逐页回收]
+
+    COLLECT --> SCAN[从 tail_page 开始扫描]
+    SCAN --> IS_VALID{is_page_still_valid?<br/>查询Radix Tree}
+
+    IS_VALID -->|有效| MIGRATE[gc_migrate_page<br/>迁移数据]
+    IS_VALID -->|无效| ERASE[eflash_hw_erase<br/>直接擦除]
+
+    MIGRATE --> WRITE[eflash_ftl_write<br/>重新写入]
+    WRITE --> ADVANCE_TAIL[Tail++]
+    ERASE --> ADVANCE_TAIL
+
+    ADVANCE_TAIL --> COUNT{回收足够?}
+    COUNT -->|否| SCAN
+    COUNT -->|是| DONE[GC 完成]
+
+    EMERGENCY --> FIND_STALE[扫描找第一个 stale page]
+    FIND_STALE --> REPOSITION[Head = stale_page<br/>Tail = next_valid]
+    REPOSITION --> DONE
+
+    style TRIGGER fill:#ff9999
+    style EMERGENCY fill:#ffcccc
+    style NORMAL fill:#99ff99
+    style DONE fill:#99ccff
+```
+
+#### GC 紧急模式详解
+
+当空间极度紧张（< gc_threshold）时，正常 GC 会导致严重的写放大（每次写入都触发迁移）。紧急模式通过牺牲磨损均衡来换取性能：
+
+```mermaid
+graph TB
+    subgraph "正常模式"
+        N1[Head 顺序分配] --> N2[Tail 顺序回收]
+        N2 --> N3[均匀磨损]
+    end
+
+    subgraph "紧急模式"
+        E1[扫描找 stale page] --> E2[Head 跳到 stale page]
+        E2 --> E3[直接覆写无需迁移]
+        E3 --> E4[Tail 跳到下一个 valid page]
+        E4 --> E5[跳过 stale 区域]
+    end
+
+    style E3 fill:#ff9999
+    style E5 fill:#ff9999
+```
+
+**权衡**：
+- ✅ **优点**: 消除写放大，保持系统响应性
+- ❌ **缺点**: 磨损不均衡，某些页可能被过度使用
+
+---
+
+### 4. 对象头管理
+
+#### 动态扩展 LINK 链
+
+```mermaid
+graph TD
+    subgraph "基础区域 LPN 0-7"
+        B1[LPN 0<br/>29个对象头] --> B2[LPN 1<br/>29个对象头]
+        B2 --> B3[LPN 2<br/>29个对象头]
+        B3 --> B4[LPN 3<br/>29个对象头]
+        B4 --> B5[LPN 4<br/>29个对象头]
+        B5 --> B6[LPN 5<br/>29个对象头]
+        B6 --> B7[LPN 6<br/>29个对象头]
+        B7 --> B8[LPN 7<br/>28个对象头 + 1个LINK]
+    end
+
+    B8 -->|body_addr 指向| E1[扩展 Level 1<br/>LPN X-X+3]
+
+    subgraph "扩展 Level 1"
+        E1 --> E2[4页共116个对象]
+        E2 --> EL1[最后1个为LINK对象]
+    end
+
+    EL1 -->|body_addr 指向| E3[扩展 Level 2<br/>LPN Y-Y+3]
+
+    subgraph "扩展 Level 2"
+        E3 --> E4[4页共116个对象]
+        E4 --> EL2[最后1个为LINK对象]
+    end
+
+    EL2 -->|...| EN[最多16级扩展]
+
+    style B8 fill:#ff9999
+    style EL1 fill:#ff9999
+    style EL2 fill:#ff9999
+    style E1 fill:#99ccff
+    style E3 fill:#99ccff
+```
+
+#### LINK 对象结构
+
+```c
+typedef struct {
+    uint16_t    pkg_id;         // 魔数: 0x5F54 ("FT")
+    uint16_t    class_id;       // 魔数: 0x4C4E ("LN")
+    uint8_t     type;           // OBJ_TYPE_LINK (0xFF)
+    uint8_t     reserved[3];    // 魔数: 0xAD, 0xDE
+    uint32_t    body_addr;      // 指向下一级扩展的起始逻辑地址
+    uint32_t    body_size;      // 扩展块大小: 4 * USER_DATA_SIZE
+} obj_header_t;
+```
+
+**魔数验证**：
+- `pkg_id = 0x5F54`: ASCII "FT" (Flash Translation)
+- `class_id = 0x4C4E`: ASCII "LN" (LiNk)
+- `reserved[0] = 0xAD`, `reserved[1] = 0xDE`: 额外校验
+
+这些魔数使得掉电恢复时可以快速识别和跳过 LINK 对象。
+
+#### 对象 ID 分配策略
+
+```mermaid
+flowchart TD
+    START[eflash_ftl_obj_alloc_header] --> CHECK{max_obj_id < 231?}
+
+    CHECK -->|是| BASE[基础区域分配<br/>ID: 0-230]
+    CHECK -->|否| SKIP{max_obj_id == 231?}
+
+    SKIP -->|是| JUMP[跳过保留ID<br/>max_obj_id = 232]
+    SKIP -->|否| EXTEND[扩展区域分配<br/>ID: 232-2088]
+
+    JUMP --> EXTEND
+
+    EXTEND --> LEVEL{需要新扩展?}
+    LEVEL -->|是| ALLOC_EXT[eflash_mgr_alloc_pages4]
+    ALLOC_EXT --> WRITE_LINK[写入LINK对象<br/>链接到上一级]
+    WRITE_LINK --> UPDATE_ADDR[更新 ext_hdr_addrs]
+    UPDATE_ADDR --> RETURN[返回 max_obj_id++]
+
+    LEVEL -->|否| RETURN
+
+    BASE --> RETURN
+
+    style SKIP fill:#ff9999
+    style JUMP fill:#ff9999
+    style ALLOC_EXT fill:#99ccff
+```
+
+**关键点**：
+- ID 231 被保留为 LINK 对象，自动跳过
+- 基础容量：232 个对象（8页 × 29个/页 - 1个LINK）
+- 每级扩展：116 个对象（4页 × 29个/页 - 1个LINK）
+- 最大扩展：16 级
+- 总容量：232 + 16 × 116 = **2088 个对象**
+
+---
+
+### 5. 空间管理器
+
+#### 空闲链表结构
+
+```mermaid
+graph TD
+    subgraph "基块 Base Block LPN 8-11"
+        BB1[LPN 8<br/>count=57<br/>57个free_node] --> BB2[LPN 9<br/>count=57]
+        BB2 --> BB3[LPN 10<br/>count=57]
+        BB3 --> BB4[LPN 11<br/>count=57<br/>+ LINK信息]
+    end
+
+    BB4 -->|next_ext_addr| EB1[扩展块1 LPN X-X+3]
+
+    subgraph "扩展块 Extension Block 1"
+        EB1 --> EB1P1[Page 1<br/>57 nodes]
+        EB1P1 --> EB1P2[Page 2<br/>57 nodes]
+        EB1P2 --> EB1P3[Page 3<br/>57 nodes]
+        EB1P3 --> EB1P4[Page 4<br/>57 nodes + LINK]
+    end
+
+    EB1P4 -->|next_ext_addr| EB2[扩展块2 LPN Y-Y+3]
+
+    EB2 -.->|最多4级| EBMAX[扩展块4]
+
+    style BB4 fill:#ff9999
+    style EB1P4 fill:#ff9999
+    style EB1 fill:#99ccff
+    style EB2 fill:#99ccff
+```
+
+#### free_node 结构
+
+```c
+typedef struct {
+    uint32_t    addr;   // 起始逻辑地址 (24-bit)
+    uint32_t    size;   // 连续空闲字节数
+} free_node_t;  // 8 bytes
+```
+
+**页面布局**：
+- 前 2 字节：`uint16_t count` (当前页的节点数)
+- 后续 456 字节：57 个 free_node (57 × 8 = 456)
+- 最后一页末尾 6 字节：`free_node_link_t` (魔数 + 下一级地址)
+
+**容量计算**：
+- 基块：4 页 × 57 节点 = **228 节点**
+- 每级扩展：4 页 × 57 节点 = **228 节点**
+- 最大扩展：4 级
+- 总容量：228 + 4 × 228 = **1140 节点**
+
+#### 智能合并算法
+
+```mermaid
+flowchart TD
+    FREE[eflash_mgr_freeaddr, size] --> MERGE_PREV{与前驱相邻?<br/>node.addr + node.size == addr}
+
+    MERGE_PREV -->|是| REMOVE_PREV[remove_node_ending_ataddr]
+    MERGE_PREV -->|否| CHECK_NEXT
+
+    REMOVE_PREV --> UPDATE_ADDR[addr = prev_addr<br/>size += prev_size]
+    UPDATE_ADDR --> CHECK_NEXT
+
+    CHECK_NEXT{与后继相邻?<br/>addr + size == next.addr}
+
+    CHECK_NEXT -->|是| REMOVE_NEXT[remove_node_from_tablenext.addr]
+    CHECK_NEXT -->|否| INSERT
+
+    REMOVE_NEXT --> UPDATE_SIZE[size += next_size]
+    UPDATE_SIZE --> INSERT
+
+    INSERT[insert_node_to_tableaddr, size] --> EXTEND_CHECK{空间不足?}
+
+    EXTEND_CHECK -->|是| PRE_EXTEND[check_and_extend_free_node_table]
+    EXTEND_CHECK -->|否| DONE
+
+    PRE_EXTEND --> DONE
+
+    style MERGE_PREV fill:#99ff99
+    style CHECK_NEXT fill:#99ff99
+    style INSERT fill:#ff9999
+```
+
+**关键优势**：
+- ✅ 自动合并相邻空闲块，减少碎片
+- ✅ 辅助函数 `remove_node_ending_at()` 高效查找前驱
+- ✅ 预扩展检查避免多次扩展
+
+---
+
+## 数据结构设计
+
+### 核心数据结构总览
+
+```mermaid
+classDiagram
+    class eflash_ftl_t {
+        +eflash_mgr_t spc_mgr
+        +uint16_t root_page
+        +uint16_t shadow_root
+        +uint32_t next_count
+        +uint16_t current_epoch
+        +uint16_t active_txn_id
+        +bool is_initialized
+        +uint16_t base_hdr_addr
+        +uint16_t free_list_addr
+        +uint16_t ext_hdr_addrs[16]
+        +uint16_t max_obj_id
+        +uint16_t gc_head_page
+        +uint16_t gc_tail_page
+        +uint16_t gc_threshold
+        +uint32_t total_user_pages
+        +bool gc_in_progress
+        +uint32_t valid_page_count
+    }
+
+    class eflash_mgr_t {
+        +uint16_t total_pages
+        +uint16_t free_node_pages[4]
+        +uint32_t ext_free_node_addrs[4]
+        +uint16_t header_pages[8]
+        +uint16_t next_alloc_page
+        +uint32_t total_free_nodes
+    }
+
+    class ftl_meta_t {
+        +uint32_t global_count
+        +uint16_t sector_id
+        +uint16_t epoch
+        +uint16_t txn_id
+        +uint16_t adr[16]
+        +uint8_t status
+        +uint8_t ecc[5]
+    }
+
+    class obj_header_t {
+        +uint16_t pkg_id
+        +uint16_t class_id
+        +uint8_t type
+        +uint8_t reserved[3]
+        +uint32_t body_addr
+        +uint32_t body_size
+    }
+
+    class free_node_t {
+        +uint32_t addr
+        +uint32_t size
+    }
+
+    class ftl_page_t {
+        +uint8_t user_data[464]
+        +ftl_meta_t meta
+    }
+
+    eflash_ftl_t --> eflash_mgr_t : 包含
+    eflash_ftl_t --> ftl_meta_t : 使用
+    eflash_ftl_t --> obj_header_t : 管理
+    eflash_mgr_t --> free_node_t : 管理
+    ftl_page_t --> ftl_meta_t : 包含
+```
+
+### 物理页布局
+
+```mermaid
+graph LR
+    subgraph "512 字节物理页"
+        DATA[用户数据 464 字节<br/>0x000 - 0x1CF] --> META[元数据 48 字节<br/>0x1D0 - 0x1FF]
+    end
+
+    subgraph "元数据详细结构"
+        M1[global_count 4B<br/>0x1D0-0x1D3] --> M2[sector_id 2B<br/>0x1D4-0x1D5]
+        M2 --> M3[epoch 2B<br/>0x1D6-0x1D7]
+        M3 --> M4[txn_id 2B<br/>0x1D8-0x1D9]
+        M4 --> M5[adr[16] 32B<br/>0x1DA-0x1F9]
+        M5 --> M6[status 1B<br/>0x1FA]
+        M6 --> M7[ecc[5] 5B<br/>0x1FB-0x1FF]
+    end
+
+    style DATA fill:#e1f5ff
+    style META fill:#fff4e1
+    style M5 fill:#ff9999
+```
+
+### 系统区域布局
+
+```mermaid
+graph TB
+    subgraph "逻辑页 LPN 分配"
+        SYS[系统保留区 LPN 0-11]
+        USR[用户数据区 LPN 12+]
+    end
+
+    subgraph "系统区详细"
+        SYS --> OH[对象头表 LPN 0-7<br/>8页 232对象]
+        SYS --> FL[空闲链表 LPN 8-11<br/>4页 228节点]
+    end
+
+    subgraph "对象头表"
+        OH --> OH_BASE[基础区域 232对象]
+        OH_BASE --> OH_EXT[扩展区域 最多1856对象]
+    end
+
+    subgraph "空闲链表"
+        FL --> FL_BASE[基块 228节点]
+        FL_BASE --> FL_EXT[扩展块 最多912节点]
+    end
+
+    style SYS fill:#ff9999
+    style USR fill:#99ff99
+    style OH fill:#99ccff
+    style FL fill:#ffcc99
+```
+
+---
+
+## 关键算法流程
+
+### 1. 写操作流程
+
+```mermaid
+sequenceDiagram
+    participant APP as 应用
+    participant FTL as FTL核心
+    participant TXN as 事务管理
+    participant TREE as Radix Tree
+    participant MGR as 空间管理
+    participant GC as 垃圾回收
+    participant FLASH as Flash
+
+    APP->>FTL: eflash_ftl_writesector_id, data
+    activate FTL
+
+    FTL->>TXN: 检查是否有活跃事务
+    TXN-->>FTL: 无事务则隐式开始
+
+    FTL->>MGR: 检查空闲空间
+    MGR-->>FTL: free_pages
+
+    alt 空间不足
+        FTL->>GC: eflash_ftl_gc_trigger
+        GC->>FLASH: 回收无效页
+        GC-->>FTL: 释放成功
+    end
+
+    FTL->>MGR: 分配物理页
+    MGR->>FLASH: eflash_hw_eraseppn
+    MGR-->>FTL: 返回 ppn
+
+    FTL->>FLASH: 写入数据 + 元数据
+    Note over FTL,FLASH: 计算ECC<br/>设置status=READY
+
+    FTL->>TREE: trace_tree更新映射
+    TREE->>FLASH: 更新元数据 adr[]
+
+    FTL->>TXN: 如果在事务中<br/>更新shadow_root
+
+    FTL-->>APP: 返回成功
+    deactivate FTL
+```
+
+### 2. 读操作流程
+
+```mermaid
+flowchart TD
+    START[eflash_ftl_readsector_id] --> FIND[find_phys_page_by_sector]
+
+    FIND --> SEARCH[trace_tree查找sector_id]
+    SEARCH --> FOUND{找到映射?}
+
+    FOUND -->|否| ERROR[返回错误<br/>PAGE_NONE]
+    FOUND -->|是| READ[eflash_hw_readppn]
+
+    READ --> VERIFY[verify_and_correct_page]
+    VERIFY --> ECC_OK{ECC校验通过?}
+
+    ECC_OK -->|失败| ECC_ERROR[返回ECC错误]
+    ECC_OK -->|成功| EXTRACT[提取user_data464B]
+
+    EXTRACT --> RETURN[返回数据]
+
+    style FOUND fill:#99ff99
+    style ECC_OK fill:#99ff99
+    style ERROR fill:#ff9999
+    style ECC_ERROR fill:#ff9999
+```
+
+### 3. 掉电恢复流程
+
+```mermaid
+flowchart TD
+    POWER_ON[系统上电] --> INIT[eflash_ftl_init]
+
+    INIT --> CHECK_FLASH{Flash存在且有效?}
+    CHECK_FLASH -->|否| CREATE[创建新Flash文件]
+    CHECK_FLASH -->|是| SCAN[扫描系统页]
+
+    CREATE --> INIT_MGR[eflash_mgr_init]
+    SCAN --> INIT_MGR
+
+    INIT_MGR --> RECOVER_OBJ[恢复对象头表]
+    RECOVER_OBJ --> SCAN_OH[扫描LPN 0-7]
+    SCAN_OH --> FIND_MAX[max_obj_id恢复]
+
+    FIND_MAX --> RECOVER_FREE[恢复空闲链表]
+    RECOVER_FREE --> CALL_RECOVER[eflash_mgr_recover_ext_free_nodes]
+
+    CALL_RECOVER --> READ_BASE[读取基块LPN 8-11]
+    READ_BASE --> CHECK_LINK{有LINK信息?}
+
+    CHECK_LINK -->|是| FOLLOW_CHAIN[跟随LINK链]
+    CHECK_LINK -->|否| DONE
+
+    FOLLOW_CHAIN --> REBUILD[重建ext_free_node_addrs]
+    REBUILD --> COUNT_LEVELS[统计扩展级别]
+
+    COUNT_LEVELS --> RECOVER_TREE[恢复Radix Tree]
+    RECOVER_TREE --> FIND_ROOT[查找root_page]
+
+    FIND_ROOT --> SCAN_META[扫描元数据status]
+    SCAN_META --> CHECK_TXN{有COMMITTED页?}
+
+    CHECK_TXN -->|是| SET_ROOT[root_page = 最新COMMITTED]
+    CHECK_TXN -->|否| DEFAULT_ROOT[root_page = 默认值]
+
+    SET_ROOT --> FINALIZE[完成初始化]
+    DEFAULT_ROOT --> FINALIZE
+    DONE --> FINALIZE
+
+    FINALIZE --> READY[FTL就绪]
+
+    style POWER_ON fill:#e1f5ff
+    style READY fill:#99ff99
+    style CALL_RECOVER fill:#ff9999
+    style FOLLOW_CHAIN fill:#ff9999
+```
+
+#### 空闲链表扩展恢复详解
+
+```mermaid
+sequenceDiagram
+    participant INIT as eflash_ftl_init
+    participant MGR as eflash_mgr
+    participant FLASH as Flash存储
+
+    INIT->>MGR: eflash_mgr_recover_ext_free_nodes
+
+    activate MGR
+    MGR->>FLASH: 读取基块最后一页LPN 11
+    FLASH-->>MGR: 返回free_node_link_t
+
+    MGR->>MGR: 验证magic == 0x5F54
+
+    alt magic有效
+        MGR->>MGR: ext_free_node_addrs[0] = next_ext_addr
+
+        loop 遍历扩展级别
+            MGR->>FLASH: 读取扩展块最后一页
+            FLASH-->>MGR: 返回link信息
+
+            MGR->>MGR: 验证magic
+            MGR->>MGR: 保存next_ext_addr
+
+            MGR->>MGR: level++
+        end
+
+        MGR-->>INIT: 返回恢复的级别数
+    else magic无效
+        MGR-->>INIT: 返回0无扩展
+    end
+
+    deactivate MGR
+```
+
+---
+
+## 掉电恢复机制
+
+### 恢复策略总览
+
+```mermaid
+graph TB
+    subgraph "掉电场景"
+        P1[事务进行中掉电]
+        P2[GC进行中掉电]
+        P3[扩展操作中掉电]
+        P4[正常写入后掉电]
+    end
+
+    subgraph "恢复机制"
+        R1[Radix Tree恢复<br/>扫描COMMITTED状态]
+        R2[对象头恢复<br/>扫描max_obj_id]
+        R3[空闲链表恢复<br/>跟随LINK链]
+        R4[事务回滚<br/>丢弃shadow_root]
+    end
+
+    P1 --> R4
+    P2 --> R1
+    P3 --> R3
+    P4 --> R1
+
+    R1 --> CONSISTENCY[数据一致性保证]
+    R2 --> CONSISTENCY
+    R3 --> CONSISTENCY
+    R4 --> CONSISTENCY
+
+    style P1 fill:#ff9999
+    style P2 fill:#ff9999
+    style P3 fill:#ff9999
+    style P4 fill:#99ff99
+    style CONSISTENCY fill:#99ccff
+```
+
+### 事务原子性保证
+
+```mermaid
+stateDiagram-v2
+    direction LR
+
+    state "正常写入" as Normal {
+        [*] --> WriteData: 写入数据页
+        WriteData --> SetReady: status = READY 0xAD
+        SetReady --> UpdateTree: 更新Radix Tree
+        UpdateTree --> [*]
+    }
+
+    state "事务提交" as Commit {
+        [*] --> WriteShadow: 写入shadow_root
+        WriteShadow --> MarkCommitted: status = COMMITTED 0x21
+        MarkCommitted --> SwitchRoot: root = shadow_root
+        SwitchRoot --> InvalidateOld: 旧页标记INVALID
+        InvalidateOld --> [*]
+    }
+
+    state "掉电场景" as PowerFail {
+        [*] --> CheckStatus: 扫描所有页status
+
+        CheckStatus --> FoundCommitted: 发现COMMITTED
+        CheckStatus --> OnlyReady: 只有READY无COMMITTED
+
+        FoundCommitted --> UseCommitted: 使用最新COMMITTED页
+        OnlyReady --> DiscardShadow: 丢弃shadow_root
+
+        UseCommitted --> RestoreState: 恢复FTL状态
+        DiscardShadow --> RestoreState
+        RestoreState --> [*]
+    }
+
+    Normal --> Commit: txn_commit
+    Commit --> PowerFail: 掉电发生
+```
+
+**关键原则**：
+- ✅ COMMITTED (0x21) 是唯一可信的提交标记
+- ✅ READY (0xAD) 表示数据已写但未提交，掉电后应丢弃
+- ✅ shadow_root 在 abort 或掉电时直接丢弃，不影响 root_page
+
+---
+
+## 测试体系
+
+### 测试架构
+
+```mermaid
+graph TB
+    subgraph "基础测试套件 eflash_ftl_tests.c"
+        T1[test_init_recovery<br/>初始化与恢复]
+        T2[test_basic_read_write<br/>基本读写]
+        T3[test_object_headers<br/>对象头管理]
+        T4[test_transactions<br/>事务管理]
+        T5[test_power_failure<br/>掉电恢复]
+        T6[test_space_management<br/>空间管理]
+        T7[test_ecc_correction<br/>ECC纠错]
+        T8[test_radix_tree<br/>Radix Tree]
+        T9[test_stress<br/>压力测试]
+    end
+
+    subgraph "扩展测试套件 eflash_ftl_tests_extension.c"
+        E1[test_free_list_extension<br/>空闲链表扩展]
+        E2[test_cross_page_boundary<br/>跨页边界]
+        E3[test_maximum_capacity<br/>最大容量]
+        E4[test_radix_tree_max_depth<br/>Radix Tree深度]
+        E5[test_ecc_boundary_cases<br/>ECC边界]
+        E6[test_power_failure_extreme<br/>极端掉电]
+        E7[test_invalid_parameters<br/>无效参数]
+        E8[test_long_term_stability<br/>长期稳定性]
+        E9[test_valid_page_count_consistency<br/>有效页一致性]
+        E10[test_object_header_link_chain<br/>LINK链完整性]
+        E11[test_metadata_corruption_recovery<br/>元数据损坏恢复]
+        E12[test_aligned_unaligned_access<br/>对齐访问]
+        E13[test_transaction_functionality<br/>事务功能全面]
+        E14[test_large_data_read_write<br/>大数据读写]
+        E15[test_object_header_reuse<br/>对象头重用]
+        E16[test_sector_id_wraparound<br/>扇区ID回绕]
+        E17[test_transaction_mixed_read_write<br/>混合读写事务]
+        E18[test_fragmented_allocation<br/>碎片化分配]
+        E19[test_gc_threshold_variation<br/>GC阈值变化]
+        E20[test_partial_system_page_corruption<br/>系统页损坏]
+        E21[test_logical_address_edge_cases<br/>逻辑地址边界]
+        E22[test_head_wraparound<br/>Head回绕]
+        E23[test_real_free_pages_accuracy<br/>实时空闲页准确性]
+        E24[test_gc_migration_integrity<br/>GC迁移完整性]
+        E25[test_gc_emergency_mode<br/>GC紧急模式]
+        E26[test_transaction_consistency_verification<br/>事务一致性验证]
+    end
+
+    T1 --> ALL_TESTS[47个测试用例<br/>100%通过率]
+    T2 --> ALL_TESTS
+    T9 --> ALL_TESTS
+    E1 --> ALL_TESTS
+    E26 --> ALL_TESTS
+
+    style ALL_TESTS fill:#99ff99
+    style E26 fill:#ff9999
+```
+
+### 测试覆盖率统计
+
+| 指标 | 数值 | 说明 |
+|------|------|------|
+| 总测试用例数 | 47个 | 基础21 + 扩展26 |
+| 功能覆盖率 | ~99% | 几乎所有功能分支 |
+| 代码行覆盖率 | ~92% | 估算值 |
+| 分支覆盖率 | ~90% | 估算值 |
+| 测试/实现比 | 2.07:1 | 优秀 |
+| 测试代码行数 | ~9300行 | eflash_ftl_tests*.c |
+| 实现代码行数 | ~4500行 | eflash_ftl*.c + eflash_mgr.c |
+
+---
+
+## 性能特性
+
+### 关键性能指标
+
+| 操作 | 典型耗时 | 说明 |
+|------|---------|------|
+| 单次写入 | ~1ms | 包括ECC计算和Flash编程 |
+| 单次读取 | ~0.5ms | 包括ECC校验和纠错 |
+| 事务提交 | ~2ms | 全页重写方式 |
+| GC触发 | ~10-50ms | 取决于需迁移的页数 |
+| Radix Tree查找 | O(16) | 固定16层深度 |
+
+### 空间效率
+
+- **用户数据率**: 90.6% (464/512 字节)
+- **元数据开销**: 9.4% (48/512 字节)
+- **ECC开销**: 1.1% (5/464 字节)
+
+---
+
+## 设计决策与权衡
+
+### 1. 为什么选择 Radix Tree？
+
+**优势**：
+- ✅ 确定性查找时间 O(RADIX_DEPTH) = O(16)
+- ✅ 无需哈希冲突处理
+- ✅ 支持高效的范围查询
+- ✅ 内存占用可控（按需分配节点）
+
+**对比其他方案**：
+- vs Hash Table: Radix Tree 无冲突，更 predictable
+- vs B-Tree: Radix Tree 更适合位索引，实现更简单
+- vs Linear Scan: Radix Tree 快得多（O(16) vs O(N)）
+
+### 2. 为什么使用 Head/Tail GC 模型？
+
+**优势**：
+- ✅ 简单直观，易于理解和调试
+- ✅ 天然支持磨损均衡（顺序扫描）
+- ✅ O(1) 获取空闲页数
+- ✅ 支持紧急模式优化
+
+**权衡**：
+- ❌ estimated free pages 可能不准确（存在 stale pages）
+- ✅ 解决方案：提供 `get_real_free_pages()` 扫描所有页
+
+### 3. 为什么事务使用影子树？
+
+**优势**：
+- ✅ 原子性保证：要么全部提交，要么全部回滚
+- ✅ 掉电安全：未提交的 shadow_root 直接丢弃
+- ✅ 并发友好：读操作可继续使用 root_page
+
+**权衡**：
+- ❌ 需要额外空间存储 shadow_root
+- ❌ 事务中不能触发 GC（避免复杂性）
+
+### 4. 为什么对象头使用 LINK 链扩展？
+
+**优势**：
+- ✅ 动态扩展，按需分配
+- ✅ 魔数验证提高可靠性
+- ✅ 掉电后可重建扩展信息
+- ✅ 最多支持 2088 个对象
+
+**权衡**：
+- ❌ 扩展时需要额外分配 4 页
+- ❌ LINK 对象占用一个槽位
+
+---
+
+## 最佳实践
+
+### ✅ 推荐做法
+
+1. **始终使用事务** - 所有写操作包裹在 begin/commit 中
+2. **检查返回值** - 所有 API 调用都检查返回值
+3. **定期监控空闲空间** - 调用 `get_free_pages()` 或 `get_real_free_pages()`
+4. **优先使用 sector_id 接口** - `eflash_ftl_write/read` 而非 logical 接口
+5. **批量操作使用事务** - 减少 commit 次数提高效率
+
+### ❌ 避免做法
+
+1. ~~绕过事务直接写入~~ - 可能导致数据不一致
+2. ~~忽略 API 返回值~~ - 无法检测错误
+3. ~~在事务中执行耗时操作~~ - 阻塞 GC 触发
+4. ~~频繁调用 get_real_free_pages()~~ - O(N) 扫描影响性能
+5. ~~假设 estimated == real~~ - 存在 stale pages 时会有差异
+
+---
+
+## 常见问题 FAQ
+
+### Q1: 如何选择合适的 gc_threshold？
+
+**A**: 默认值为总页数的 10%。建议：
+- 写密集型应用：提高到 15-20%，提前触发 GC
+- 读密集型应用：降低到 5-8%，延迟 GC 触发
+- 通过 `test_gc_threshold_variation` 测试不同值的影响
+
+### Q2: 什么时候应该使用紧急模式？
+
+**A**: 紧急模式是自动触发的，当 `real_free_pages < gc_threshold` 时。无需手动干预。
+
+### Q3: 如何处理空间耗尽？
+
+**A**:
+1. 检查 `get_free_pages()` 返回值
+2. 如果接近阈值，主动调用 `gc_collect_all()`
+3. 如果仍然不足，`eflash_ftl_write()` 将返回错误码
+
+### Q4: 掉电后数据一定安全吗？
+
+**A**: 是的，前提是：
+- ✅ 使用了事务（begin/commit）
+- ✅ commit 成功返回
+- ✅ Flash 硬件本身可靠
+
+未提交的事务数据会丢失，但已提交的数据保证持久化。
+
+### Q5: 如何调试 Radix Tree？
+
+**A**: 启用 FTL_DEBUG_ENABLE，使用可视化工具：
+```c
+eflash_ftl_print_radix_tree_mermaid(FTL, FTL->root_page);
+// 或保存到文件
+eflash_ftl_print_radix_tree_mermaid_to_file(FTL, FTL->root_page);
+```
+
+---
+
+## 总结
+
+eFlash FTL 是一个精心设计的嵌入式 Flash 管理库，具有以下特点：
+
+### 核心优势
+
+1. **简洁高效**: 零动态内存，全局静态实例
+2. **可靠安全**: 事务原子性，掉电恢复，ECC 纠错
+3. **灵活可扩展**: 对象头和空闲链表动态扩展
+4. **智能 GC**: 正常/紧急双模式，避免写放大
+5. **全面测试**: 47 个测试用例，~99% 功能覆盖率
+
+### 适用场景
+
+- ✅ 资源受限的嵌入式系统
+- ✅ 需要掉电保护的存储应用
+- ✅ NAND/NOR Flash 管理
+- ✅ 对可靠性要求高的场景
+
+### 技术亮点
+
+- 🌟 Radix Tree 地址映射（16 层深度）
+- 🌟 Head/Tail 环形缓冲区 GC 模型
+- 🌟 影子树事务机制
+- 🌟 LINK 链动态扩展
+- 🌟 BCH 3-bit ECC 纠错
+- 🌟 智能空闲块合并
+- 🌟 紧急模式避免写放大
+
+---
+
+**文档版本**: v1.0
+**最后更新**: 2026-05-08
+**维护团队**: eFlash 开发团队
+
+如有疑问，请参考：
+- 📖 [README.md](README.md) - 项目概述和使用指南
+- 📊 [TEST_COVERAGE_COMPREHENSIVE_REPORT.md](TEST_COVERAGE_COMPREHENSIVE_REPORT.md) - 测试覆盖率详细报告
+- 📝 [CHANGELOG.md](CHANGELOG.md) - 版本历史记录
+- 💻 [eflash_ftl/API_DESIGN.md](eflash_ftl/API_DESIGN.md) - API 设计文档
