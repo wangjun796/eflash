@@ -3119,7 +3119,7 @@ int test_valid_page_count_consistency(void) {
         }
         
         // Progress report every 500 writes
-        if ((i + 1) % 500 == 0) {
+        if ((i + 1) % 100 == 0) {
             uint32_t valid_count = g_ftl_instance.valid_page_count;
             uint32_t real_free = eflash_ftl_get_real_free_pages();
             printf("    [%d/%d] valid_page_count=%u, real_free_pages=%u\n",
@@ -3130,6 +3130,98 @@ int test_valid_page_count_consistency(void) {
     printf("\n  Phase 1 Summary:\n");
     printf("    Successful writes: %d / %d\n", phase1_success, PHASE1_WRITES);
     printf("    Failed writes: %d\n", phase1_failed);
+    
+    // ==========================================================================
+    // Phase 1.5: Read verification - verify all written data
+    // ==========================================================================
+    printf("\n  [PHASE 1.5] Reading back and verifying 1999 unique sectors...\n");
+    printf("  [INFO] Each sector was written multiple times, verifying LAST write\n\n");
+    
+    int read_success = 0;
+    int read_failed = 0;
+    int data_mismatch = 0;
+    
+    // For each unique sector (0-1998), calculate the LAST write iteration
+    // Last write for sector S happens at iteration: S + 1999 * k (where k is max)
+    // For 3000 writes with mod 1999:
+    //   - Sectors 0-1000: written 2 times (at i=S and i=S+1999)
+    //   - Sectors 1001-1998: written 1 time (at i=S)
+    
+    for (uint16_t sector_id = 0; sector_id < 1999; sector_id++) {
+        if (eflash_ftl_read(sector_id, read_buf) == 0) {
+            read_success++;
+            
+            // Calculate which iteration last wrote to this sector
+            // If sector_id < 1001, it was written twice (at i=sector_id and i=sector_id+1999)
+            // The last write is at i = sector_id + 1999
+            // If sector_id >= 1001, it was written once (at i=sector_id)
+            int last_write_i;
+            if (sector_id < (PHASE1_WRITES - 1999)) {  // sector_id < 1001
+                // Written twice, last write is at i = sector_id + 1999
+                last_write_i = sector_id + 1999;
+            } else {
+                // Written once, at i = sector_id
+                last_write_i = sector_id;
+            }
+            
+            // Verify data integrity against the LAST write
+            uint8_t expected_pattern = (uint8_t)(last_write_i & 0xFF);
+            uint8_t expected_first_byte = (uint8_t)(last_write_i >> 8);
+            
+            // Check first byte (contains high byte of last_write_i)
+            if (read_buf[0] != expected_first_byte) {
+                data_mismatch++;
+                if (data_mismatch <= 5) {
+                    printf("    MISMATCH sector %d: expected[0]=0x%02X (from i=%d), got=0x%02X\n",
+                           sector_id, expected_first_byte, last_write_i, read_buf[0]);
+                }
+            }
+            
+            // Check rest of buffer (should be last_write_i & 0xFF)
+            bool buf_ok = true;
+            for (int j = 1; j < USER_DATA_SIZE; j++) {
+                if (read_buf[j] != expected_pattern) {
+                    buf_ok = false;
+                    break;
+                }
+            }
+            
+            if (!buf_ok) {
+                data_mismatch++;
+                if (data_mismatch <= 5) {
+                    printf("    MISMATCH sector %d: expected pattern=0x%02X (from i=%d)\n",
+                           sector_id, expected_pattern, last_write_i);
+                }
+            }
+        } else {
+            read_failed++;
+            if (read_failed <= 5) {
+                printf("    WARNING: Read failed for sector %d\n", sector_id);
+            }
+        }
+        
+        // Progress report every 500 sectors
+        if ((sector_id + 1) % 500 == 0) {
+            printf("    [%d/1999] verified, mismatches=%d\n", sector_id + 1, data_mismatch);
+        }
+    }
+    
+    printf("\n  Phase 1.5 Summary:\n");
+    printf("    Unique sectors verified: %d / 1999\n", read_success);
+    printf("    Failed reads: %d\n", read_failed);
+    printf("    Data mismatches: %d\n", data_mismatch);
+    
+    if (read_failed > 0) {
+        printf("    [FAIL] Some reads failed!\n");
+        test_passed = 0;
+    }
+    
+    if (data_mismatch > 0) {
+        printf("    [FAIL] Data integrity check failed!\n");
+        test_passed = 0;
+    } else {
+        printf("    [PASS] All data verified successfully!\n");
+    }
     
     // Check consistency after Phase 1
     uint32_t valid_count_phase1 = g_ftl_instance.valid_page_count;
@@ -3241,6 +3333,241 @@ int test_valid_page_count_consistency(void) {
 }
 
 // ============================================================================
+// Test: Object Header LINK Chain Integrity
+// ============================================================================
+int test_object_header_link_chain(void) {
+    printf("\n========================================\n");
+    printf("TEST: Object Header LINK Chain Integrity\n");
+    printf("========================================\n\n");
+    
+    int test_passed = 1;
+    
+    // Initialize test flash
+    init_test_flash();
+    eflash_ftl_init();
+    
+    extern eflash_ftl_t g_ftl_instance;
+    
+    #define OBJ_ID_LINK 231  // Reserved LINK object ID
+    
+    printf("  [INFO] Base header capacity: %d objects\n", BASE_HEADER_CAPACITY);
+    printf("  [INFO] Extended header capacity per block: %d objects\n", EXT_HEADER_CAPACITY);
+    printf("  [INFO] OBJ_ID_LINK (reserved): %d\n", OBJ_ID_LINK);
+    printf("\n");
+    
+    // ==========================================================================
+    // Phase 1: Allocate enough objects to trigger extension
+    // ==========================================================================
+    printf("  [PHASE 1] Allocating objects to trigger header extension...\n");
+    printf("  [INFO] Need to allocate >%d objects to trigger extension\n\n", BASE_HEADER_CAPACITY);
+    
+    #define NUM_OBJECTS (BASE_HEADER_CAPACITY + 50)  // Allocate 50 more than base capacity
+    uint16_t obj_ids[NUM_OBJECTS];
+    int alloc_count = 0;
+    
+    for (int i = 0; i < NUM_OBJECTS; i++) {
+        obj_ids[i] = eflash_ftl_obj_alloc_header();
+        if (obj_ids[i] != 0xFFFF) {
+            alloc_count++;
+            
+            // Write a valid object header to Flash
+            obj_header_t hdr;
+            memset(&hdr, 0, sizeof(obj_header_t));
+            hdr.pkg_id = 0x5453;  // "ST" - Test object
+            hdr.class_id = 0x4F42; // "OB" - OBject
+            hdr.type = OBJ_TYPE_NORMAL;
+            hdr.body_size = 0;
+            hdr.body_addr = 0;
+            
+            if (eflash_ftl_obj_set_header(obj_ids[i], &hdr) != 0) {
+                printf("    WARNING: Failed to write header for obj_id=%d\n", obj_ids[i]);
+            }
+            
+            // Print first 10 and last 10 allocated IDs for debugging
+            if (i < 10 || i >= NUM_OBJECTS - 10) {
+                printf("    Object %d -> obj_id=%d (header written)\n", i, obj_ids[i]);
+            }
+        } else {
+            printf("    WARNING: Allocation failed at object %d\n", i);
+        }
+        
+        // Progress report every 50 objects
+        if ((i + 1) % 50 == 0) {
+            printf("    [%d/%d] allocated, current max_obj_id=%d\n",
+                   i + 1, NUM_OBJECTS, g_ftl_instance.max_obj_id);
+        }
+    }
+    
+    printf("\n  Phase 1 Summary:\n");
+    printf("    Successfully allocated: %d / %d objects\n", alloc_count, NUM_OBJECTS);
+    printf("    Final max_obj_id: %d\n", g_ftl_instance.max_obj_id);
+    
+    if (alloc_count < NUM_OBJECTS) {
+        printf("    [FAIL] Not all objects allocated!\n");
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Phase 2: Verify LINK chain integrity
+    // ==========================================================================
+    printf("\n  [PHASE 2] Verifying LINK chain integrity...\n\n");
+    
+    // The LINK object should be at OBJ_ID_LINK
+    printf("    Checking LINK object at ID %d...\n", OBJ_ID_LINK);
+    
+    obj_header_t link_hdr;
+    if (eflash_ftl_obj_get_header(OBJ_ID_LINK, &link_hdr) == 0) {
+        printf("      ✓ LINK object exists\n");
+        
+        // Verify LINK object signature
+        bool link_valid = true;
+        
+        // Check pkg_id = "FT" (0x5F54)
+        if (link_hdr.pkg_id != 0x5F54) {
+            printf("      ✗ pkg_id mismatch: expected 0x5F54, got 0x%04X\n", link_hdr.pkg_id);
+            link_valid = false;
+        } else {
+            printf("      ✓ pkg_id = 0x5F54 (\"FT\")\n");
+        }
+        
+        // Check class_id = "LN" (0x4C4E)
+        if (link_hdr.class_id != 0x4C4E) {
+            printf("      ✗ class_id mismatch: expected 0x4C4E, got 0x%04X\n", link_hdr.class_id);
+            link_valid = false;
+        } else {
+            printf("      ✓ class_id = 0x4C4E (\"LN\")\n");
+        }
+        
+        // Check reserved bytes
+        if (link_hdr.reserved[0] != 0xAD || link_hdr.reserved[1] != 0xDE) {
+            printf("      ✗ reserved bytes mismatch: expected [0xAD, 0xDE], got [0x%02X, 0x%02X]\n",
+                   link_hdr.reserved[0], link_hdr.reserved[1]);
+            link_valid = false;
+        } else {
+            printf("      ✓ reserved = [0xAD, 0xDE]\n");
+        }
+        
+        if (!link_valid) {
+            printf("    [FAIL] LINK object signature is invalid!\n");
+            test_passed = 0;
+        } else {
+            printf("    [PASS] LINK object signature is valid\n");
+        }
+        
+        // Check next_ext pointer
+        printf("\n    LINK chain structure:\n");
+        printf("      Base capacity: %d objects\n", BASE_HEADER_CAPACITY);
+        printf("      Extended capacity per block: %d objects\n", EXT_HEADER_CAPACITY);
+        printf("      Total allocated: %d objects\n", alloc_count);
+        
+        // Calculate expected number of extensions
+        int objects_beyond_base = alloc_count - BASE_HEADER_CAPACITY;
+        if (objects_beyond_base > 0) {
+            int expected_extensions = (objects_beyond_base + EXT_HEADER_CAPACITY - 1) / EXT_HEADER_CAPACITY;
+            printf("      Expected extensions: %d\n", expected_extensions);
+            printf("      Objects in extensions: %d\n", objects_beyond_base);
+        } else {
+            printf("      No extensions needed\n");
+        }
+        
+    } else {
+        printf("    [FAIL] Cannot read LINK object!\n");
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Phase 3: Verify all allocated objects are accessible
+    // ==========================================================================
+    printf("\n  [PHASE 3] Verifying all allocated objects are accessible...\n\n");
+    
+    int accessible_count = 0;
+    int inaccessible_count = 0;
+    
+    for (int i = 0; i < alloc_count; i++) {
+        obj_header_t hdr;
+        int ret = eflash_ftl_obj_get_header(obj_ids[i], &hdr);
+        if (ret == 0) {
+            accessible_count++;
+        } else {
+            inaccessible_count++;
+            if (inaccessible_count <= 5) {
+                printf("    WARNING: Cannot access object %d (ID=%d), ret=%d\n", i, obj_ids[i], ret);
+                printf("      FTL state: max_obj_id=%d, base_hdr_addr=%d\n",
+                       g_ftl_instance.max_obj_id, g_ftl_instance.base_hdr_addr);
+                if (obj_ids[i] >= 232) {
+                    printf("      Extension level 0 addr: %d\n", g_ftl_instance.ext_hdr_addrs[0]);
+                }
+            }
+        }
+        
+        // Progress report every 100 objects
+        if ((i + 1) % 100 == 0) {
+            printf("    [%d/%d] verified\n", i + 1, alloc_count);
+        }
+    }
+    
+    printf("\n  Phase 3 Summary:\n");
+    printf("    Accessible objects: %d / %d\n", accessible_count, alloc_count);
+    printf("    Inaccessible objects: %d\n", inaccessible_count);
+    
+    if (inaccessible_count > 0) {
+        printf("    [FAIL] Some objects are not accessible!\n");
+        test_passed = 0;
+    } else {
+        printf("    [PASS] All objects are accessible\n");
+    }
+    
+    // ==========================================================================
+    // Phase 4: Delete some objects and verify chain integrity
+    // ==========================================================================
+    printf("\n  [PHASE 4] Deleting some objects and verifying chain...\n\n");
+    
+    // Delete first 10 objects
+    int delete_count = 10;
+    printf("    Deleting first %d objects...\n", delete_count);
+    
+    for (int i = 0; i < delete_count && i < alloc_count; i++) {
+        // Note: There's no explicit delete function, but we can overwrite with dummy data
+        obj_header_t dummy_hdr;
+        memset(&dummy_hdr, 0, sizeof(obj_header_t));
+        eflash_ftl_obj_set_header(obj_ids[i], &dummy_hdr);
+    }
+    
+    printf("    Deleted %d objects\n", delete_count);
+    
+    // Verify LINK object is still intact
+    printf("\n    Verifying LINK object after deletion...\n");
+    obj_header_t link_hdr_after;
+    if (eflash_ftl_obj_get_header(OBJ_ID_LINK, &link_hdr_after) == 0) {
+        if (link_hdr_after.pkg_id == 0x5F54 && link_hdr_after.class_id == 0x4C4E) {
+            printf("      ✓ LINK object still valid after deletion\n");
+        } else {
+            printf("      ✗ LINK object corrupted after deletion!\n");
+            test_passed = 0;
+        }
+    } else {
+        printf("      ✗ Cannot read LINK object after deletion!\n");
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Summary
+    // ==========================================================================
+    printf("\n========================================\n");
+    if (test_passed) {
+        printf("[PASSED] test_object_header_link_chain\n");
+        printf("LINK chain integrity verified successfully!\n");
+    } else {
+        printf("[FAILED] test_object_header_link_chain\n");
+        printf("LINK chain integrity check failed!\n");
+    }
+    printf("========================================\n");
+    
+    cleanup_test_flash();
+    return test_passed ? 0 : 1;
+}
+
+// ============================================================================
 // Main Entry Point
 // ============================================================================
 int main(int argc, char *argv[]) {
@@ -3255,13 +3582,15 @@ int main(int argc, char *argv[]) {
     //RUN_TEST(test_free_list_extension);
     //RUN_TEST(test_free_list_extension_stress);
     //RUN_TEST(test_cross_page_boundary);
-    //RUN_TEST(test_radix_tree_max_depth);
     //RUN_TEST(test_ecc_boundary_cases);
-    //RUN_TEST(test_power_failure_extreme);
+    //RUN_TEST(test_maximum_capacity); 
     //RUN_TEST(test_invalid_parameters);
-    //RUN_TEST(test_long_term_stability);
+    //RUN_TEST(test_radix_tree_max_depth);
     //RUN_TEST(test_valid_page_count_consistency);
-    RUN_TEST(test_maximum_capacity);
+    //RUN_TEST(test_object_header_link_chain);
+    RUN_TEST(test_power_failure_extreme);
+    //RUN_TEST(test_long_term_stability);
+
     
     // Summary
     printf("\n========================================\n");

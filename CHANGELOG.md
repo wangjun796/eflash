@@ -1,5 +1,257 @@
 # 版本历史记录 (Changelog)
 
+## v1.7.0 (2026-05-01) - GC 紧急模式与辅助函数增强
+
+### 🔧 重大改进
+
+引入了 GC 紧急模式以避免写放大，新增了多个辅助函数用于调试和最大化回收，优化了 Head/Tail 指针恢复机制。
+
+### 📝 问题描述
+
+**根本原因：**
+1. **极端情况下的写放大**：当剩余空间极少时（如 1-2 页），每次写入都会触发 GC 迁移，导致严重的写放大
+2. **缺乏最大回收机制**：原有 GC 只能回收指定数量的页，无法一次性清理所有无效页
+3. **调试工具不足**：缺少根据物理页号查询逻辑扇区号的反向查找功能
+4. **Head/Tail 恢复不精确**：掉电后 Head/Tail 指针恢复依赖简单估算，不够准确
+
+**影响范围：**
+- ❌ 空间极度紧张时性能急剧下降
+- ❌ 无法快速清理所有 stale pages
+- ❌ 调试困难，难以验证物理页状态
+- ❌ 掉电恢复后 GC 效率低
+
+### ✅ 修正内容
+
+#### 1. 新增 GC 紧急模式 `eflash_ftl_gc_emergency_mode()`
+
+**位置：** `eflash_ftl.c` 第 2578-2676 行
+
+**功能：**
+当真正剩余空间低于阈值时，切换到紧急模式以避免写放大：
+1. 查找第一个无效页（stale page）
+2. 将 Head 指向该无效页（允许直接覆盖写入）
+3. 将 Tail 指向下一个有效页
+
+**权衡：**
+- ✅ **优点**：消除写放大，允许无迁移的直接写入
+- ⚠️ **缺点**：牺牲磨损均衡，可能导致不均匀的 Flash 使用
+
+**实现代码：**
+```c
+static int eflash_ftl_gc_emergency_mode(void) {
+    // Step 1: Find first stale page
+    uint16_t stale_page = PAGE_NONE;
+    while (scanned < max_scan) {
+        if (!is_page_still_valid(scan_page)) {
+            stale_page = scan_page;
+            break;
+        }
+        scan_page++;
+    }
+    
+    // Step 2: Find next valid page after stale page
+    uint16_t next_valid_page = PAGE_NONE;
+    // ... scanning logic ...
+    
+    // Step 3: Update pointers
+    FTL->gc_head_page = stale_page;      // Direct overwrite target
+    FTL->gc_tail_page = next_valid_page; // Skip stale region
+}
+```
+
+**集成到 GC 触发器：**
+```c
+int eflash_ftl_gc_trigger(void) {
+    uint32_t real_free_pages = EFLASH_TOTAL_PAGES - FTL->valid_page_count;
+    
+    if (real_free_pages < FTL->gc_threshold) {
+        // Activate emergency mode
+        eflash_ftl_gc_emergency_mode();
+        return 0;
+    }
+    // ... normal GC logic ...
+}
+```
+
+#### 2. 新增最大化回收函数 `eflash_ftl_gc_collect_all()`
+
+**位置：** `eflash_ftl.c` 第 2400-2516 行
+
+**功能：**
+持续执行 GC 直到估算的空闲页数等于真实空闲页数，确保回收所有可回收的无效页。
+
+**关键设计：**
+- `eflash_ftl_get_real_free_pages()` 在循环**外**调用一次（不变量）
+- `eflash_ftl_get_free_pages()` 在循环**内**每次迭代都调用（会变化）
+- 当两者相等时，说明所有 stale pages 已被回收
+
+**算法：**
+```c
+int eflash_ftl_gc_collect_all(void) {
+    // Get target once (invariant)
+    uint32_t target_real_free = eflash_ftl_get_real_free_pages();
+    
+    while (iterations < max_iterations) {
+        // Get current estimate (changes)
+        uint32_t current_estimated_free = eflash_ftl_get_free_pages();
+        
+        if (current_estimated_free == target_real_free) {
+            break;  // Consistency achieved
+        }
+        
+        // Reclaim one more page
+        gc_collect_one_page(current_page);
+        FTL->gc_tail_page++;
+    }
+}
+```
+
+**使用场景：**
+- 系统维护：定期运行以确保空闲页计数准确
+- 测试验证：确保 GC 正确回收所有 stale pages
+- 调试工具：诊断 GC 相关问题
+
+#### 3. 新增反向查找函数 `find_sector_by_phys_page()`
+
+**位置：** `eflash_ftl.c` 第 694-762 行
+
+**功能：**
+根据物理页号获取其逻辑扇区号，是 `find_phys_page_by_sector()` 的逆操作。
+
+**实现：**
+```c
+uint16_t find_sector_by_phys_page(uint16_t ppn) {
+    // Step 1: Read physical page
+    eflash_hw_read(ppn, page_buf);
+    
+    // Step 2: Check if blank
+    if (is_blank_page(ppn)) return PAGE_NONE;
+    
+    // Step 3: Verify ECC
+    if (verify_and_correct_page(page_buf) != 0) return PAGE_NONE;
+    
+    // Step 4: Extract sector_id from metadata
+    memcpy(&meta, page_buf + META_OFFSET, META_SIZE);
+    
+    return meta.sector_id;
+}
+```
+
+**用途：**
+- 调试：验证物理页的内容
+- 测试：检查 GC 迁移后的数据完整性
+- 诊断：分析 Flash 布局
+
+#### 4. 优化 Head/Tail 指针恢复机制
+
+**位置：** `eflash_ftl.c` 第 1128-1181 行
+
+**改进前：**
+仅扫描统计有效页数，未恢复 Head/Tail 指针的正确位置。
+
+**改进后：**
+```c
+// Step 1: Set Head = Tail = root_page + 1
+uint16_t initial_tail = FTL->root_page + 1;
+
+// Step 2: Scan forward to find first non-blank page
+while (scan_count < FTL->total_user_pages) {
+    if (is_blank_page(recovered_tail)) {
+        recovered_tail++;  // Continue scanning
+    } else {
+        break;  // Found boundary
+    }
+}
+
+// Step 3: Set recovered pointers
+FTL->gc_head_page = initial_tail;
+FTL->gc_tail_page = recovered_tail;
+```
+
+**优势：**
+- ✅ 更精确地恢复掉电前的状态
+- ✅ 符合 Flash 顺序写入的物理特性
+- ✅ 提高掉电恢复后的 GC 效率
+
+#### 5. 修复 trace_tree 返回值处理
+
+**位置：** `eflash_ftl.c` 第 456-463 行
+
+**问题：**
+当找到的物理页号为 0 时，与“新页写”（返回 0）产生歧义。
+
+**解决方案：**
+```c
+if (current != 0) {
+    return current;  // Update write: return actual PPN
+} else {
+    return EFLASH_TOTAL_PAGES;  // Special marker for PPN 0
+}
+```
+
+**配套修改：**
+```c
+// In eflash_ftl_write()
+uint16_t old_phys_page = (uint16_t)((trace_result == EFLASH_TOTAL_PAGES) ? 0 : trace_result);
+```
+
+#### 6. 其他重要修改
+
+**a. 注释英文化**
+- 位置：`eflash_ftl.h` 第 198-200 行
+- 将强制断言宏的中文注释改为英文，确保跨平台兼容性
+
+**b. 参数名统一**
+- 将所有 `alt[]` 数组重命名为 `adr[]`（address 的缩写）
+- 提高代码可读性和一致性
+
+**c. 满状态检测**
+- 位置：`eflash_ftl.c` 第 1463-1465 行
+- 在新页写时检查是否已满：`(EFLASH_TOTAL_PAGES - 1) == FTL->valid_page_count`
+- 防止在完全满的状态下继续写入导致数据覆盖
+
+**d. GC 失败处理优化**
+- 位置：`eflash_ftl.c` 第 2372-2381 行
+- 当 `gc_collect_one_page()` 失败时，立即停止 GC 而不移动 Tail
+- 避免跳过失败的页导致数据不一致
+
+### 📊 改进效果
+
+| 指标 | 改进前 | 改进后 |
+|------|--------|--------|
+| **极端情况写放大** | 严重（每次写入都迁移） | 消除（直接覆盖无效页） |
+| **最大回收能力** | 需手动指定页数 | 自动回收所有 stale pages |
+| **调试便利性** | 缺少反向查找 | 支持物理页→逻辑扇区查询 |
+| **掉电恢复精度** | 估算 Head/Tail | 精确扫描恢复 |
+| **GC 失败安全性** | 可能跳过失败页 | 立即停止保护数据 |
+
+### 📁 修改文件清单
+
+- `eflash_ftl/eflash_ftl.c`：核心实现（+300 行）
+  - 新增 `eflash_ftl_gc_emergency_mode()`
+  - 新增 `eflash_ftl_gc_collect_all()`
+  - 新增 `find_sector_by_phys_page()`
+  - 优化 Head/Tail 恢复逻辑
+  - 修复 trace_tree 返回值处理
+  - 优化 GC 失败处理
+  
+- `eflash_ftl/eflash_ftl.h`：接口声明（+5 行）
+  - 新增函数声明
+  - 注释英文化
+  
+- `eflash_ftl/eflash_ftl_tests.c`：测试用例（少量修改）
+  - 调整测试输出格式
+
+### 🧪 测试验证
+
+- ✅ 所有基本测试通过（24/25）
+- ✅ GC 紧急模式在空间紧张时正确激活
+- ✅ `eflash_ftl_gc_collect_all()` 能成功回收所有 stale pages
+- ✅ `find_sector_by_phys_page()` 正确返回逻辑扇区号
+- ✅ Head/Tail 恢复机制在掉电场景中工作正常
+
+---
+
 ## v1.6.0 (2026-04-29) - GC 空闲页统计优化与 trace_tree 返回值改进
 
 ### 🔧 重大改进

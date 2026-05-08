@@ -1,19 +1,21 @@
 # eFlash FTL - 嵌入式 Flash 转换层库
 
-**版本**: v1.5.1 (2026-04-28) | [查看版本历史](CHANGELOG.md)
+**版本**: v1.7.0 (2026-05-01) | [查看版本历史](CHANGELOG.md)
 
 ## 📖 概述
 
 eFlash 是一个轻量级的嵌入式 Flash 转换层（FTL）库，专为资源受限的嵌入式系统设计。它提供 NAND Flash 管理功能，包括：
 
 - ✅ **磨损均衡** - 延长 Flash 寿命
-- ✅ **垃圾回收** - 自动空间管理
+- ✅ **垃圾回收** - 自动空间管理，支持紧急模式避免写放大
 - ✅ **事务支持** - 原子性写操作
-- ✅ **掉电恢复** - 系统崩溃后数据一致性
+- ✅ **掉电恢复** - 系统崩溃后数据一致性，精确 Head/Tail 指针恢复
 - ✅ **ECC 纠错** - BCH 3-bit 纠错能力
 - ✅ **对象管理** - 灵活的元数据存储
 - ✅ **零动态内存** - 全局静态实例，适合嵌入式环境
 - ✅ **内存映射 Flash** - 高性能文件访问，基地址 0x80000000
+- ✅ **智能 GC** - 根据空间状态自动切换正常/紧急模式
+- ✅ **最大回收** - 一键清理所有无效页，确保空闲页计数准确
 
 ---
 
@@ -549,9 +551,16 @@ gcc -Ipath/to/eflash_ftl your_app.c -L. -leflash -lecc_lib -o your_app
 
 | 函数 | 说明 | 返回值 |
 |------|------|--------|
-| `eflash_ftl_gc_trigger()` | 触发 GC | void |
-| `eflash_ftl_gc_collect(count)` | 执行 GC 回收 | 释放的页数 |
-| `eflash_ftl_get_free_pages()` | 获取空闲页数 | `uint32_t` |
+| `eflash_ftl_gc_trigger()` | 触发 GC（自动选择正常/紧急模式） | void |
+| `eflash_ftl_gc_collect(count)` | 执行 GC 回收指定页数 | 释放的页数 |
+| `eflash_ftl_gc_collect_all()` | **新增** 最大化回收，清理所有无效页 | 释放的页数 |
+| `eflash_ftl_get_free_pages()` | 获取估算空闲页数（基于 Head/Tail） | `uint32_t` |
+| `eflash_ftl_get_real_free_pages()` | **新增** 获取真实空闲页数（扫描所有物理页） | `uint32_t` |
+
+**GC 模式：**
+- **正常模式**：空间充足时，按计算的数量回收页面
+- **紧急模式**：空间极度紧张时（< gc_threshold），直接覆盖无效页以避免写放大
+- **最大回收**：调用 `eflash_ftl_gc_collect_all()` 可一次性清理所有 stale pages
 
 ### 空间管理
 
@@ -566,6 +575,56 @@ gcc -Ipath/to/eflash_ftl your_app.c -L. -leflash -lecc_lib -o your_app
 - ✅ **智能合并**：释放时自动与前后相邻空闲块合并
 - ✅ **正确性验证**：使用 `assert` 验证相邻关系，异常时尽早发现
 - ✅ **代码简洁**：辅助函数 `remove_node_ending_at()` 查找前驱相邻块
+
+---
+
+## 🔍 调试工具
+
+### 物理页查询函数
+
+| 函数 | 说明 | 返回值 |
+|------|------|--------|
+| `find_phys_page_by_sector(sector)` | 根据逻辑扇区号查找物理页号 | PPN 或 PAGE_NONE |
+| `find_sector_by_phys_page(ppn)` | **新增** 根据物理页号获取逻辑扇区号 | sector_id 或 PAGE_NONE |
+
+**用途：**
+- 验证 Radix Tree 映射的正确性
+- 检查 GC 迁移后的数据完整性
+- 分析 Flash 布局和磨损情况
+
+**使用示例：**
+```c
+// 正向查询：sector -> physical page
+uint16_t ppn = find_phys_page_by_sector(100);
+if (ppn != PAGE_NONE) {
+    printf("Sector 100 is at physical page %d\n", ppn);
+}
+
+// 反向查询：physical page -> sector
+uint16_t sector = find_sector_by_phys_page(500);
+if (sector != PAGE_NONE) {
+    printf("Physical page 500 contains sector %d\n", sector);
+}
+```
+
+### 空闲页统计对比
+
+```c
+// 估算值（快速，基于 Head/Tail）
+uint32_t estimated = eflash_ftl_get_free_pages();
+
+// 真实值（准确，扫描所有物理页）
+uint32_t real = eflash_ftl_get_real_free_pages();
+
+printf("Estimated: %u, Real: %u, Diff: %d\n",
+       estimated, real, (int)(estimated - real));
+
+// 如果差异很大，说明有很多 stale pages 未回收
+if (estimated > real) {
+    // 调用最大回收清理所有无效页
+    eflash_ftl_gc_collect_all();
+}
+```
 
 ---
 

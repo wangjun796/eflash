@@ -159,6 +159,7 @@ void eflash_ftl_txn_abort(void);
 // --- GC Interface Functions ---
 int  eflash_ftl_gc_trigger(void);  // Manually trigger GC
 int  eflash_ftl_gc_collect(uint16_t pages_to_free); // Reclaim specified number of pages
+int  eflash_ftl_gc_collect_all(void);  // Reclaim all stale pages (maximize reclamation)
 uint32_t eflash_ftl_get_free_pages(void); // Get current number of free pages (based on Head/Tail)
 uint32_t eflash_ftl_get_real_free_pages(void); // Get REAL free pages by scanning all physical pages
 
