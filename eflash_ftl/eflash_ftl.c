@@ -581,7 +581,7 @@ int eflash_ftl_obj_get_header(uint16_t obj_id, obj_header_t *hdr) {
 
     // Read the entire system page through FTL layer (wear leveling enabled)
     uint8_t page_buf[USER_DATA_SIZE];  // System pages only contain user data area
-    memset(page_buf, 0, USER_DATA_SIZE);  // 确保缓冲区清零
+    memset(page_buf, 0, USER_DATA_SIZE);  // Ensure buffer is zeroed
     int ret = read_system_page(lpn, page_buf);
     FTL_DEBUG("[OBJ_GET] read_system_page returned: %d\n", ret);
     
@@ -590,7 +590,7 @@ int eflash_ftl_obj_get_header(uint16_t obj_id, obj_header_t *hdr) {
         return -1;
     }
 
-    // 打印读取到的原始数据（至少打印 header 部分）
+    // Print raw data read (at least print header portion)
     FTL_DEBUG("[OBJ_GET] Raw data at offset %d (first 32 bytes):\n", offset);
     for (int i = 0; i < 32 && (offset + i) < USER_DATA_SIZE; i++) {
         if (i % 8 == 0) FTL_DEBUG("[OBJ_GET]   ");

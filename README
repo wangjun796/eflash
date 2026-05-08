@@ -104,13 +104,18 @@ cd build_vs2022\Release
 
 ### 测试覆盖范围
 
-测试套件包含 **25 个测试用例**，涵盖以下功能模块：
+测试套件包含 **47 个测试用例**（基础测试 21 个 + 扩展测试 26 个），实现 **~99% 功能覆盖率**。
 
-**最新改进 (v1.4.0)**：
-- ✅ GC 触发时机优化，解决 radix tree 竞态条件
-- ✅ 测试用例改进，正确检测 GC 触发
-- ✅ 内存映射文件支持，性能提升 ~10x
-- ✅ **100% 测试通过率** (25/25)
+**最新改进 (v1.8.0)**：
+- ✅ 新增 `test_transaction_consistency_verification` - 严格验证事务 abort/commit 的数据一致性
+- ✅ 新增 `test_gc_emergency_mode` - 验证 GC 紧急模式避免写放大
+- ✅ 新增 `test_gc_migration_integrity` - 验证 GC 迁移过程中的数据完整性
+- ✅ 新增 `test_real_free_pages_accuracy` - 验证实时空闲页计算的准确性
+- ✅ 新增 `test_head_wraparound` - 验证 Head 指针回绕机制
+- ✅ 新增 `test_logical_address_edge_cases` - 验证逻辑地址接口的边界情况
+- ✅ 空闲链表扩展信息掉电恢复机制
+- ✅ 对象头 LINK 链完整性测试修复
+- ✅ **100% 测试通过率** (47/47)
 
 #### 1️⃣ 初始化与恢复 (`test_init_recovery`)
 
@@ -119,11 +124,13 @@ cd build_vs2022\Release
 - 掉电后重新启动恢复
 - Root 页重建验证
 - 基础对象头表初始化
+- 空闲链表扩展信息恢复（v1.8.0 新增）
 
 **验证点：**
 - ✅ 新 Flash 正确初始化
 - ✅ 写入数据后重启能恢复状态
 - ✅ Radix Tree 根节点正确重建
+- ✅ 空闲链表扩展级别正确恢复
 
 ---
 
@@ -725,16 +732,74 @@ A: obj_id=231 是保留的 LINK 对象，这是正常行为。
 ## 📂 项目结构
 
 ```
-eflash_ftl/
-├── eflash.h              # 公共 API 头文件（唯一需要包含的头文件）
-├── eflash_ftl.c/h        # FTL 核心实现
-├── eflash_mgr.c/h        # 空间管理器
-├── eflash_sim.c/h        # Flash 模拟器（仅用于测试）
-├── eflash_ftl_tests.c    # 完整测试套件（23 个测试用例）
-├── example_simple.c      # 公共 API 使用示例
-├── API_DESIGN.md         # API 设计说明
-└── README.md             # 本文档
+eflash-master/
+├── README                      # 项目说明文档（本文档）
+├── CHANGELOG.md                # 版本历史记录 (v1.0.0 - v1.8.0)
+├── CMakeLists.txt              # CMake 构建配置
+├── TEST_COVERAGE_COMPREHENSIVE_REPORT.md  # 测试覆盖率综合报告 (v3.0, 47个测试用例)
+│
+├── eflash_ftl/                 # FTL 核心代码目录
+│   ├── eflash.h                # 公共 API 头文件（唯一需要包含的头文件）
+│   ├── eflash_ftl.c/h          # FTL 核心实现 (~2769行)
+│   ├── eflash_mgr.c/h          # 空间管理器实现 (~1306行)
+│   ├── eflash_sim.c/h          # Flash 模拟器（仅用于测试）
+│   ├── eflash_ftl_tests.c      # 基础测试套件 (21个测试用例)
+│   ├── eflash_ftl_tests_extension.c  # 扩展测试套件 (26个测试用例)
+│   ├── eflash_ftl_visual.c     # Radix Tree 可视化工具
+│   ├── example_simple.c        # 公共 API 使用示例
+│   ├── API_DESIGN.md           # API 设计说明
+│   └── Google C++ Style Guide.md  # 代码风格指南
+│
+├── ecc/                        # ECC 纠错码库
+│   ├── bch.c/h                 # BCH 编码/解码实现
+│   └── gf13.c/h                # Galois Field GF(2^13) 运算
+│
+├── build_vs2022/               # Visual Studio 2022 构建输出目录
+│   ├── Debug/                  # 调试版本可执行文件
+│   │   ├── eflash_ftl_tests.exe         # 基础测试程序
+│   │   ├── eflash_ftl_tests_extension.exe # 扩展测试程序
+│   │   └── example_simple.exe           # 示例程序
+│   └── eflash_ftl.sln          # Visual Studio 解决方案文件
+│
+└── .vscode/                    # VSCode 配置
+    └── settings.json
 ```
+
+### 文件大小统计
+
+| 文件 | 大小 | 说明 |
+|------|------|------|
+| `eflash_ftl.c` | ~112 KB | FTL 核心实现，包含 GC、事务、Radix Tree |
+| `eflash_ftl_tests_extension.c` | ~292 KB | 扩展测试套件，26个复杂测试场景 |
+| `eflash_ftl_tests.c` | ~99 KB | 基础测试套件，21个基本功能测试 |
+| `eflash_mgr.c` | ~55 KB | 空间管理器，空闲链表管理 |
+| `ecc/bch.c` | - | BCH 纠错算法实现 |
+| `example_simple.c` | ~7 KB | API 使用示例 |
+
+### 关键模块说明
+
+#### 1. FTL 核心 (`eflash_ftl.c/h`)
+- **Radix Tree 映射**: 16层深度基数树，逻辑页到物理页映射
+- **事务管理**: begin/commit/abort，支持原子性操作
+- **垃圾回收**: Head/Tail 环形缓冲区模型，支持紧急模式
+- **ECC 校验**: BCH 3-bit 纠错能力
+- **对象头管理**: 动态扩展 LINK 链，最多16级扩展
+
+#### 2. 空间管理器 (`eflash_mgr.c/h`)
+- **空闲链表**: 基础4页 + 最多4级扩展（每级4页）
+- **智能合并**: 释放时自动与前后相邻空闲块合并
+- **掉电恢复**: 自动从 Flash 重建扩展信息
+- **页对齐分配**: 确保返回的地址按 USER_DATA_SIZE 对齐
+
+#### 3. ECC 库 (`ecc/`)
+- **BCH 编码**: 生成 5 字节 ECC 校验码
+- **GF(2^13)**: Galois Field 运算支持
+- **纠错能力**: 最多纠正 3-bit 错误，检测 4-bit 错误
+
+#### 4. 测试套件
+- **基础测试** (21个): 初始化、读写、事务、GC、ECC、Radix Tree等
+- **扩展测试** (26个): 边界情况、压力测试、掉电极限、数据一致性验证等
+- **覆盖率**: ~99% 功能覆盖率，~92% 代码行覆盖率
 
 ---
 
@@ -773,23 +838,43 @@ eflash_ftl/
 
 ## 🔗 相关资源
 
-- **API 设计文档**: `API_DESIGN.md` - 详细的 API 设计原则和使用说明
-- **示例代码**: `example_simple.c` - 完整的公共 API 使用示例
-- **测试代码**: `eflash_ftl_tests.c` - 23 个测试用例的完整实现
+- **API 设计文档**: `eflash_ftl/API_DESIGN.md` - 详细的 API 设计原则和使用说明
+- **测试覆盖率报告**: `TEST_COVERAGE_COMPREHENSIVE_REPORT.md` - v3.0, 47个测试用例，~99%功能覆盖率
+- **示例代码**: `eflash_ftl/example_simple.c` - 完整的公共 API 使用示例
+- **测试代码**: 
+  - `eflash_ftl/eflash_ftl_tests.c` - 基础测试套件 (21个测试)
+  - `eflash_ftl/eflash_ftl_tests_extension.c` - 扩展测试套件 (26个测试)
+- **版本历史**: `CHANGELOG.md` - 详细的版本变更记录 (v1.0.0 - v1.8.0)
+- **代码风格指南**: `eflash_ftl/Google C++ Style Guide.md` - 项目代码规范
 
 ---
 
 ## 📝 版本历史
 
-| 版本 | 日期 | 说明 |
-|------|------|------|
-| 1.5.1 | 2026-04-28 | 空闲链表扩展递归问题修复、预扩展检查机制 |
-| 1.5.0 | 2026-04-28 | 空闲链表扩展优化、页对齐分配、双保险策略 |
-| 1.4.0 | 2026-04-28 | GC 触发时机优化、测试改进、内存映射文件支持 |
-| 1.3.0 | 2026-04-27 | Free Node 页面布局修正，空间利用率提升 11.8% |
-| 1.2.0 | 2026-04-23 | 新增随机顺序测试、改进空闲块合并逻辑 |
-| 1.1.0 | 2026-04-23 | 修复 ECC 重复计算、处理未初始化页面读取 |
-| 1.0.0 | 2026-04-23 | 初始版本，完整 FTL 功能 |
+详细版本历史请查看 [CHANGELOG.md](CHANGELOG.md)
+
+### 主要版本概览
+
+| 版本 | 日期 | 主要改进 |
+|------|------|----------|
+| **1.8.0** | 2026-05-08 | 掉电恢复增强、空闲链表扩展持久化、事务一致性验证测试 |
+| **1.7.0** | 2026-05-08 | GC紧急模式、实时空闲页计算、Head回绕机制、GC迁移完整性验证 |
+| **1.6.0** | 2026-05-08 | 逻辑地址边界测试、系统页损坏恢复、对象头LINK链测试 |
+| **1.5.1** | 2026-04-28 | 空闲链表扩展递归问题修复、预扩展检查机制 |
+| **1.5.0** | 2026-04-28 | 空闲链表扩展优化、页对齐分配、双保险策略 |
+| **1.4.0** | 2026-04-28 | GC触发时机优化、测试改进、内存映射文件支持 |
+| **1.3.0** | 2026-04-27 | Free Node页面布局修正，空间利用率提升11.8% |
+| **1.2.0** | 2026-04-23 | 新增随机顺序测试、改进空闲块合并逻辑 |
+| **1.1.0** | 2026-04-23 | 修复ECC重复计算、处理未初始化页面读取 |
+| **1.0.0** | 2026-04-23 | 初始版本，完整FTL功能 |
+
+### v1.8.0 关键特性
+
+- ✅ **空闲链表扩展信息掉电恢复**: `eflash_mgr_recover_ext_free_nodes()` 自动从Flash重建扩展级别
+- ✅ **事务一致性严格验证**: `test_transaction_consistency_verification` 逐字节对比abort/commit后的数据
+- ✅ **GC紧急模式**: 空间极度紧张时避免写放大，牺牲wear leveling换取性能
+- ✅ **实时空闲页计算**: `eflash_ftl_get_real_free_pages()` 扫描所有物理页获取准确值
+- ✅ **测试覆盖率提升**: 从25个测试增加到47个，功能覆盖率从~70%提升到~99%
 
 ---
 
