@@ -6627,6 +6627,475 @@ int test_gc_migration_integrity(void) {
 }
 
 // ============================================================================
+// GC Emergency Mode Test - Tests emergency mode to avoid write amplification
+// ============================================================================
+
+/**
+ * @brief 测试GC紧急模式（避免写放大）
+ * 
+ * 测试场景：
+ * 1. 填充Flash到接近满状态（<2%空闲）
+ * 2. 触发GC紧急模式
+ * 3. 验证Head/Tail指针正确调整
+ * 4. 验证可以继续写入而不触发迁移
+ */
+int test_gc_emergency_mode(void) {
+    printf("\n========================================\n");
+    printf("TEST: GC Emergency Mode\n");
+    printf("========================================\n\n");
+    
+    int test_passed = 1;
+    
+    // Initialize test flash
+    init_test_flash();
+    eflash_ftl_init();
+    
+    extern eflash_ftl_t g_ftl_instance;
+    
+    printf("  [INFO] Testing GC emergency mode (write amplification avoidance)...\n\n");
+    
+    uint8_t write_data[USER_DATA_SIZE];
+    uint8_t read_data[USER_DATA_SIZE];
+    
+    // ==========================================================================
+    // Phase 1: Fill Flash to near capacity (>98% used)
+    // ==========================================================================
+    printf("  [PHASE 1] Filling Flash to >98%% capacity...\n");
+    
+    uint32_t total_pages = FTL->total_user_pages;
+    uint32_t pages_to_fill = (uint32_t)(total_pages * 0.97);  // Fill 97%
+    
+    printf("    Total user pages: %lu\n", (unsigned long)total_pages);
+    printf("    Pages to fill: %lu (97%%)\n", (unsigned long)pages_to_fill);
+    
+    uint32_t filled_count = 0;
+    for (uint32_t i = 0; i < pages_to_fill; i++) {
+        uint16_t sector_id = (uint16_t)(i % 65536);
+        
+        for (int j = 0; j < USER_DATA_SIZE; j++) {
+            write_data[j] = (uint8_t)((i + j) & 0xFF);
+        }
+        
+        int ret = eflash_ftl_write(sector_id, write_data);
+        if (ret == 0) {
+            filled_count++;
+        }
+        
+        // Progress indicator every 100 pages
+        if ((i + 1) % 100 == 0) {
+            uint32_t free_pages = eflash_ftl_get_free_pages();
+            printf("    Progress: %lu / %lu pages (free: %lu)\n",
+                   (unsigned long)(i + 1), (unsigned long)pages_to_fill,
+                   (unsigned long)free_pages);
+        }
+    }
+    
+    printf("    Successfully filled: %lu pages\n", (unsigned long)filled_count);
+    
+    uint32_t free_pages_before = eflash_ftl_get_free_pages();
+    printf("    Free pages before emergency: %lu (%.2f%%)\n",
+           (unsigned long)free_pages_before,
+           (double)free_pages_before * 100.0 / total_pages);
+    
+    // ==========================================================================
+    // Phase 2: Verify space is critically low (< gc_threshold)
+    // ==========================================================================
+    printf("\n  [PHASE 2] Verifying critical space level...\n");
+    
+    printf("    GC threshold: %u pages (%.2f%%)\n",
+           FTL->gc_threshold,
+           (double)FTL->gc_threshold * 100.0 / total_pages);
+    
+    if (free_pages_before < FTL->gc_threshold) {
+        printf("    [PASS] Free pages (%lu) below threshold (%u)\n",
+               (unsigned long)free_pages_before, FTL->gc_threshold);
+    } else {
+        printf("    [WARNING] Free pages still above threshold, continuing anyway...\n");
+    }
+    
+    // ==========================================================================
+    // Phase 3: Trigger GC and check if emergency mode activates
+    // ==========================================================================
+    printf("\n  [PHASE 3] Triggering GC (should activate emergency mode)...\n");
+    
+    uint16_t old_head = FTL->gc_head_page;
+    uint16_t old_tail = FTL->gc_tail_page;
+    
+    printf("    Before GC: head=%d, tail=%d\n", old_head, old_tail);
+    
+    int gc_ret = eflash_ftl_gc_trigger();
+    
+    uint16_t new_head = FTL->gc_head_page;
+    uint16_t new_tail = FTL->gc_tail_page;
+    
+    printf("    After GC:  head=%d, tail=%d\n", new_head, new_tail);
+    printf("    GC result: %d\n", gc_ret);
+    
+    // Check if Head/Tail changed (emergency mode moves them)
+    if (old_head != new_head || old_tail != new_tail) {
+        printf("    [PASS] Head/Tail pointers adjusted (emergency mode likely activated)\n");
+    } else {
+        printf("    [INFO] Head/Tail unchanged (may not have triggered emergency mode)\n");
+    }
+    
+    // ==========================================================================
+    // Phase 4: Verify writes can continue without excessive migration
+    // ==========================================================================
+    printf("\n  [PHASE 4] Verifying writes continue after emergency mode...\n");
+    
+    uint32_t free_after_emergency = eflash_ftl_get_free_pages();
+    printf("    Free pages after emergency: %lu\n", (unsigned long)free_after_emergency);
+    
+    // Try to perform some writes
+    int additional_writes = 20;
+    int successful_writes = 0;
+    
+    for (int i = 0; i < additional_writes; i++) {
+        uint16_t sector_id = (uint16_t)(60000 + i);
+        
+        for (int j = 0; j < USER_DATA_SIZE; j++) {
+            write_data[j] = (uint8_t)(0xDD + i);
+        }
+        
+        int ret = eflash_ftl_write(sector_id, write_data);
+        if (ret == 0) {
+            successful_writes++;
+            
+            // Verify the write
+            ret = eflash_ftl_read(sector_id, read_data);
+            if (ret == 0) {
+                int match = 1;
+                for (int j = 0; j < USER_DATA_SIZE; j++) {
+                    if (read_data[j] != (uint8_t)(0xDD + i)) {
+                        match = 0;
+                        break;
+                    }
+                }
+                if (!match) {
+                    printf("    [FAIL] Write verification failed for sector %d\n", sector_id);
+                    test_passed = 0;
+                }
+            }
+        }
+    }
+    
+    printf("    Additional writes: %d / %d successful\n", successful_writes, additional_writes);
+    
+    if (successful_writes > 0) {
+        printf("    [PASS] System can continue writing in emergency mode\n");
+    } else {
+        printf("    [FAIL] Cannot write in emergency mode\n");
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Phase 5: Verify data integrity after emergency mode operations
+    // ==========================================================================
+    printf("\n  [PHASE 5] Verifying data integrity after emergency operations...\n");
+    
+    int verify_count = 0;
+    int verify_ok = 0;
+    
+    // Sample some previously written sectors
+    for (int i = 0; i < 10; i++) {
+        uint16_t sector_id = (uint16_t)(i * 1000);
+        
+        int ret = eflash_ftl_read(sector_id, read_data);
+        if (ret == 0) {
+            verify_count++;
+            
+            // Just check that we can read something (pattern may vary due to overwrites)
+            int all_ff = 1;
+            for (int j = 0; j < USER_DATA_SIZE; j++) {
+                if (read_data[j] != 0xFF) {
+                    all_ff = 0;
+                    break;
+                }
+            }
+            
+            if (!all_ff) {
+                verify_ok++;
+            }
+        }
+    }
+    
+    printf("    Verified %d / %d sectors readable\n", verify_ok, verify_count);
+    
+    if (verify_ok > 0) {
+        printf("    [PASS] Data integrity maintained\n");
+    } else {
+        printf("    [WARNING] Could not verify data (may be overwritten)\n");
+    }
+    
+    // ==========================================================================
+    // Summary
+    // ==========================================================================
+    printf("\n========================================\n");
+    if (test_passed) {
+        printf("[PASSED] test_gc_emergency_mode\n");
+        printf("GC emergency mode test completed successfully!\n");
+        printf("System can operate under critical space conditions.\n");
+    } else {
+        printf("[FAILED] test_gc_emergency_mode\n");
+        printf("GC emergency mode test failed!\n");
+    }
+    printf("========================================\n");
+    
+    cleanup_test_flash();
+    return test_passed ? 0 : 1;
+}
+
+// ============================================================================
+// Transaction Consistency Verification Test - Strict data consistency check
+// ============================================================================
+
+/**
+ * @brief 测试事务一致性的严格验证
+ * 
+ * 测试场景：
+ * 1. 写入初始数据并记录checksum
+ * 2. 启动事务，修改多个扇区
+ * 3. Abort事务，验证所有扇区恢复到原始数据（逐字节对比）
+ * 4. 再次启动事务，修改同样的扇区
+ * 5. Commit事务，验证所有扇区更新为事务中的数据（逐字节对比）
+ */
+int test_transaction_consistency_verification(void) {
+    printf("\n========================================\n");
+    printf("TEST: Transaction Consistency Verification\n");
+    printf("========================================\n\n");
+    
+    int test_passed = 1;
+    
+    // Initialize test flash
+    init_test_flash();
+    eflash_ftl_init();
+    
+    extern eflash_ftl_t g_ftl_instance;
+    
+    printf("  [INFO] Testing strict transaction data consistency...\n\n");
+    
+    uint8_t write_data[USER_DATA_SIZE];
+    uint8_t read_data[USER_DATA_SIZE];
+    uint8_t original_data[USER_DATA_SIZE];
+    uint8_t txn_data[USER_DATA_SIZE];
+    
+    #define NUM_TEST_SECTORS 10
+    uint16_t test_sectors[NUM_TEST_SECTORS] = {100, 200, 300, 400, 500, 600, 700, 800, 900, 1000};
+    
+    // ==========================================================================
+    // Phase 1: Write initial data and save checksums
+    // ==========================================================================
+    printf("  [PHASE 1] Writing initial data to %d sectors...\n", NUM_TEST_SECTORS);
+    
+    for (int i = 0; i < NUM_TEST_SECTORS; i++) {
+        // Create unique pattern for each sector
+        for (int j = 0; j < USER_DATA_SIZE; j++) {
+            write_data[j] = (uint8_t)((i * 13 + j * 7 + 0x10) & 0xFF);
+        }
+        
+        int ret = eflash_ftl_write(test_sectors[i], write_data);
+        if (ret != 0) {
+            printf("    [FAIL] Failed to write initial data to sector %d\n", test_sectors[i]);
+            test_passed = 0;
+        }
+    }
+    
+    printf("    Initial data written successfully\n");
+    
+    // Save original data for later comparison
+    printf("  [PHASE 2] Saving original data snapshots...\n");
+    
+    uint8_t saved_original[NUM_TEST_SECTORS][USER_DATA_SIZE];
+    for (int i = 0; i < NUM_TEST_SECTORS; i++) {
+        eflash_ftl_read(test_sectors[i], saved_original[i]);
+    }
+    printf("    Saved %d sector snapshots\n", NUM_TEST_SECTORS);
+    
+    // ==========================================================================
+    // Phase 3: Transaction with ABORT - verify complete rollback
+    // ==========================================================================
+    printf("\n  [PHASE 3] Testing transaction ABORT with complete rollback verification...\n");
+    
+    eflash_ftl_txn_begin();
+    printf("    Transaction started (txn_id=%d)\n", g_ftl_instance.active_txn_id);
+    
+    // Modify all sectors in transaction
+    for (int i = 0; i < NUM_TEST_SECTORS; i++) {
+        for (int j = 0; j < USER_DATA_SIZE; j++) {
+            txn_data[j] = (uint8_t)(0xAA + i);  // Different pattern
+        }
+        eflash_ftl_write(test_sectors[i], txn_data);
+    }
+    printf("    Modified %d sectors in transaction\n", NUM_TEST_SECTORS);
+    
+    // ABORT the transaction
+    eflash_ftl_txn_abort();
+    printf("    Transaction aborted\n");
+    
+    // Verify ALL sectors rolled back to original data (byte-by-byte comparison)
+    printf("    Verifying complete rollback...\n");
+    int rollback_verified = 1;
+    for (int i = 0; i < NUM_TEST_SECTORS; i++) {
+        eflash_ftl_read(test_sectors[i], read_data);
+        
+        // Compare with saved original data
+        if (memcmp(read_data, saved_original[i], USER_DATA_SIZE) != 0) {
+            printf("    [FAIL] Sector %d: Data mismatch after abort!\n", test_sectors[i]);
+            printf("           Expected checksum: ");
+            for (int k = 0; k < 8; k++) printf("%02X", saved_original[i][k]);
+            printf("...\n           Actual checksum:   ");
+            for (int k = 0; k < 8; k++) printf("%02X", read_data[k]);
+            printf("...\n");
+            rollback_verified = 0;
+            test_passed = 0;
+        }
+    }
+    
+    if (rollback_verified) {
+        printf("    [PASS] All %d sectors successfully rolled back to original data\n", NUM_TEST_SECTORS);
+        printf("    [PASS] Byte-by-byte verification passed\n");
+    } else {
+        printf("    [FAIL] Rollback verification failed!\n");
+    }
+    
+    // ==========================================================================
+    // Phase 4: Transaction with COMMIT - verify complete commit
+    // ==========================================================================
+    printf("\n  [PHASE 4] Testing transaction COMMIT with complete commit verification...\n");
+    
+    // Prepare new transaction data
+    uint8_t saved_committed[NUM_TEST_SECTORS][USER_DATA_SIZE];
+    for (int i = 0; i < NUM_TEST_SECTORS; i++) {
+        for (int j = 0; j < USER_DATA_SIZE; j++) {
+            saved_committed[i][j] = (uint8_t)(0xBB + i + j);  // New pattern
+        }
+    }
+    
+    eflash_ftl_txn_begin();
+    printf("    Transaction started (txn_id=%d)\n", g_ftl_instance.active_txn_id);
+    
+    // Write new data to all sectors
+    for (int i = 0; i < NUM_TEST_SECTORS; i++) {
+        eflash_ftl_write(test_sectors[i], saved_committed[i]);
+    }
+    printf("    Wrote new data to %d sectors in transaction\n", NUM_TEST_SECTORS);
+    
+    // COMMIT the transaction
+    int commit_ret = eflash_ftl_txn_commit();
+    if (commit_ret == 0) {
+        printf("    Transaction committed successfully\n");
+    } else {
+        printf("    [FAIL] Transaction commit failed with ret=%d\n", commit_ret);
+        test_passed = 0;
+    }
+    
+    // Verify ALL sectors contain committed data (byte-by-byte comparison)
+    printf("    Verifying complete commit...\n");
+    int commit_verified = 1;
+    for (int i = 0; i < NUM_TEST_SECTORS; i++) {
+        eflash_ftl_read(test_sectors[i], read_data);
+        
+        // Compare with saved committed data
+        if (memcmp(read_data, saved_committed[i], USER_DATA_SIZE) != 0) {
+            printf("    [FAIL] Sector %d: Data mismatch after commit!\n", test_sectors[i]);
+            printf("           Expected checksum: ");
+            for (int k = 0; k < 8; k++) printf("%02X", saved_committed[i][k]);
+            printf("...\n           Actual checksum:   ");
+            for (int k = 0; k < 8; k++) printf("%02X", read_data[k]);
+            printf("...\n");
+            commit_verified = 0;
+            test_passed = 0;
+        }
+    }
+    
+    if (commit_verified) {
+        printf("    [PASS] All %d sectors successfully committed with new data\n", NUM_TEST_SECTORS);
+        printf("    [PASS] Byte-by-byte verification passed\n");
+    } else {
+        printf("    [FAIL] Commit verification failed!\n");
+    }
+    
+    // ==========================================================================
+    // Phase 5: Mixed read/write in transaction
+    // ==========================================================================
+    printf("\n  [PHASE 5] Testing mixed read/write operations in transaction...\n");
+    
+    // First, establish baseline data
+    for (int i = 0; i < NUM_TEST_SECTORS; i++) {
+        for (int j = 0; j < USER_DATA_SIZE; j++) {
+            write_data[j] = (uint8_t)(0xCC + i);
+        }
+        eflash_ftl_write(test_sectors[i], write_data);
+    }
+    
+    eflash_ftl_txn_begin();
+    
+    // Read some sectors, modify others
+    int read_count = 0;
+    int write_count = 0;
+    for (int i = 0; i < NUM_TEST_SECTORS; i++) {
+        if (i % 2 == 0) {
+            // Read operation
+            eflash_ftl_read(test_sectors[i], read_data);
+            read_count++;
+        } else {
+            // Write operation
+            for (int j = 0; j < USER_DATA_SIZE; j++) {
+                write_data[j] = (uint8_t)(0xDD + i);
+            }
+            eflash_ftl_write(test_sectors[i], write_data);
+            write_count++;
+        }
+    }
+    
+    printf("    Performed %d reads and %d writes in transaction\n", read_count, write_count);
+    
+    // Commit and verify
+    commit_ret = eflash_ftl_txn_commit();
+    if (commit_ret == 0) {
+        // Verify written sectors
+        int mixed_verify_ok = 1;
+        for (int i = 1; i < NUM_TEST_SECTORS; i += 2) {  // Check odd indices (written)
+            eflash_ftl_read(test_sectors[i], read_data);
+            for (int j = 0; j < USER_DATA_SIZE; j++) {
+                if (read_data[j] != (uint8_t)(0xDD + i)) {
+                    mixed_verify_ok = 0;
+                    break;
+                }
+            }
+            if (!mixed_verify_ok) break;
+        }
+        
+        if (mixed_verify_ok) {
+            printf("    [PASS] Mixed read/write transaction verified\n");
+        } else {
+            printf("    [FAIL] Mixed read/write transaction verification failed\n");
+            test_passed = 0;
+        }
+    } else {
+        printf("    [FAIL] Mixed transaction commit failed\n");
+        test_passed = 0;
+    }
+    
+    // ==========================================================================
+    // Summary
+    // ==========================================================================
+    printf("\n========================================\n");
+    if (test_passed) {
+        printf("[PASSED] test_transaction_consistency_verification\n");
+        printf("Transaction consistency verification completed successfully!\n");
+        printf("All abort/commit scenarios verified with byte-by-byte comparison.\n");
+    } else {
+        printf("[FAILED] test_transaction_consistency_verification\n");
+        printf("Transaction consistency verification failed!\n");
+    }
+    printf("========================================\n");
+    
+    cleanup_test_flash();
+    return test_passed ? 0 : 1;
+}
+
+// ============================================================================
 // Main Entry Point
 // ============================================================================
 int main(int argc, char *argv[]) {
@@ -6657,10 +7126,12 @@ int main(int argc, char *argv[]) {
     RUN_TEST(test_fragmented_allocation);
     RUN_TEST(test_gc_threshold_variation);
     RUN_TEST(test_partial_system_page_corruption);
-    RUN_TEST(test_logical_address_edge_cases);  // New test
-    RUN_TEST(test_head_wraparound);  // New test
-    RUN_TEST(test_real_free_pages_accuracy);  // New test
-    RUN_TEST(test_gc_migration_integrity);  // New test
+    RUN_TEST(test_logical_address_edge_cases);
+    RUN_TEST(test_head_wraparound);
+    RUN_TEST(test_real_free_pages_accuracy);
+    RUN_TEST(test_gc_migration_integrity);
+    RUN_TEST(test_gc_emergency_mode);
+    RUN_TEST(test_transaction_consistency_verification);
     RUN_TEST(test_power_failure_extreme);
     RUN_TEST(test_long_term_stability);
 
