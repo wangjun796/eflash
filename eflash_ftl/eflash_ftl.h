@@ -79,6 +79,20 @@ PACKED_STRUCT_END
 #define TXN_STATUS_COMMITTED    0x21  // Transaction successfully committed (usually only marks Root page)
 #define TXN_STATUS_INVALID      0x00  // Non-transaction page or invalidated old page
 
+// --- SuperBlock and Journal Configuration (for fast O(log N) recovery) ---
+#define SUPERBLOCK_MAGIC        0xEFLASH  // Magic number for validation
+#define SUPERBLOCK_VERSION      0x0100    // Version 1.0
+#define SUPERBLOCK_LPN_START    0         // SuperBlock starts at LPN 0
+#define SUPERBLOCK_PAGES        4         // Total SuperBlock pages (Header + Journal + Backup)
+#define JOURNAL_MAX_ENTRIES     256       // Maximum journal entries per cycle
+#define JOURNAL_ENTRY_SIZE      32        // Size of each journal entry in bytes
+
+// --- Journal Entry Types ---
+#define JOURNAL_OP_WRITE        0x01  // New write operation
+#define JOURNAL_OP_UPDATE       0x02  // Update existing mapping
+#define JOURNAL_OP_TRIM         0x03  // Trim/discard operation
+#define JOURNAL_OP_GC_MIGRATE   0x04  // GC migration operation
+
 // --- Special Values ---
 #define PAGE_NONE             0xFFFF
 #define TXN_ID_NONE           0xFFFF
@@ -94,6 +108,38 @@ typedef struct {
     uint8_t         status;
     uint8_t         ecc[5];
 } ATTRIBUTE_PACKED ftl_meta_t;
+PACKED_STRUCT_END
+
+// --- Journal Entry Structure (32 bytes) ---
+// Used for fast O(log N) recovery
+PACKED_STRUCT
+typedef struct {
+    uint32_t    global_count;     // Monotonically increasing counter
+    uint16_t    sector_id;        // Logical sector ID
+    uint16_t    phys_ppn;         // Physical page number
+    uint8_t     op_type;          // Operation type (WRITE/UPDATE/TRIM/GC)
+    uint8_t     reserved[3];      // Padding for alignment
+    uint16_t    checksum;         // Simple checksum for validation
+} ATTRIBUTE_PACKED journal_entry_t;
+PACKED_STRUCT_END
+
+// --- SuperBlock Header Structure (fits in one page) ---
+PACKED_STRUCT
+typedef struct {
+    uint32_t    magic;            // SUPERBLOCK_MAGIC (0xEFLASH)
+    uint16_t    version;          // SUPERBLOCK_VERSION
+    uint16_t    root_page;        // Current root page PPN
+    uint32_t    next_count;       // Next global count value
+    uint16_t    active_txn_id;    // Last active transaction ID
+    uint16_t    gc_head_page;     // GC head pointer
+    uint16_t    gc_tail_page;     // GC tail pointer
+    uint32_t    valid_page_count; // Number of valid pages
+    uint16_t    journal_start_idx; // Start index of current journal cycle
+    uint16_t    journal_end_idx;   // End index (latest entry)
+    uint16_t    current_epoch;    // Current epoch counter
+    uint8_t     reserved[18];     // Reserved for future use
+    uint16_t    checksum;         // CRC or simple checksum
+} ATTRIBUTE_PACKED superblock_header_t;
 PACKED_STRUCT_END
 
 // --- Complete Page Structure (512 bytes = 464 user data + 48 metadata) ---
@@ -162,6 +208,17 @@ int  eflash_ftl_gc_collect(uint16_t pages_to_free); // Reclaim specified number 
 int  eflash_ftl_gc_collect_all(void);  // Reclaim all stale pages (maximize reclamation)
 uint32_t eflash_ftl_get_free_pages(void); // Get current number of free pages (based on Head/Tail)
 uint32_t eflash_ftl_get_real_free_pages(void); // Get REAL free pages by scanning all physical pages
+
+// --- Trim/Discard Interface Functions (for deleting unused data) ---
+int  eflash_ftl_trim(uint16_t sector_id);  // Trim single sector (mark as invalid)
+int  eflash_ftl_trim_range(uint16_t start_sector, uint16_t count);  // Trim sector range
+int  eflash_ftl_trim_object(uint16_t obj_id);  // Trim entire object (all its sectors)
+
+// --- SuperBlock and Journal Functions (for fast O(log N) recovery) ---
+int  eflash_ftl_superblock_init(void);  // Initialize SuperBlock on first boot
+int  eflash_ftl_superblock_update(void);  // Update SuperBlock after major operations
+int  eflash_ftl_journal_append(const journal_entry_t *entry);  // Append entry to journal
+int  eflash_ftl_fast_recovery(void);  // Fast recovery using SuperBlock + Journal (O(log N))
 
 // --- Visualization Functions (for debugging, only available when FTL_DEBUG_ENABLE is defined) ---
 #ifdef FTL_DEBUG_ENABLE
