@@ -37,3 +37,4 @@ multi_test_section.txt
 *.suo
 *.user
 *.vcxproj.user
+*.txt
