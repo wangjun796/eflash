@@ -22,6 +22,9 @@ static size_t flash_file_size = 0;
     static int flash_fd = -1;
 #endif
 
+/* Forward declaration for atexit */
+void eflash_deinit(void);
+
 int eflash_init(const char *filename) {
     flash_file_size = (size_t)EFLASH_TOTAL_PAGES * EFLASH_PAGE_SIZE;
     
@@ -178,19 +181,55 @@ int eflash_init(const char *filename) {
     printf("[EFLASH_INIT] Flash memory mapped at: 0x%p (size=%zu bytes)\n", 
            (void *)flash_mem_map, flash_file_size);
     
+    /* Register cleanup function to be called on program exit */
+    #ifdef _WIN32
+    if (atexit(eflash_deinit) != 0) {
+        printf("[EFLASH_INIT] WARNING: Failed to register atexit handler\n");
+    } else {
+        printf("[EFLASH_INIT] Registered eflash_deinit() as atexit handler\n");
+    }
+    #endif
+    
     return 0;
 }
 
 void eflash_deinit() {
+    printf("[EFLASH_DEINIT] === Starting eflash Deinitialization ===\n");
+    printf("[EFLASH_DEINIT] flash_mem_map: %p\n", (void*)flash_mem_map);
+    printf("[EFLASH_DEINIT] flash_mapping_handle: %p\n", flash_mapping_handle);
+    printf("[EFLASH_DEINIT] flash_file_handle: %p\n", (HANDLE)(size_t)flash_file_handle);
+    fflush(stdout);
+    
     if (flash_mem_map) {
 #ifdef _WIN32
+        printf("[EFLASH_DEINIT] Calling UnmapViewOfFile...\n");
+        fflush(stdout);
         UnmapViewOfFile(flash_mem_map);
+        printf("[EFLASH_DEINIT] UnmapViewOfFile returned\n");
+        fflush(stdout);
+        
         if (flash_mapping_handle) {
+            printf("[EFLASH_DEINIT] Closing flash_mapping_handle...\n");
+            fflush(stdout);
             CloseHandle(flash_mapping_handle);
+            printf("[EFLASH_DEINIT] flash_mapping_handle closed\n");
+            fflush(stdout);
+            flash_mapping_handle = NULL;
         }
+        
         if (flash_file_handle != INVALID_HANDLE_VALUE) {
+            printf("[EFLASH_DEINIT] Flushing file buffers...\n");
+            fflush(stdout);
             FlushFileBuffers(flash_file_handle);
+            printf("[EFLASH_DEINIT] File buffers flushed\n");
+            fflush(stdout);
+            
+            printf("[EFLASH_DEINIT] Closing flash_file_handle...\n");
+            fflush(stdout);
             CloseHandle(flash_file_handle);
+            printf("[EFLASH_DEINIT] flash_file_handle closed\n");
+            fflush(stdout);
+            flash_file_handle = INVALID_HANDLE_VALUE;
         }
 #else
         msync(flash_mem_map, flash_file_size, MS_SYNC);  // Sync to file before unmap
@@ -202,7 +241,12 @@ void eflash_deinit() {
 #endif
         flash_mem_map = NULL;
         printf("[EFLASH_DEINIT] Flash memory unmapped and file closed\n");
+    } else {
+        printf("[EFLASH_DEINIT] flash_mem_map is NULL, skipping cleanup\n");
     }
+    
+    printf("[EFLASH_DEINIT] === eflash Deinitialization Complete ===\n");
+    fflush(stdout);
 }
 
 int eflash_hw_erase(uint16_t ppn) {

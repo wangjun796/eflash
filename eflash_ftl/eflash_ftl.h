@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "ecc/bch.h"
+#include "bch.h"  /* Changed from "ecc/bch.h" for better include path compatibility */
 #include "eflash_mgr.h"
 
 // --- Cross-platform packed structure support ---
