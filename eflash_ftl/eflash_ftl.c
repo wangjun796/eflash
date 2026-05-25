@@ -1360,10 +1360,11 @@ int eflash_ftl_init(void) {
         FTL_DEBUG("[INIT] Remaining system pages set to PAGE_NONE (on-demand allocation)\n");
 
         // Initialize free list with one large node
-        // Node addr = LPN 12 * USER_DATA_SIZE (first available user data page)
-        // Node size = (EFLASH_TOTAL_PAGES - 12) * USER_DATA_SIZE
-        FTL_DEBUG("[INIT] Initializing free list with single node (addr=LPN12, size=%d pages)...\n",
-                 EFLASH_TOTAL_PAGES - SYS_RESERVED_LPN_COUNT);
+        // CRITICAL: Reserve LPN 12 for Code Region management data
+        // Node addr = LPN 13 * USER_DATA_SIZE (first available user data page after code region reservation)
+        // Node size = (EFLASH_TOTAL_PAGES - 13) * USER_DATA_SIZE
+        FTL_DEBUG("[INIT] Initializing free list with single node (addr=LPN13, size=%d pages)...\n",
+                 EFLASH_TOTAL_PAGES - SYS_RESERVED_LPN_COUNT - 1);
         
         // Prepare the free list page data (count + node structure)
         uint8_t free_list_page[USER_DATA_SIZE];
@@ -1373,10 +1374,10 @@ int eflash_ftl_init(void) {
         free_list_page[0] = 1 & 0xFF;
         free_list_page[1] = (1 >> 8) & 0xFF;
 
-        // Create initial free node
+        // Create initial free node (skip LPN 12 reserved for code region)
         free_node_t initial_node;
-        initial_node.addr = (uint32_t)SYS_RESERVED_LPN_COUNT * USER_DATA_SIZE;  // Start from LPN 12
-        initial_node.size = (uint32_t)(EFLASH_TOTAL_PAGES - SYS_RESERVED_LPN_COUNT) * USER_DATA_SIZE;
+        initial_node.addr = (uint32_t)(SYS_RESERVED_LPN_COUNT + 1) * USER_DATA_SIZE;  // Start from LPN 13
+        initial_node.size = (uint32_t)(EFLASH_TOTAL_PAGES - SYS_RESERVED_LPN_COUNT - 1) * USER_DATA_SIZE;
 
         FTL_DEBUG("[INIT] Initial free node: addr=0x%08X, size=%u bytes\n",
                  initial_node.addr, initial_node.size);
@@ -1468,6 +1469,14 @@ int eflash_ftl_init(void) {
     }
 
     FTL_DEBUG("[INIT] Initialization complete\n");
+    
+    // Initialize Code Region Management
+    FTL_DEBUG("[INIT] Initializing code region management...\n");
+    if (eflash_ftl_code_region_init() != 0) {
+        FTL_DEBUG("[INIT] WARNING: Code region initialization failed, continuing anyway\n");
+        // Don't fail the entire init, code region is optional
+    }
+    
     return 0;
 }
 
@@ -2994,4 +3003,626 @@ int eflash_ftl_trim_object(uint16_t obj_id) {
     return 0;
 }
 
+// ============================================================================
+// --- Code Region Management (for executing code from Flash) ---
+// ============================================================================
+
+// Code region information stored in a dedicated system page
+#define CODE_REGION_INFO_LPN  (SYS_RESERVED_LPN_COUNT)  // LPN after system areas
+static code_region_info_t g_code_region;
+
+/**
+ * skip_code_region: Skip code region when moving GC tail pointer
+ * 
+ * @ppn: Current physical page number
+ * @return: Next valid PPN (skipping code region if necessary)
+ * 
+ * This function ensures that GC tail pointer never enters the code region.
+ * Note: This is NOT called in normal GC, but can be used by specialized functions.
+ */
+static uint16_t skip_code_region(uint16_t ppn) {
+    // Load code region info if not already loaded
+    if (g_code_region.magic != CODE_REGION_MAGIC) {
+        load_code_region_info();
+    }
+    
+    // If code region exists and ppn is within it, skip to end
+    if (g_code_region.num_pages > 0 && 
+        ppn >= g_code_region.start_ppn && 
+        ppn < (g_code_region.start_ppn + g_code_region.num_pages)) {
+        
+        uint16_t skip_to = g_code_region.start_ppn + g_code_region.num_pages;
+        FTL_DEBUG("[GC] Skipping code region: PPN %d -> %d\n", ppn, skip_to);
+        return skip_to;
+    }
+    
+    return ppn;
+}
+
+/**
+ * eflash_ftl_gc_reclaim_code_region: Specialized GC for code region expansion
+ * 
+ * @pages_needed: Number of pages needed after code region
+ * @return: 0 on success, -1 on failure
+ * 
+ * This function reclaims pages immediately after the code region to allow
+ * code region expansion. It moves the GC tail pointer past the code region
+ * and reclaims stale pages until enough space is available.
+ * 
+ * Usage scenario:
+ * - Before expanding code region, call this to ensure contiguous free pages
+ * - The reclaimed pages will be erased and ready for code programming
+ */
+int eflash_ftl_gc_reclaim_code_region(uint16_t pages_needed) {
+    FTL_DEBUG("[GC_CODE] Reclaiming %d pages after code region...\n", pages_needed);
+    
+    if (pages_needed == 0) {
+        return 0;
+    }
+    
+    // Load code region info
+    if (g_code_region.magic != CODE_REGION_MAGIC) {
+        load_code_region_info();
+    }
+    
+    if (g_code_region.num_pages == 0) {
+        FTL_DEBUG("[GC_CODE] ERROR: Code region not initialized\n");
+        return -1;
+    }
+    
+    uint16_t code_end_ppn = g_code_region.start_ppn + g_code_region.num_pages;
+    FTL_DEBUG("[GC_CODE] Code region ends at PPN %d\n", code_end_ppn);
+    
+    // Check if we need to move tail pointer past code region
+    if (FTL->gc_tail_page < code_end_ppn) {
+        FTL_DEBUG("[GC_CODE] Moving tail from %d to %d (past code region)\n",
+                  FTL->gc_tail_page, code_end_ppn);
+        FTL->gc_tail_page = code_end_ppn;
+    }
+    
+    // Now reclaim pages starting from code_end_ppn
+    uint16_t pages_reclaimed = 0;
+    uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;  // Adjust based on your config
+    
+    while (pages_reclaimed < pages_needed && FTL->gc_tail_page <= last_user_page) {
+        uint16_t current_page = FTL->gc_tail_page;
+        
+        FTL_DEBUG("[GC_CODE] Attempting to reclaim PPN %d\n", current_page);
+        
+        // Try to collect this page
+        int ret = gc_collect_one_page(current_page);
+        
+        if (ret >= 0) {
+            pages_reclaimed++;
+            FTL_DEBUG("[GC_CODE] Successfully reclaimed PPN %d (%d/%d)\n",
+                     current_page, pages_reclaimed, pages_needed);
+        } else {
+            FTL_DEBUG("[GC_CODE] WARNING: Failed to reclaim PPN %d\n", current_page);
+        }
+        
+        // Move to next page
+        FTL->gc_tail_page++;
+        
+        // Wrap around if needed (but stop if we reach code region again)
+        if (FTL->gc_tail_page > last_user_page) {
+            FTL->gc_tail_page = 0;
+            FTL_DEBUG("[GC_CODE] Wrapped around to PPN 0\n");
+            
+            // Don't enter code region
+            if (FTL->gc_tail_page < code_end_ppn) {
+                FTL_DEBUG("[GC_CODE] Stopping before code region\n");
+                break;
+            }
+        }
+    }
+    
+    if (pages_reclaimed >= pages_needed) {
+        FTL_DEBUG("[GC_CODE] Successfully reclaimed %d pages\n", pages_reclaimed);
+        return 0;
+    } else {
+        FTL_DEBUG("[GC_CODE] WARNING: Only reclaimed %d/%d pages\n",
+                 pages_reclaimed, pages_needed);
+        return -1;
+    }
+}
+
+/**
+ * calculate_code_region_checksum: Calculate checksum for code region info
+ */
+static uint16_t calculate_code_region_checksum(const code_region_info_t *info) {
+    uint16_t sum = 0;
+    const uint8_t *data = (const uint8_t *)info;
+    
+    // Sum all bytes except the checksum field itself
+    for (size_t i = 0; i < sizeof(code_region_info_t) - 2; i++) {
+        sum += data[i];
+    }
+    
+    return sum;
+}
+
+/**
+ * save_code_region_info: Save code region info to Flash with atomic update
+ */
+static int save_code_region_info(void) {
+    // Update checksum
+    g_code_region.checksum = calculate_code_region_checksum(&g_code_region);
+    
+    // Write to Flash
+    uint8_t page_buf[EFLASH_PAGE_SIZE];
+    memset(page_buf, 0xFF, EFLASH_PAGE_SIZE);
+    memcpy(page_buf, &g_code_region, sizeof(code_region_info_t));
+    
+    return write_system_page(CODE_REGION_INFO_LPN, page_buf);
+}
+
+/**
+ * load_code_region_info: Load code region info from Flash
+ */
+static int load_code_region_info(void) {
+    uint8_t page_buf[EFLASH_PAGE_SIZE];
+    
+    int ret = read_system_page(CODE_REGION_INFO_LPN, page_buf);
+    if (ret != 0) {
+        FTL_DEBUG("[CODE] ERROR: Failed to read code region info\n");
+        return -1;
+    }
+    
+    memcpy(&g_code_region, page_buf, sizeof(code_region_info_t));
+    
+    // Verify magic and checksum
+    if (g_code_region.magic != CODE_REGION_MAGIC) {
+        FTL_DEBUG("[CODE] WARNING: Invalid magic number, initializing new\n");
+        return -1;
+    }
+    
+    uint16_t expected_checksum = calculate_code_region_checksum(&g_code_region);
+    if (g_code_region.checksum != expected_checksum) {
+        FTL_DEBUG("[CODE] WARNING: Checksum mismatch, may be corrupted\n");
+        return -1;
+    }
+    
+    return 0;
+}
+
+/**
+ * eflash_ftl_code_region_init: Initialize code region management
+ * 
+ * @return: 0 on success, -1 on failure
+ * 
+ * This function initializes the code region management system.
+ * It loads existing code region info from Flash or creates a new one.
+ */
+int eflash_ftl_code_region_init(void) {
+    FTL_DEBUG("[CODE] Initializing code region management...\n");
+    
+    // Try to load existing code region info
+    int ret = load_code_region_info();
+    
+    if (ret == 0) {
+        FTL_DEBUG("[CODE] Loaded existing code region: start=%d, pages=%d, status=%d\n",
+                  g_code_region.start_ppn, g_code_region.num_pages, g_code_region.status);
+        
+        // Check if there's an incomplete migration to recover
+        if (g_code_region.status == CODE_MIGRATE_IN_PROGRESS) {
+            FTL_DEBUG("[CODE] Found incomplete migration, attempting recovery...\n");
+            return eflash_ftl_code_region_recover();
+        }
+        
+        // CRITICAL: Adjust GC pointers to skip code region
+        if (g_code_region.num_pages > 0) {
+            uint16_t code_end_ppn = g_code_region.start_ppn + g_code_region.num_pages;
+            
+            // If GC head/tail are within code region, move them past it
+            if (FTL->gc_head_page < code_end_ppn) {
+                FTL->gc_head_page = code_end_ppn;
+                FTL_DEBUG("[CODE] Adjusted GC head from %d to %d (skip code region)\n",
+                         FTL->gc_head_page - g_code_region.num_pages, FTL->gc_head_page);
+            }
+            
+            if (FTL->gc_tail_page < code_end_ppn) {
+                FTL->gc_tail_page = code_end_ppn;
+                FTL_DEBUG("[CODE] Adjusted GC tail from %d to %d (skip code region)\n",
+                         FTL->gc_tail_page - g_code_region.num_pages, FTL->gc_tail_page);
+            }
+        }
+    } else {
+        // Initialize new code region
+        memset(&g_code_region, 0, sizeof(code_region_info_t));
+        g_code_region.magic = CODE_REGION_MAGIC;
+        g_code_region.start_ppn = CODE_REGION_START_PPN;
+        g_code_region.num_pages = 0;
+        g_code_region.status = CODE_MIGRATE_IDLE;
+        
+        ret = save_code_region_info();
+        if (ret != 0) {
+            FTL_DEBUG("[CODE] ERROR: Failed to save initial code region info\n");
+            return -1;
+        }
+        
+        FTL_DEBUG("[CODE] Initialized new code region at PPN 0\n");
+    }
+    
+    return 0;
+}
+
+/**
+ * eflash_ftl_code_migrate_from_logical: Migrate code from logical pages to physical code region
+ * 
+ * @src_lpn: Starting logical page number containing code data
+ * @num_pages: Number of pages to migrate
+ * @return: 0 on success, -1 on failure
+ * 
+ * This function migrates code data from FTL-managed logical pages to the
+ * physical code region starting at PPN 0. The code region is excluded from
+ * FTL management (GC will skip it).
+ * 
+ * Process:
+ * 1. Record migration state (for power-failure recovery)
+ * 2. Read data from logical pages via FTL
+ * 3. Write directly to physical pages in code region
+ * 4. Update migration progress after each page
+ * 5. Reclaim logical pages after successful migration
+ * 6. Update code region size
+ */
+int eflash_ftl_code_migrate_from_logical(uint16_t src_lpn, uint16_t num_pages) {
+    FTL_DEBUG("[CODE] Migrating %d pages from LPN %d to code region...\n", 
+              num_pages, src_lpn);
+    
+    if (num_pages == 0) {
+        FTL_DEBUG("[CODE] ERROR: num_pages is 0\n");
+        return -1;
+    }
+    
+    // Step 1: Initialize migration state
+    g_code_region.status = CODE_MIGRATE_IN_PROGRESS;
+    g_code_region.src_lpn = src_lpn;
+    g_code_region.total_pages = num_pages;
+    g_code_region.pages_migrated = 0;
+    g_code_region.code_size_bytes = num_pages * USER_DATA_SIZE;
+    
+    // Initialize start_ppn and num_pages if this is the first migration
+    if (g_code_region.magic != CODE_REGION_MAGIC || g_code_region.num_pages == 0) {
+        // First time migration: initialize code region from scratch
+        g_code_region.start_ppn = CODE_REGION_START_PPN;  // Always starts at PPN 0
+        g_code_region.num_pages = 0;  // Will be updated after successful migration
+        g_code_region.magic = CODE_REGION_MAGIC;
+        FTL_DEBUG("[CODE] Initializing new code region at PPN 0\n");
+    }
+    
+    // Save initial state
+    if (save_code_region_info() != 0) {
+        FTL_DEBUG("[CODE] ERROR: Failed to save migration state\n");
+        return -1;
+    }
+    
+    // Step 2: Migrate each page
+    // Note: Code region uses full 512-byte pages (no metadata)
+    // We need to pack USER_DATA_SIZE (464 bytes) into 512-byte physical pages
+    uint8_t user_data[USER_DATA_SIZE];  // 464 bytes from FTL
+    uint8_t physical_page[EFLASH_PAGE_SIZE];  // 512 bytes for flash
+    uint16_t dst_ppn = g_code_region.start_ppn + g_code_region.num_pages;
+    
+    for (uint16_t i = 0; i < num_pages; i++) {
+        uint16_t current_lpn = src_lpn + i;
+        uint16_t current_ppn = dst_ppn + i;
+        
+        FTL_DEBUG("[CODE] Migrating page %d/%d: LPN %d -> PPN %d\n",
+                  i + 1, num_pages, current_lpn, current_ppn);
+        
+        // Read user data from logical page via FTL (464 bytes)
+        int ret = eflash_ftl_read(current_lpn, user_data);
+        if (ret != 0) {
+            FTL_DEBUG("[CODE] ERROR: Failed to read LPN %d\n", current_lpn);
+            g_code_region.status = CODE_MIGRATE_FAILED;
+            save_code_region_info();
+            return -1;
+        }
+        
+        // Pack user data into physical page (512 bytes)
+        // Strategy: Copy 464 bytes of user data, fill remaining 48 bytes with 0xFF
+        memset(physical_page, 0xFF, EFLASH_PAGE_SIZE);
+        memcpy(physical_page, user_data, USER_DATA_SIZE);
+        
+        // Check if destination page needs programming (skip if already 0xFF)
+        uint8_t existing_data[EFLASH_PAGE_SIZE];
+        ret = eflash_hw_read(current_ppn, existing_data);
+        bool needs_program = false;
+        
+        for (int j = 0; j < EFLASH_PAGE_SIZE; j++) {
+            if (existing_data[j] != 0xFF) {
+                needs_program = true;
+                break;
+            }
+        }
+        
+        if (needs_program) {
+            // Program the full 512-byte physical page directly (bypassing FTL)
+            ret = eflash_hw_prog(current_ppn, physical_page);
+            if (ret != 0) {
+                FTL_DEBUG("[CODE] ERROR: Failed to program PPN %d\n", current_ppn);
+                g_code_region.status = CODE_MIGRATE_FAILED;
+                save_code_region_info();
+                return -1;
+            }
+            FTL_DEBUG("[CODE] Programmed PPN %d with 512-byte code page\n", current_ppn);
+        } else {
+            FTL_DEBUG("[CODE] PPN %d already blank, skipping program\n", current_ppn);
+        }
+        
+        // Update migration progress
+        g_code_region.pages_migrated = i + 1;
+        g_code_region.dst_ppn = current_ppn;
+        
+        // Save progress after each page (for power-failure recovery)
+        if (save_code_region_info() != 0) {
+            FTL_DEBUG("[CODE] WARNING: Failed to save progress at page %d\n", i + 1);
+            // Continue anyway, can recover from last saved state
+        }
+    }
+    
+    // Step 3: Migration complete, mark as complete
+    g_code_region.status = CODE_MIGRATE_COMPLETE;
+    g_code_region.num_pages += num_pages;
+    
+    if (save_code_region_info() != 0) {
+        FTL_DEBUG("[CODE] ERROR: Failed to save completion state\n");
+        return -1;
+    }
+    
+    // CRITICAL: Adjust GC pointers to skip the newly created/expanded code region
+    uint16_t code_end_ppn = g_code_region.start_ppn + g_code_region.num_pages;
+    
+    if (FTL->gc_head_page < code_end_ppn) {
+        FTL->gc_head_page = code_end_ppn;
+        FTL_DEBUG("[CODE] Adjusted GC head to %d (skip code region PPN 0-%d)\n",
+                 FTL->gc_head_page, code_end_ppn - 1);
+    }
+    
+    if (FTL->gc_tail_page < code_end_ppn) {
+        FTL->gc_tail_page = code_end_ppn;
+        FTL_DEBUG("[CODE] Adjusted GC tail to %d (skip code region PPN 0-%d)\n",
+                 FTL->gc_tail_page, code_end_ppn - 1);
+    }
+    
+    // Step 4: Reclaim source logical pages (trim them from FTL)
+    FTL_DEBUG("[CODE] Reclaiming %d logical pages...\n", num_pages);
+    
+    for (uint16_t i = 0; i < num_pages; i++) {
+        uint16_t lpn = src_lpn + i;
+        
+        // Trim the logical page from FTL (mark as invalid)
+        int ret = eflash_ftl_trim(lpn);
+        if (ret != 0) {
+            FTL_DEBUG("[CODE] WARNING: Failed to trim LPN %d\n", lpn);
+            // Continue anyway, GC will eventually reclaim it
+        }
+    }
+    
+    // Step 5: Mark migration as idle
+    g_code_region.status = CODE_MIGRATE_IDLE;
+    g_code_region.src_lpn = 0;
+    g_code_region.dst_ppn = 0;
+    g_code_region.pages_migrated = 0;
+    g_code_region.total_pages = 0;
+    
+    save_code_region_info();
+    
+    FTL_DEBUG("[CODE] Migration completed successfully. Code region size: %d pages\n",
+              g_code_region.num_pages);
+    
+    return 0;
+}
+
+/**
+ * eflash_ftl_code_region_expand: Expand code region by reclaiming pages after it
+ * 
+ * @additional_pages: Number of additional pages to add to code region
+ * @return: 0 on success, -1 on failure
+ * 
+ * This function expands the code region by:
+ * 1. Calling specialized GC to reclaim pages after code region
+ * 2. Erasing the reclaimed pages
+ * 3. Updating code region size
+ */
+int eflash_ftl_code_region_expand(uint16_t additional_pages) {
+    FTL_DEBUG("[CODE] Expanding code region by %d pages...\n", additional_pages);
+    
+    if (additional_pages == 0) {
+        return 0;
+    }
+    
+    // Step 1: Use specialized GC to reclaim pages after code region
+    int ret = eflash_ftl_gc_reclaim_code_region(additional_pages);
+    if (ret != 0) {
+        FTL_DEBUG("[CODE] ERROR: Failed to reclaim pages for expansion\n");
+        return -1;
+    }
+    
+    // Step 2: Update code region size
+    uint16_t old_size = g_code_region.num_pages;
+    g_code_region.num_pages += additional_pages;
+    
+    // Step 3: Save updated code region info
+    if (save_code_region_info() != 0) {
+        FTL_DEBUG("[CODE] ERROR: Failed to save expanded code region info\n");
+        g_code_region.num_pages = old_size;  // Rollback
+        return -1;
+    }
+    
+    FTL_DEBUG("[CODE] Code region expanded: %d -> %d pages\n",
+              old_size, g_code_region.num_pages);
+    
+    return 0;
+}
+
+/**
+ * eflash_ftl_code_region_shrink: Shrink code region (not typically needed)
+ * 
+ * @pages_to_remove: Number of pages to remove from code region
+ * @return: 0 on success, -1 on failure
+ * 
+ * Note: Shrinking code region is complex and rarely needed.
+ * This is a placeholder for future implementation.
+ */
+int eflash_ftl_code_region_shrink(uint16_t pages_to_remove) {
+    FTL_DEBUG("[CODE] WARNING: Shrink operation not fully implemented\n");
+    
+    if (pages_to_remove >= g_code_region.num_pages) {
+        FTL_DEBUG("[CODE] ERROR: Cannot remove more pages than exist\n");
+        return -1;
+    }
+    
+    // Placeholder: In a full implementation, you would:
+    // 1. Move remaining code to lower addresses
+    // 2. Erase the freed pages
+    // 3. Update code region size
+    
+    return -1;
+}
+
+/**
+ * eflash_ftl_get_code_region_size: Get current code region size
+ * 
+ * @return: Number of pages in code region
+ */
+uint16_t eflash_ftl_get_code_region_size(void) {
+    return g_code_region.num_pages;
+}
+
+/**
+ * eflash_ftl_code_region_recover: Recover from power failure during migration
+ * 
+ * @return: 0 on success, -1 on failure
+ * 
+ * This function recovers the migration process after a power failure.
+ * It reads the saved state and continues from where it left off.
+ */
+int eflash_ftl_code_region_recover(void) {
+    FTL_DEBUG("[CODE] Recovering from power failure...\n");
+    FTL_DEBUG("[CODE] Status: %d, Progress: %d/%d pages\n",
+              g_code_region.status,
+              g_code_region.pages_migrated,
+              g_code_region.total_pages);
+    
+    if (g_code_region.status != CODE_MIGRATE_IN_PROGRESS) {
+        FTL_DEBUG("[CODE] No incomplete migration to recover (status=%d)\n", g_code_region.status);
+        return 0;  // No recovery needed
+    }
+    
+    // Resume migration from last saved progress
+    uint16_t start_page = g_code_region.pages_migrated;
+    uint16_t total_pages = g_code_region.total_pages;
+    uint16_t src_lpn = g_code_region.src_lpn;
+    uint16_t dst_ppn = g_code_region.start_ppn + g_code_region.num_pages;
+    
+    FTL_DEBUG("[CODE] Resuming from page %d...\n", start_page);
+    
+    uint8_t page_data[USER_DATA_SIZE];
+    
+    for (uint16_t i = start_page; i < total_pages; i++) {
+        uint16_t current_lpn = src_lpn + i;
+        uint16_t current_ppn = dst_ppn + i;
+        
+        FTL_DEBUG("[CODE] Recovering page %d/%d: LPN %d -> PPN %d\n",
+                  i + 1, total_pages, current_lpn, current_ppn);
+        
+        // Read data from logical page
+        int ret = eflash_ftl_read(current_lpn, page_data);
+        if (ret != 0) {
+            FTL_DEBUG("[CODE] ERROR: Failed to read LPN %d during recovery\n", current_lpn);
+            g_code_region.status = CODE_MIGRATE_FAILED;
+            save_code_region_info();
+            return -1;
+        }
+        
+        // Program the physical page
+        uint8_t full_page[EFLASH_PAGE_SIZE];
+        memset(full_page, 0xFF, EFLASH_PAGE_SIZE);
+        memcpy(full_page, page_data, USER_DATA_SIZE);
+        
+        ret = eflash_hw_prog(current_ppn, full_page);
+        if (ret != 0) {
+            FTL_DEBUG("[CODE] ERROR: Failed to program PPN %d during recovery\n", current_ppn);
+            g_code_region.status = CODE_MIGRATE_FAILED;
+            save_code_region_info();
+            return -1;
+        }
+        
+        // Update progress
+        g_code_region.pages_migrated = i + 1;
+        save_code_region_info();
+    }
+    
+    // Recovery complete, finalize migration
+    g_code_region.status = CODE_MIGRATE_COMPLETE;
+    g_code_region.num_pages += total_pages;
+    save_code_region_info();
+    
+    // Reclaim source logical pages
+    for (uint16_t i = 0; i < total_pages; i++) {
+        eflash_ftl_trim(src_lpn + i);
+    }
+    
+    // Reset to idle state
+    g_code_region.status = CODE_MIGRATE_IDLE;
+    g_code_region.src_lpn = 0;
+    g_code_region.dst_ppn = 0;
+    g_code_region.pages_migrated = 0;
+    g_code_region.total_pages = 0;
+    save_code_region_info();
+    
+    FTL_DEBUG("[CODE] Recovery completed successfully\n");
+    
+    return 0;
+}
+
+/**
+ * eflash_ftl_code_read: Read code data from code region
+ * 
+ * @page_offset: Page offset within code region (0-based)
+ * @buffer: Output buffer for user data (464 bytes per page)
+ * @size: Number of bytes to read (must be <= USER_DATA_SIZE)
+ * @return: 0 on success, -1 on failure
+ * 
+ * This function reads from the code region and extracts user data
+ * from the 512-byte physical pages.
+ */
+int eflash_ftl_code_read(uint16_t page_offset, uint8_t *buffer, uint16_t size) {
+    if (!FTL || !FTL->is_initialized) {
+        FTL_DEBUG("[CODE] ERROR: FTL not initialized\n");
+        return -1;
+    }
+    
+    if (page_offset >= g_code_region.num_pages) {
+        FTL_DEBUG("[CODE] ERROR: Page offset %d out of range (max %d)\n",
+                 page_offset, g_code_region.num_pages);
+        return -1;
+    }
+    
+    if (size > USER_DATA_SIZE) {
+        FTL_DEBUG("[CODE] ERROR: Read size %d exceeds USER_DATA_SIZE %d\n",
+                 size, USER_DATA_SIZE);
+        return -1;
+    }
+    
+    // Calculate physical page number
+    uint16_t ppn = g_code_region.start_ppn + page_offset;
+    
+    // Read full 512-byte physical page
+    uint8_t physical_page[EFLASH_PAGE_SIZE];
+    int ret = eflash_hw_read(ppn, physical_page);
+    if (ret != 0) {
+        FTL_DEBUG("[CODE] ERROR: Failed to read PPN %d\n", ppn);
+        return -1;
+    }
+    
+    // Extract user data (first 464 bytes)
+    memcpy(buffer, physical_page, size);
+    
+    FTL_DEBUG("[CODE] Read %d bytes from code region page %d (PPN %d)\n",
+             size, page_offset, ppn);
+    
+    return 0;
+}
 

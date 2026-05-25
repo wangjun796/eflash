@@ -43,6 +43,11 @@ set(EFLASH_FTL_TEST_EXTENSION_SOURCES
     eflash_ftl/eflash_ftl_tests_extension.c
 )
 
+# Code region management tests (separate executable)
+set(EFLASH_FTL_TEST_CODE_REGION_SOURCES
+    eflash_ftl/eflash_ftl_tests_code_region.c
+)
+
 # 添加头文件目录
 include_directories(
     ${PROJECT_SOURCE_DIR}
@@ -76,6 +81,10 @@ target_compile_definitions(eflash_ftl_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_executable(eflash_ftl_tests_extension ${EFLASH_FTL_TEST_EXTENSION_SOURCES} ${EFLASH_FTL_SOURCES} ${ECC_SOURCES})
 target_compile_definitions(eflash_ftl_tests_extension PRIVATE _CRT_SECURE_NO_WARNINGS)
 
+# 创建eFlash FTL代码区管理测试程序
+add_executable(eflash_ftl_tests_code_region ${EFLASH_FTL_TEST_CODE_REGION_SOURCES} ${EFLASH_FTL_SOURCES} ${ECC_SOURCES})
+target_compile_definitions(eflash_ftl_tests_code_region PRIVATE _CRT_SECURE_NO_WARNINGS)
+
 # 可选：启用FTL调试输出，用于故障排查（同时应用到所有测试程序）
 # 要启用调试输出，请使用：cmake -DFTL_DEBUG_ENABLE=ON ..
 option(FTL_DEBUG_ENABLE "Enable FTL debug output" OFF)
@@ -83,6 +92,7 @@ if(FTL_DEBUG_ENABLE)
     target_compile_definitions(eflash_ftl_tests PRIVATE FTL_DEBUG_ENABLE=1)
     target_compile_definitions(eflash PRIVATE FTL_DEBUG_ENABLE=1)
     target_compile_definitions(eflash_ftl_tests_extension PRIVATE FTL_DEBUG_ENABLE=1)
+    target_compile_definitions(eflash_ftl_tests_code_region PRIVATE FTL_DEBUG_ENABLE=1)
 endif()
 
 # 关键修复：在Release模式下也启用assert，确保测试失败时立即终止
@@ -107,12 +117,16 @@ add_test(NAME eflash_ftl_tests COMMAND eflash_ftl_tests)
 # 添加eFlash FTL扩展测试
 add_test(NAME eflash_ftl_tests_extension COMMAND eflash_ftl_tests_extension)
 
+# 添加eFlash FTL代码区管理测试
+add_test(NAME eflash_ftl_tests_code_region COMMAND eflash_ftl_tests_code_region)
+
 # 创建一个运行所有测试的目标
 add_custom_target(test_all
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
     DEPENDS 
         eflash_ftl_tests
         eflash_ftl_tests_extension
+        eflash_ftl_tests_code_region
     COMMENT "Running all eFlash FTL tests"
 )
 
