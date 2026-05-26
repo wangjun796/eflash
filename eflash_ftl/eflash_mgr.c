@@ -24,6 +24,7 @@ static uint32_t get_total_node_count(void);
 static void print_free_page_counts(const char *tag);
 static int find_page_with_space(uint16_t *out_lpn, int *out_is_extended, int *out_ext_level, int *out_page_in_block);
 static int extend_free_node_table(void);
+static int write_free_node_page(uint16_t lpn, const uint8_t *page_buf);
 
 // Helper: Get logical page number (LPN) for a free_node page
 static uint16_t get_free_node_lpn(int page_index, int is_extended, int ext_level, int page_in_block) {

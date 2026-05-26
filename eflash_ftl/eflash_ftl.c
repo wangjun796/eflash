@@ -3011,6 +3011,12 @@ int eflash_ftl_trim_object(uint16_t obj_id) {
 #define CODE_REGION_INFO_LPN  (SYS_RESERVED_LPN_COUNT)  // LPN after system areas
 static code_region_info_t g_code_region;
 
+// Forward declarations for code region functions
+static int load_code_region_info(void);
+static int save_code_region_info(void);
+static uint16_t calculate_code_region_checksum(const code_region_info_t *info);
+static int gc_collect_one_page(uint16_t ppn);
+
 /**
  * skip_code_region: Skip code region when moving GC tail pointer
  * 
