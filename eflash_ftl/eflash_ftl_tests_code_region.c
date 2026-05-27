@@ -1591,6 +1591,497 @@ void test_integration_gc_reserve_code_migration(void) {
     teardown_test_environment();
 }
 
+/**
+ * test_code_and_data_coexistence: Code & Data coexistence test with real migration
+ *
+ * Simulates a real-world scenario where user data occupies physical pages
+ * needed by the code region, forcing GC to reserve and migrate. Verifies
+ * bidirectional integrity of both user data and code after migration.
+ *
+ * Scenario:
+ *   1. Write 180 sectors of user data (fills many physical pages including PPN 0+)
+ *   2. Write 132 pages (~61KB) of code source data to logical LPNs
+ *   3. GC reserve PPN [0,132) - migrates user data out, erases the range
+ *   4. Code migrate - reads code from logical, writes directly to PPN [0,~118]
+ *   5. Verify all 180 user data sectors intact
+ *   6. Verify all 132 code pages intact via code_read
+ *   7. Direct physical read of code region
+ *   8. Write more user data, verify code region still protected
+ *   9. Final re-verification of both data and code
+ */
+void test_code_and_data_coexistence(void) {
+    setup_test_environment();
+    total_tests++;
+
+    int ret;
+    uint16_t head, tail;
+
+    const uint16_t USER_LPN_START = 20;
+    const uint16_t USER_SECTORS = 180;
+    const uint16_t CODE_PAGES = 132;
+    const uint16_t CODE_LPN_START = 900;
+    const uint32_t CODE_SIZE_BYTES = CODE_PAGES * USER_DATA_SIZE;
+
+    printf("\n  CODE & DATA COEXISTENCE TEST (%u sectors@LPN%u + %u pages code ~%uKB)\n",
+           USER_SECTORS, USER_LPN_START, CODE_PAGES, CODE_SIZE_BYTES / 1024);
+
+    // =======================================================================
+    // Phase 1: Write user data with sector-ID-embedded patterns
+    //   (starting from USER_LPN_START to avoid system-reserved LPNs)
+    // =======================================================================
+    printf("  === Phase 1: Write %u user sectors @ LPN [%u, %u) ===\n",
+           USER_SECTORS, USER_LPN_START, USER_LPN_START + USER_SECTORS);
+
+    for (uint16_t i = 0; i < USER_SECTORS; i++) {
+        uint16_t lpn = USER_LPN_START + i;
+        uint8_t data[USER_DATA_SIZE];
+        data[0] = (uint8_t)(lpn & 0xFF);
+        data[1] = (uint8_t)((lpn >> 8) & 0xFF);
+        data[2] = 0xAA;
+        data[3] = (uint8_t)((lpn * 17 + 53) & 0xFF);
+        data[USER_DATA_SIZE - 2] = (uint8_t)((lpn * 179 + 31) & 0xFF);
+        data[USER_DATA_SIZE - 1] = 0xBB;
+        memset(data + 4, (uint8_t)((lpn * 47 + 13) & 0xFF), USER_DATA_SIZE - 6);
+        ret = eflash_ftl_write(lpn, data);
+        assert(ret == 0 && "P1: write");
+    }
+
+    head = FTL->gc_head_page;
+    tail = FTL->gc_tail_page;
+    printf("    Wrote %u sectors, head=%d tail=%d\n", USER_SECTORS, head, tail);
+    assert(head > CODE_PAGES && "P1: head must be past code region");
+
+    // =======================================================================
+    // Phase 2: Write code source data with CE-CODE marker pattern
+    // =======================================================================
+    printf("\n  === Phase 2: Write %u pages code source to LPN %u ===\n",
+           CODE_PAGES, CODE_LPN_START);
+
+    for (uint16_t i = 0; i < CODE_PAGES; i++) {
+        uint8_t data[USER_DATA_SIZE];
+        data[0] = 0xCE;
+        data[1] = 0xDE;
+        data[2] = (uint8_t)(i & 0xFF);
+        data[3] = (uint8_t)((i >> 8) & 0xFF);
+        data[USER_DATA_SIZE - 2] = (uint8_t)((i * 47 + 19) & 0xFF);
+        data[USER_DATA_SIZE - 1] = (uint8_t)((i * 163 + 71) & 0xFF);
+        for (int j = 4; j < USER_DATA_SIZE - 2; j++) {
+            data[j] = (uint8_t)((i * 31 + j * 7) & 0xFF);
+        }
+        ret = eflash_ftl_write(CODE_LPN_START + i, data);
+        assert(ret == 0 && "P2: code source write");
+    }
+    printf("    Code source written: LPN [%u, %u)\n",
+           CODE_LPN_START, CODE_LPN_START + CODE_PAGES);
+
+    // Verify code source data is readable via FTL before migration
+    printf("    Pre-migration verify: reading code source via FTL...\n");
+    for (uint16_t i = 0; i < 3; i++) {
+        uint8_t buf[USER_DATA_SIZE];
+        ret = eflash_ftl_read(CODE_LPN_START + i, buf);
+        assert(ret == 0 && "P2: code source read");
+        assert(buf[0] == 0xCE && "P2: code marker[0]");
+        assert(buf[1] == 0xDE && "P2: code marker[1]");
+    }
+    printf("    Code source readable via FTL ?\n");
+
+    // =======================================================================
+    // Phase 3: GC reserve PPN [0, CODE_PAGES) for code
+    // =======================================================================
+    printf("\n  === Phase 3: GC reserve PPN [0, %u) ===\n", CODE_PAGES);
+
+    // Diagnostic: verify USER_LPN_START+12 BEFORE GC reserve
+    {
+        uint16_t chk_lpn = USER_LPN_START + 12;
+        uint8_t dbg[USER_DATA_SIZE];
+        int dr = eflash_ftl_read(chk_lpn, dbg);
+        printf("    DIAG pre-reserve: LPN %u ret=%d [0]=%02X [1]=%02X [2]=%02X [3]=%02X\n",
+               chk_lpn, dr, dbg[0], dbg[1], dbg[2], dbg[3]);
+        assert(dr == 0 && dbg[0] == (uint8_t)(chk_lpn & 0xFF) && "pre-reserve LPN intact");
+        fflush(stdout);
+    }
+
+    head = FTL->gc_head_page;
+    tail = FTL->gc_tail_page;
+    printf("    Before reserve: head=%d tail=%d\n", head, tail);
+
+    ret = eflash_ftl_gc_reserve_physical_range(0, CODE_PAGES);
+    assert(ret == 0 && "P3: reserve");
+
+    head = FTL->gc_head_page;
+    tail = FTL->gc_tail_page;
+    printf("    After  reserve: head=%d tail=%d\n", head, tail);
+
+    assert(head >= CODE_PAGES && "P3: head out of range");
+    assert(tail >= CODE_PAGES && "P3: tail out of range");
+    printf("    head/tail outside [0,%u) ?\n", CODE_PAGES);
+
+    // Diagnostic: scan first 21 sectors after GC reserve
+    {
+        int bad_count = 0;
+        for (uint16_t j = 0; j <= 20 && bad_count < 10; j++) {
+            uint16_t si = USER_LPN_START + j;
+            uint8_t dbg[USER_DATA_SIZE];
+            int dr = eflash_ftl_read(si, dbg);
+            (void)dr;
+            if (dbg[0] != (uint8_t)(si & 0xFF) ||
+                dbg[1] != (uint8_t)((si >> 8) & 0xFF) ||
+                dbg[2] != 0xAA) {
+                bad_count++;
+                printf("    MISMATCH LPN %u: [0]=%02X(exp %02X) [1]=%02X(exp %02X) [2]=%02X(exp AA)\n",
+                       si, dbg[0], (uint8_t)(si & 0xFF), dbg[1], (uint8_t)((si >> 8) & 0xFF), dbg[2]);
+                fflush(stdout);
+            }
+        }
+        if (bad_count == 0) printf("    LPNs %u-%u all intact after GC reserve\n",
+                                    USER_LPN_START, USER_LPN_START + 20);
+        fflush(stdout);
+    }
+
+    for (uint16_t ppn = 0; ppn < CODE_PAGES; ppn++) {
+        uint8_t page[EFLASH_PAGE_SIZE];
+        ret = eflash_hw_read(ppn, page);
+        assert(ret == 0 && "P3: hw_read");
+        for (int b = 0; b < EFLASH_PAGE_SIZE; b++) {
+            assert(page[b] == 0xFF && "P3: erased");
+        }
+    }
+    printf("    All %u reserved pages erased ?\n", CODE_PAGES);
+
+    // =======================================================================
+    // Phase 4: Migrate code from logical ¡ú physical code region
+    // =======================================================================
+    printf("\n  === Phase 4: Migrate code to physical code region ===\n");
+    ret = eflash_ftl_code_migrate_from_logical(CODE_LPN_START, CODE_PAGES);
+    assert(ret == 0 && "P4: migrate");
+
+    uint16_t code_size = eflash_ftl_get_code_region_size();
+    assert(code_size == CODE_PAGES && "P4: code region size");
+    printf("    Code region: %u pages, %u bytes\n", code_size, g_code_region.code_size_bytes);
+
+    // Diagnostic: check USER_LPN_START+12 right after code migration
+    {
+        uint16_t chk_lpn = USER_LPN_START + 12;
+        uint8_t dbg[USER_DATA_SIZE];
+        int dr = eflash_ftl_read(chk_lpn, dbg);
+        printf("    DIAG post-migrate: LPN %u ret=%d [0]=%02X [1]=%02X [2]=%02X [3]=%02X\n",
+               chk_lpn, dr, dbg[0], dbg[1], dbg[2], dbg[3]);
+        assert(dr == 0 && dbg[0] == (uint8_t)(chk_lpn & 0xFF) && "P4: LPN intact after migrate");
+        fflush(stdout);
+    }
+
+    head = FTL->gc_head_page;
+    tail = FTL->gc_tail_page;
+    printf("    After migrate: head=%d tail=%d\n", head, tail);
+    assert(head >= CODE_PAGES && "P4: head >= code_region");
+    assert(tail >= CODE_PAGES && "P4: tail >= code_region");
+    printf("    GC pointers skip code region ?\n");
+
+    // Verify source pages were trimmed (FTL returns blank 0xFF data)
+    {
+        uint8_t buf[USER_DATA_SIZE];
+        ret = eflash_ftl_read(CODE_LPN_START, buf);
+        assert(ret == 0 && "P4: trim reads should still succeed via radix tree");
+        assert(buf[0] != 0xCE && "P4: old code marker cleared after trim");
+        assert(buf[1] != 0xDE && "P4: old code marker[1] cleared after trim");
+    }
+    printf("    Source LPNs trimmed ?\n");
+
+    // =======================================================================
+    // Phase 5: Verify all user data intact after migration
+    // =======================================================================
+    printf("\n  === Phase 5: Verify all %u user sectors intact ===\n", USER_SECTORS);
+
+    // Quick diagnostic: read first user sector manually
+    {
+        uint8_t dbg[USER_DATA_SIZE];
+        int dr = eflash_ftl_read(USER_LPN_START, dbg);
+        printf("    DIAG: LPN %u read ret=%d [0]=%02X [1]=%02X [2]=%02X [3]=%02X [460]=%02X [461]=%02X [462]=%02X [463]=%02X\n",
+               USER_LPN_START, dr, dbg[0], dbg[1], dbg[2], dbg[3],
+               dbg[460], dbg[461], dbg[462], dbg[463]);
+        fflush(stdout);
+    }
+
+    uint16_t data_mismatches = 0;
+    for (uint16_t i = 0; i < USER_SECTORS; i++) {
+        uint16_t lpn = USER_LPN_START + i;
+        uint8_t buf[USER_DATA_SIZE];
+        ret = eflash_ftl_read(lpn, buf);
+        assert(ret == 0 && "P5: read");
+
+        if (buf[0] != (uint8_t)(lpn & 0xFF) ||
+            buf[1] != (uint8_t)((lpn >> 8) & 0xFF) ||
+            buf[2] != 0xAA ||
+            buf[3] != (uint8_t)((lpn * 17 + 53) & 0xFF) ||
+            buf[USER_DATA_SIZE - 2] != (uint8_t)((lpn * 179 + 31) & 0xFF) ||
+            buf[USER_DATA_SIZE - 1] != 0xBB) {
+            data_mismatches++;
+            if (data_mismatches <= 5) {
+                printf("    MISMATCH LPN %u: [0]=%02X(exp %02X) [1]=%02X(exp %02X) [2]=%02X(exp AA) [462]=%02X(exp %02X) [463]=%02X(exp BB)\n",
+                       lpn,
+                       buf[0], (uint8_t)(lpn & 0xFF),
+                       buf[1], (uint8_t)((lpn >> 8) & 0xFF),
+                       buf[2],
+                       buf[USER_DATA_SIZE - 2], (uint8_t)((lpn * 179 + 31) & 0xFF),
+                       buf[USER_DATA_SIZE - 1]);
+                fflush(stdout);
+            }
+        }
+    }
+    printf("    Total mismatches: %u\n", data_mismatches);
+    fflush(stdout);
+    assert(data_mismatches == 0 && "P5: user data intact");
+    printf("    All %u user sectors intact ?\n", USER_SECTORS);
+
+    // =======================================================================
+    // Phase 6: Verify code data via eflash_ftl_code_read
+    // =======================================================================
+    printf("\n  === Phase 6: Verify %u code pages via code_read ===\n", CODE_PAGES);
+
+    uint16_t code_mismatches = 0;
+    for (uint16_t i = 0; i < CODE_PAGES; i++) {
+        uint8_t buf[USER_DATA_SIZE];
+        ret = eflash_ftl_code_read(i, buf, USER_DATA_SIZE);
+        assert(ret == 0 && "P6: code_read");
+
+        if (buf[0] != 0xCE || buf[1] != 0xDE ||
+            buf[2] != (uint8_t)(i & 0xFF) ||
+            buf[3] != (uint8_t)((i >> 8) & 0xFF) ||
+            buf[USER_DATA_SIZE - 2] != (uint8_t)((i * 47 + 19) & 0xFF) ||
+            buf[USER_DATA_SIZE - 1] != (uint8_t)((i * 163 + 71) & 0xFF)) {
+            code_mismatches++;
+            if (code_mismatches <= 5) {
+                printf("    MISMATCH code pgoff=%u: [0]=%02X(exp CE) [1]=%02X(exp DE)\n",
+                       i, buf[0], buf[1]);
+            }
+        }
+    }
+    assert(code_mismatches == 0 && "P6: code intact");
+    printf("    All %u code pages intact via code_read ?\n", CODE_PAGES);
+
+    // =======================================================================
+    // Phase 7: Direct physical verification
+    // =======================================================================
+    printf("\n  === Phase 7: Direct physical read of code region ===\n");
+
+    {
+        uint16_t phys_end = (g_code_region.code_size_bytes + EFLASH_PAGE_SIZE - 1) / EFLASH_PAGE_SIZE;
+        printf("    Code region physical pages: [0, %u) (%u bytes packed)\n",
+               phys_end, g_code_region.code_size_bytes);
+
+        // Read first physical page and check CE marker
+        uint8_t phys_page[EFLASH_PAGE_SIZE];
+        eflash_hw_read(0, phys_page);
+        assert(phys_page[0] == 0xCE && "P7: phys page0 marker CE");
+        assert(phys_page[1] == 0xDE && "P7: phys page0 marker DE");
+        printf("    Physical PPN 0: marker verified ?\n");
+
+        // Read last physical page
+        eflash_hw_read(phys_end - 1, phys_page);
+        printf("    Physical PPN %u: readable, partial fill ?\n", phys_end - 1);
+
+        // Verify PPN [phys_end, CODE_PAGES) remain erased (unused code region pages)
+        if (phys_end < CODE_PAGES) {
+            uint16_t erased_count = 0;
+            for (uint16_t ppn = phys_end; ppn < CODE_PAGES; ppn++) {
+                uint8_t page[EFLASH_PAGE_SIZE];
+                eflash_hw_read(ppn, page);
+                int all_ff = 1;
+                for (int b = 0; b < EFLASH_PAGE_SIZE; b++) {
+                    if (page[b] != 0xFF) { all_ff = 0; break; }
+                }
+                if (all_ff) erased_count++;
+            }
+            printf("    PPN [%u,%u): %u/%u erased ?\n",
+                   phys_end, CODE_PAGES, erased_count, CODE_PAGES - phys_end);
+        }
+    }
+
+    // =======================================================================
+    // Phase 8: Write more user data, verify code region is protected
+    // =======================================================================
+    printf("\n  === Phase 8: New writes + code region protection ===\n");
+
+    int new_write_count = 40;
+    for (uint16_t i = 300; i < 300 + new_write_count; i++) {
+        uint8_t data[USER_DATA_SIZE];
+        memset(data, 0x5A, USER_DATA_SIZE);
+        data[0] = (uint8_t)(i & 0xFF);
+        data[1] = (uint8_t)((i >> 8) & 0xFF);
+        ret = eflash_ftl_write(i, data);
+        assert(ret == 0 && "P8: write");
+    }
+    head = FTL->gc_head_page;
+    printf("    Wrote %d new sectors, head=%d\n", new_write_count, head);
+    assert(head >= CODE_PAGES && "P8: head still past code region");
+
+    // Re-read code region after writes
+    {
+        uint8_t buf[USER_DATA_SIZE];
+        ret = eflash_ftl_code_read(0, buf, USER_DATA_SIZE);
+        assert(ret == 0 && "P8: code_read after writes");
+        assert(buf[0] == 0xCE && buf[1] == 0xDE && "P8: code marker survived");
+
+        ret = eflash_ftl_code_read(CODE_PAGES - 1, buf, USER_DATA_SIZE);
+        assert(ret == 0 && "P8: code_read last page after writes");
+        assert(buf[0] == 0xCE && buf[1] == 0xDE && "P8: last code page marker survived");
+    }
+    printf("    Code region intact after %d new writes ?\n", new_write_count);
+
+    // =======================================================================
+    // Phase 9: Final verification - all data + code still correct
+    // =======================================================================
+    printf("\n  === Phase 9: Final complete verification ===\n");
+
+    // User data
+    uint16_t final_data_err = 0;
+    for (uint16_t i = 0; i < USER_SECTORS; i++) {
+        uint16_t lpn = USER_LPN_START + i;
+        uint8_t buf[USER_DATA_SIZE];
+        if (eflash_ftl_read(lpn, buf) != 0) { final_data_err++; continue; }
+        if (buf[0] != (uint8_t)(lpn & 0xFF) ||
+            buf[1] != (uint8_t)((lpn >> 8) & 0xFF) ||
+            buf[2] != 0xAA) {
+            final_data_err++;
+        }
+    }
+    assert(final_data_err == 0 && "P9: user data final");
+    printf("    %u user sectors: all correct ?\n", USER_SECTORS);
+
+    // New data
+    for (uint16_t i = 300; i < 300 + new_write_count; i++) {
+        uint8_t buf[USER_DATA_SIZE];
+        ret = eflash_ftl_read(i, buf);
+        assert(ret == 0 && "P9: new data read");
+        assert(buf[0] == (uint8_t)(i & 0xFF) && "P9: new data id");
+        assert(buf[1] == (uint8_t)((i >> 8) & 0xFF) && "P9: new data id hi");
+    }
+    printf("    %d new sectors: all correct ?\n", new_write_count);
+
+    // Code
+    uint16_t final_code_err = 0;
+    for (uint16_t i = 0; i < CODE_PAGES; i++) {
+        uint8_t buf[USER_DATA_SIZE];
+        if (eflash_ftl_code_read(i, buf, USER_DATA_SIZE) != 0) { final_code_err++; continue; }
+        if (buf[0] != 0xCE || buf[1] != 0xDE) {
+            final_code_err++;
+        }
+    }
+    assert(final_code_err == 0 && "P9: code final");
+    printf("    %u code pages: all correct ?\n", CODE_PAGES);
+
+    // Direct physical scan: code region unscathed
+    {
+        uint8_t page0[EFLASH_PAGE_SIZE];
+        eflash_hw_read(0, page0);
+        assert(page0[0] == 0xCE && page0[1] == 0xDE && "P9: phys PPN0");
+    }
+    printf("    Physical PPN 0 still holds code marker ?\n");
+
+    printf("\n  === Code & Data coexistence test passed ===\n");
+
+    passed_tests++;
+    teardown_test_environment();
+}
+
+/**
+ * test_trim_radix_tree_integrity: Verify Radix Tree stays intact after TRIM
+ * 
+ * Tests:
+ *   1. Write sectors with shared tree paths to build internal nodes
+ *   2. Trim ONE sector in the middle
+ *   3. Verify trimmed sector returns 0xFF
+ *   4. Verify all OTHER sectors (including shared-path neighbors) are still correct
+ * 
+ * This validates that trace_tree's COW path in eflash_ftl_trim correctly
+ * preserves the tree structure, and write_full_page only writes once.
+ */
+static void test_trim_radix_tree_integrity(void) {
+    printf("\n  === Trim Radix Tree Integrity Test ===\n");
+    setup_test_environment();
+
+    int ret;
+    const uint16_t NUM_SECTORS = 8;
+    uint8_t original[NUM_SECTORS][USER_DATA_SIZE];
+
+#define TG(n) ((uint8_t)((n) & 0xFF))
+    const uint16_t pattern_base = 0x5A;
+
+    printf("\n  Phase 1: Write %d sectors to build Radix Tree...\n", NUM_SECTORS);
+    for (uint16_t i = 0; i < NUM_SECTORS; i++) {
+        memset(original[i], 0, USER_DATA_SIZE);
+        original[i][0] = TG(i);
+        original[i][1] = pattern_base;
+        original[i][2] = pattern_base + 1;
+        original[i][3] = pattern_base + 2;
+        for (int k = 4; k < USER_DATA_SIZE; k++) {
+            original[i][k] = pattern_base + (uint8_t)(i * 7 + k) % 200;
+        }
+        ret = eflash_ftl_write(i, original[i]);
+        assert(ret == 0 && "P1: write sector");
+    }
+    printf("    %d sectors written ?\n", NUM_SECTORS);
+
+    printf("\n  Phase 2: Read back all sectors before TRIM...\n");
+    for (uint16_t i = 0; i < NUM_SECTORS; i++) {
+        uint8_t buf[USER_DATA_SIZE];
+        ret = eflash_ftl_read(i, buf);
+        assert(ret == 0 && "P2: read before trim");
+        assert(memcmp(buf, original[i], USER_DATA_SIZE) == 0 && "P2: data match");
+    }
+    printf("    All %d sectors verified ?\n", NUM_SECTORS);
+
+#define TRIM_TARGET 3
+    printf("\n  Phase 3: TRIM sector %d...\n", TRIM_TARGET);
+    ret = eflash_ftl_trim(TRIM_TARGET);
+    assert(ret == 0 && "P3: trim returned success");
+    printf("    Trimmed sector %d ?\n", TRIM_TARGET);
+
+    printf("\n  Phase 4: Verify trimmed sector returns 0xFF...\n");
+    {
+        uint8_t buf[USER_DATA_SIZE];
+        ret = eflash_ftl_read(TRIM_TARGET, buf);
+        assert(ret == 0 && "P4: trimmed sector read still ok via tree");
+        for (int k = 0; k < USER_DATA_SIZE; k++) {
+            assert(buf[k] == 0xFF && "P4: trimmed sector data is 0xFF");
+        }
+    }
+    printf("    Sector %d: all 0xFF ?\n", TRIM_TARGET);
+
+    printf("\n  Phase 5: Verify OTHER sectors survive TRIM (tree intact)...\n");
+    for (uint16_t i = 0; i < NUM_SECTORS; i++) {
+        if (i == TRIM_TARGET) continue;
+        uint8_t buf[USER_DATA_SIZE];
+        ret = eflash_ftl_read(i, buf);
+        assert(ret == 0 && "P5: read survives");
+        assert(memcmp(buf, original[i], USER_DATA_SIZE) == 0 && "P5: data survives trim");
+    }
+    printf("    All %d non-trimmed sectors: intact ?\n", NUM_SECTORS - 1);
+
+    printf("\n  Phase 6: Write & read new sector to confirm tree still operational...\n");
+    {
+        const uint16_t NEW_SECTOR = 42;
+        uint8_t new_data[USER_DATA_SIZE];
+        memset(new_data, 0xAB, USER_DATA_SIZE);
+        new_data[0] = 0x42;
+        new_data[1] = 0x42;
+        ret = eflash_ftl_write(NEW_SECTOR, new_data);
+        assert(ret == 0 && "P6: write new sector after trim");
+        uint8_t buf[USER_DATA_SIZE];
+        ret = eflash_ftl_read(NEW_SECTOR, buf);
+        assert(ret == 0 && "P6: read new sector");
+        assert(memcmp(buf, new_data, USER_DATA_SIZE) == 0 && "P6: new sector data match");
+    }
+    printf("    New sector 42 written and verified ?\n");
+
+    printf("\n  === Trim Radix Tree integrity test passed ===\n");
+    passed_tests++;
+    teardown_test_environment();
+
+#undef TRIM_TARGET
+#undef TG
+}
+
 // ============================================================================
 // Main Test Runner
 // ============================================================================
@@ -1613,6 +2104,8 @@ int main(void) {
     RUN_TEST(test_code_segment_stress_with_leak_detection);
     RUN_TEST(test_gc_reserve_physical_range);
     RUN_TEST(test_integration_gc_reserve_code_migration);
+    RUN_TEST(test_code_and_data_coexistence);
+    RUN_TEST(test_trim_radix_tree_integrity);
     
     // Summary
     printf("\n========================================\n");

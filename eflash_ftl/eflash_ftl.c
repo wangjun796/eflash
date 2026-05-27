@@ -2835,10 +2835,10 @@ int eflash_ftl_gc_trigger(void) {
  * 
  * Implementation:
  *   1. Check if sector is currently mapped
- *   2. Overwrite the page with blank data (0xFF) and mark status as INVALID
- *   3. Update Radix Tree to point to this invalidated page
+ *   2. Build COW path via trace_tree, set status=INVALID, write once via write_full_page
+ *   3. Update root_page to the new COW root
  *   4. Decrement valid_page_count
- *   5. The physical page becomes "stale" and will be reclaimed without migration
+ *   5. Old physical page becomes stale, reclaimed by GC without migration
  */
 int eflash_ftl_trim(uint16_t sector_id) {
     if (!FTL->is_initialized) {
@@ -2856,47 +2856,17 @@ int eflash_ftl_trim(uint16_t sector_id) {
     FTL_DEBUG("[TRIM] Trimming sector %d (currently mapped to PPN %d)\n", 
               sector_id, phys_page);
     
-    // Step 2: Create a blank/invalid metadata to mark this sector as trimmed
-    // We write a special marker page that indicates this sector has been trimmed
-    ftl_meta_t trim_meta;
-    memset(&trim_meta, 0xFF, sizeof(ftl_meta_t));  // Start with all 0xFF (blank)
-    trim_meta.sector_id = sector_id;
-    trim_meta.status = TXN_STATUS_INVALID;  // Mark as INVALID
-    trim_meta.global_count = FTL->next_count++;
-    trim_meta.epoch = FTL->current_epoch;
-    trim_meta.txn_id = FTL->active_txn_id;
-    
-    // Set all adr pointers to PAGE_NONE (no children)
-    for (int i = 0; i < RADIX_DEPTH; i++) {
-        trim_meta.adr[i] = PAGE_NONE;
-    }
-    
-    // Generate ECC for the trim marker page
+    uint16_t next_count = FTL->next_count++;
+
     uint8_t page_buf[EFLASH_PAGE_SIZE];
-    memset(page_buf, 0xFF, EFLASH_PAGE_SIZE);  // Fill with 0xFF
-    memcpy(page_buf + META_OFFSET, &trim_meta, META_SIZE);
-    
-    // Calculate ECC using existing BCH configuration
-    bch_encode(bch_cfg, page_buf, USER_DATA_SIZE, trim_meta.ecc);
-    memcpy(page_buf + META_OFFSET + offsetof(ftl_meta_t, ecc), trim_meta.ecc, 5);
-    
-    // Step 3: Write the trim marker to a NEW physical page
-    // (We don't overwrite in-place due to Flash characteristics)
+    memset(page_buf, 0xFF, EFLASH_PAGE_SIZE);
+
     int new_phys = allocate_physical_page();
     if (new_phys < 0) {
         FTL_DEBUG("[TRIM] ERROR: Failed to allocate page for trim marker\n");
         return -1;
     }
     
-    if (eflash_hw_prog(new_phys, page_buf) != 0) {
-        FTL_DEBUG("[TRIM] ERROR: Failed to write trim marker\n");
-        return -1;
-    }
-    
-    FTL_DEBUG("[TRIM] Wrote trim marker to PPN %d\n", new_phys);
-    
-    // Step 4: Update Radix Tree to point to the trim marker
-    // This effectively removes the old mapping
     uint16_t current_root = (FTL->active_txn_id != TXN_ID_NONE) ? 
                             FTL->shadow_root : FTL->root_page;
     
@@ -2905,39 +2875,33 @@ int eflash_ftl_trim(uint16_t sector_id) {
         return -1;
     }
     
-    // Use trace_tree to build path, then update root
     ftl_meta_t new_node_meta;
-    int trace_result = trace_tree(current_root, sector_id, &new_node_meta);
+    trace_tree(current_root, sector_id, &new_node_meta);
     
-    // Update the metadata with our trim marker info
     new_node_meta.sector_id = sector_id;
     new_node_meta.status = TXN_STATUS_INVALID;
-    new_node_meta.global_count = trim_meta.global_count;
+    new_node_meta.global_count = next_count;
     
-    // Write the updated node
     if (write_full_page(new_phys, page_buf, &new_node_meta) != 0) {
-        FTL_DEBUG("[TRIM] ERROR: Failed to write updated node\n");
+        FTL_DEBUG("[TRIM] ERROR: Failed to write trim marker\n");
         return -1;
     }
     
-    // Update root pointer
+    FTL_DEBUG("[TRIM] Wrote trim marker to PPN %d\n", new_phys);
+
     if (FTL->active_txn_id != TXN_ID_NONE) {
         FTL->shadow_root = new_phys;
     } else {
         FTL->root_page = new_phys;
     }
-    
-    // Step 5: Decrement valid page count
+
     if (FTL->valid_page_count > 0) {
         FTL->valid_page_count--;
     }
-    
-    // Step 6: Old physical page 'phys_page' is now stale
-    // It will be reclaimed by next GC without reading/migrating data
-    FTL_DEBUG("[TRIM] Sector %d trimmed successfully. Old PPN %d is now stale.\n",
-              sector_id, phys_page);
-    FTL_DEBUG("[TRIM] Valid page count: %u\n", FTL->valid_page_count);
-    
+
+    FTL_DEBUG("[TRIM] Sector %d trimmed. Old PPN %d now stale. Valid: %u\n",
+              sector_id, phys_page, FTL->valid_page_count);
+
     return 0;
 }
 
