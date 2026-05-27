@@ -1288,6 +1288,310 @@ void test_gc_reserve_physical_range(void) {
 }
 
 // ============================================================================
+// Test Case 12: Integration Test - Full Code Migration with GC Reservation
+// ============================================================================
+// Simulates a realistic code segment migration pipeline:
+//   1. FTL is populated with diverse user data (200+ sectors)
+//   2. A physical range is reserved for code via gc_reserve_physical_range
+//   3. Data integrity is verified after reservation (GC migration correctness)
+//   4. Reserved range protection is verified under continued FTL writes
+//   5. Code is simulated as being written into the reserved area
+//   6. Head wrap-around behaviour is tested
+//   7. Multiple sequential reservations are verified
+//   8. Edge cases are exercised
+
+void test_integration_gc_reserve_code_migration(void) {
+    setup_test_environment();
+    total_tests++;
+
+    uint16_t head, tail;
+    uint32_t free_pages;
+    int ret;
+
+    // =======================================================================
+    // Phase 1: Populate FTL with diverse user data (simulates real-world load)
+    // =======================================================================
+    printf("  === Phase 1: Populating FTL with 200 sectors of diverse data ===\n");
+
+    const uint16_t phase1_sectors = 200;
+    for (uint16_t i = 0; i < phase1_sectors; i++) {
+        uint8_t data[USER_DATA_SIZE];
+        uint8_t pattern_byte = (uint8_t)((i * 7 + 13) & 0xFF);
+        memset(data, pattern_byte, USER_DATA_SIZE);
+        data[0] = (uint8_t)(i & 0xFF);
+        data[1] = (uint8_t)((i >> 8) & 0xFF);
+        ret = eflash_ftl_write(i, data);
+        assert(ret == 0 && "Phase1: Write should succeed");
+    }
+
+    head = FTL->gc_head_page;
+    tail = FTL->gc_tail_page;
+    free_pages = eflash_ftl_get_free_pages();
+    printf("    After populating: head=%d, tail=%d, free=%u\n", head, tail, free_pages);
+    assert(head > 100 && "Phase1: head should be well past PPN 100 after 200 writes");
+
+    // =======================================================================
+    // Phase 2: Reserve a physical range for code
+    // =======================================================================
+    printf("\n  === Phase 2: Reserve PPN [80, 100) for code ===\n");
+
+    const uint16_t reserve1_start = 80;
+    const uint16_t reserve1_pages = 20;
+    const uint16_t reserve1_end = reserve1_start + reserve1_pages;
+
+    uint16_t head_before_reserve = FTL->gc_head_page;
+    uint16_t tail_before_reserve = FTL->gc_tail_page;
+
+    ret = eflash_ftl_gc_reserve_physical_range(reserve1_start, reserve1_pages);
+    assert(ret == 0 && "Phase2: Reserve should succeed");
+
+    head = FTL->gc_head_page;
+    tail = FTL->gc_tail_page;
+    printf("    Before reserve: head=%d, tail=%d\n", head_before_reserve, tail_before_reserve);
+    printf("    After  reserve: head=%d, tail=%d\n", head, tail);
+
+    // Verify head is outside reserved range
+    assert(!(head >= reserve1_start && head < reserve1_end) &&
+           "Phase2: head must be outside reserved range");
+    printf("    head %d outside [%d,%d) ?\n", head, reserve1_start, reserve1_end);
+
+    // Verify tail is outside reserved range
+    assert(!(tail >= reserve1_start && tail < reserve1_end) &&
+           "Phase2: tail must be outside reserved range");
+    printf("    tail %d outside [%d,%d) ?\n", tail, reserve1_start, reserve1_end);
+
+    // Verify all reserved pages are erased (all 0xFF)
+    printf("    Scanning reserved pages for erase verification...\n");
+    for (uint16_t ppn = reserve1_start; ppn < reserve1_end; ppn++) {
+        uint8_t page[EFLASH_PAGE_SIZE];
+        ret = eflash_hw_read(ppn, page);
+        assert(ret == 0 && "Phase2: hardware read should succeed");
+
+        bool all_ff = true;
+        for (int b = 0; b < EFLASH_PAGE_SIZE; b++) {
+            if (page[b] != 0xFF) {
+                all_ff = false;
+                printf("    FAIL: PPN %d byte %d = 0x%02X\n", ppn, b, page[b]);
+                break;
+            }
+        }
+        assert(all_ff && "Phase2: every reserved page must be fully erased");
+    }
+    printf("    All %d pages in reserved range verified erased ?\n", reserve1_pages);
+
+    // =======================================================================
+    // Phase 3: Verify data integrity after GC reservation
+    // =======================================================================
+    printf("\n  === Phase 3: Data integrity check after reservation ===\n");
+    printf("    Checking all %d sectors still readable with correct data...\n", phase1_sectors);
+
+    uint16_t mismatch_count = 0;
+    for (uint16_t i = 0; i < phase1_sectors; i++) {
+        uint8_t read_data[USER_DATA_SIZE];
+        ret = eflash_ftl_read(i, read_data);
+        assert(ret == 0 && "Phase3: read should succeed");
+
+        uint8_t expected_pattern = (uint8_t)((i * 7 + 13) & 0xFF);
+        if (read_data[0] != (uint8_t)(i & 0xFF) ||
+            read_data[1] != (uint8_t)((i >> 8) & 0xFF) ||
+            read_data[3] != expected_pattern) {
+            mismatch_count++;
+        }
+    }
+    assert(mismatch_count == 0 && "Phase3: all sectors must retain correct data");
+    printf("    All %d sectors verified intact ?\n", phase1_sectors);
+
+    // =======================================================================
+    // Phase 4: Reserved range protection under continued writes
+    // =======================================================================
+    printf("\n  === Phase 4: Reserved range protection under new writes ===\n");
+
+    for (uint16_t i = 300; i < 330; i++) {
+        uint8_t data[USER_DATA_SIZE];
+        memset(data, 0xDD, USER_DATA_SIZE);
+        ret = eflash_ftl_write(i, data);
+        assert(ret == 0 && "Phase4: write should succeed");
+    }
+
+    head = FTL->gc_head_page;
+    printf("    After 30 new writes: head=%d\n", head);
+
+    // Verify reserved range is still pristine
+    for (uint16_t ppn = reserve1_start; ppn < reserve1_end; ppn++) {
+        uint8_t page[EFLASH_PAGE_SIZE];
+        eflash_hw_read(ppn, page);
+        for (int b = 0; b < EFLASH_PAGE_SIZE; b++) {
+            assert(page[b] == 0xFF && "Phase4: reserved page must remain erased");
+        }
+    }
+    printf("    Reserved range [%d,%d) still untouched after 30 writes ?\n",
+           reserve1_start, reserve1_end);
+
+    // =======================================================================
+    // Phase 5: Simulate code being written into the reserved area
+    // =======================================================================
+    printf("\n  === Phase 5: Simulate code write into reserved area ===\n");
+
+    const char* code_patterns[] = {
+        "CODE_SEGMENT_0: bootloader_init_vector_table",
+        "CODE_SEGMENT_1: interrupt_handler_entry",
+        "CODE_SEGMENT_2: memory_config_routines",
+        "CODE_SEGMENT_3: clock_init_and_pll_setup",
+    };
+    const uint16_t num_code_segs = 4;
+
+    uint16_t code_ppn = reserve1_start;
+    for (uint16_t seg = 0; seg < num_code_segs; seg++) {
+        uint8_t code_page[EFLASH_PAGE_SIZE];
+        memset(code_page, 0xFF, EFLASH_PAGE_SIZE);
+        size_t pattern_len = strlen(code_patterns[seg]);
+        memcpy(code_page, code_patterns[seg], pattern_len < USER_DATA_SIZE ? pattern_len : USER_DATA_SIZE);
+
+        // Also write segment marker at fixed offset
+        code_page[USER_DATA_SIZE - 1] = (uint8_t)(0xE0 + seg);
+
+        ret = eflash_hw_prog(code_ppn + seg, code_page);
+        assert(ret == 0 && "Phase5: program code page should succeed");
+    }
+    printf("    Programmed %d code pages into reserved area PPN [%d,%d)\n",
+           num_code_segs, code_ppn, code_ppn + num_code_segs);
+
+    // Verify code readback
+    for (uint16_t seg = 0; seg < num_code_segs; seg++) {
+        uint8_t readback[EFLASH_PAGE_SIZE];
+        ret = eflash_hw_read(code_ppn + seg, readback);
+        assert(ret == 0 && "Phase5: readback should succeed");
+
+        assert(memcmp(readback, code_patterns[seg],
+                      strlen(code_patterns[seg])) == 0 &&
+               "Phase5: code pattern must match");
+        assert(readback[USER_DATA_SIZE - 1] == (uint8_t)(0xE0 + seg) &&
+               "Phase5: segment marker must match");
+    }
+    printf("    Code readback verified ?\n");
+
+    // Verify remaining reserved pages (not used by code) are still erased
+    for (uint16_t ppn = code_ppn + num_code_segs; ppn < reserve1_end; ppn++) {
+        uint8_t page[EFLASH_PAGE_SIZE];
+        eflash_hw_read(ppn, page);
+        bool all_ff = true;
+        for (int b = 0; b < EFLASH_PAGE_SIZE; b++) {
+            if (page[b] != 0xFF) { all_ff = false; break; }
+        }
+        assert(all_ff && "Phase5: unused reserved pages must remain erased");
+    }
+    printf("    Unused reserved pages still erased ?\n");
+
+    // =======================================================================
+    // Phase 6: Head wrap-around scenario
+    // =======================================================================
+    printf("\n  === Phase 6: Head wrap-around scenario ===\n");
+
+    // Write enough sectors to drive head close to end of flash
+    // Head is currently somewhere beyond 100+; we need to drive it near 2047
+    uint16_t sectors_to_fill = 0;
+    while (FTL->gc_head_page < 1900) {
+        uint8_t data[USER_DATA_SIZE];
+        memset(data, 0xBB, USER_DATA_SIZE);
+        ret = eflash_ftl_write(500 + sectors_to_fill, data);
+        assert(ret == 0 && "Phase6: fill write should succeed");
+        sectors_to_fill++;
+    }
+    printf("    Wrote %d sectors to push head to %d\n", sectors_to_fill, FTL->gc_head_page);
+
+    // Now reserve a range near the end of flash
+    const uint16_t reserve2_start = 1960;
+    const uint16_t reserve2_pages = 10;
+    const uint16_t reserve2_end = reserve2_start + reserve2_pages;
+
+    printf("    Reserving PPN [%d,%d) near end of flash...\n", reserve2_start, reserve2_end);
+    ret = eflash_ftl_gc_reserve_physical_range(reserve2_start, reserve2_pages);
+    assert(ret == 0 && "Phase6: near-end reserve should succeed");
+
+    head = FTL->gc_head_page;
+    tail = FTL->gc_tail_page;
+    printf("    After near-end reserve: head=%d, tail=%d\n", head, tail);
+
+    // Verify head/tail outside reserved range
+    assert(!(head >= reserve2_start && head < reserve2_end) &&
+           "Phase6: head must stay outside near-end reserved range");
+    assert(!(tail >= reserve2_start && tail < reserve2_end) &&
+           "Phase6: tail must stay outside near-end reserved range");
+    printf("    head/tail outside near-end reserved range ?\n");
+
+    // Verify near-end reserved pages are erased
+    for (uint16_t ppn = reserve2_start; ppn < reserve2_end; ppn++) {
+        uint8_t page[EFLASH_PAGE_SIZE];
+        eflash_hw_read(ppn, page);
+        for (int b = 0; b < EFLASH_PAGE_SIZE; b++) {
+            assert(page[b] == 0xFF && "Phase6: near-end pages must be erased");
+        }
+    }
+    printf("    All %d near-end pages erased ?\n", reserve2_pages);
+
+    // =======================================================================
+    // Phase 7: Multiple sequential reservations
+    // =======================================================================
+    printf("\n  === Phase 7: Multiple sequential reservations ===\n");
+
+    // Reserve first gap beyond head
+    uint16_t multi_start = FTL->gc_head_page + 5;
+    if (multi_start >= EFLASH_TOTAL_PAGES) multi_start = 5;
+
+    const uint16_t multi1_pages = 6;
+    const uint16_t multi1_end = multi_start + multi1_pages;
+    const uint16_t multi2_start = multi1_end + 3;
+    const uint16_t multi2_pages = 4;
+    const uint16_t multi2_end = multi2_start + multi2_pages;
+
+    // Ensure ranges don't clash with code-occupied area
+    if (multi_start < reserve1_end) {
+        multi_start = reserve1_end + 2;
+    }
+
+    printf("    Multi-reserve #1: [%d,%d)...\n", multi_start, multi1_end);
+    ret = eflash_ftl_gc_reserve_physical_range(multi_start, multi1_pages);
+    assert(ret == 0 && "Phase7: first multi-reserve should succeed");
+
+    printf("    Multi-reserve #2: [%d,%d)...\n", multi2_start, multi2_end);
+    ret = eflash_ftl_gc_reserve_physical_range(multi2_start, multi2_pages);
+    assert(ret == 0 && "Phase7: second multi-reserve should succeed");
+
+    // Verify both ranges are erased
+    for (uint16_t ppn = multi_start; ppn < multi1_end; ppn++) {
+        uint8_t page[EFLASH_PAGE_SIZE];
+        eflash_hw_read(ppn, page);
+        for (int b = 0; b < EFLASH_PAGE_SIZE; b++)
+            assert(page[b] == 0xFF && "Phase7: multi1 must be erased");
+    }
+    for (uint16_t ppn = multi2_start; ppn < multi2_end; ppn++) {
+        uint8_t page[EFLASH_PAGE_SIZE];
+        eflash_hw_read(ppn, page);
+        for (int b = 0; b < EFLASH_PAGE_SIZE; b++)
+            assert(page[b] == 0xFF && "Phase7: multi2 must be erased");
+    }
+    printf("    Both multi-reserved ranges verified erased ?\n");
+
+    // =======================================================================
+    // Phase 8: Edge cases
+    // =======================================================================
+    printf("\n  === Phase 8: Edge cases ===\n");
+
+    // Edge: reserve single page
+    ret = eflash_ftl_gc_reserve_physical_range(multi2_end + 5, 1);
+    assert(ret == 0 && "Phase8: single page reserve should succeed");
+    printf("    Single page reserve: ?\n");
+
+    // Edge: GC already in progress detection
+    // (We can't easily test this externally, but the guard exists in implementation)
+
+    printf("\n  === Integration test completed successfully ===\n");
+
+    passed_tests++;
+    teardown_test_environment();
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 
@@ -1308,6 +1612,7 @@ int main(void) {
     RUN_TEST(test_code_segment_add_delete_readd);
     RUN_TEST(test_code_segment_stress_with_leak_detection);
     RUN_TEST(test_gc_reserve_physical_range);
+    RUN_TEST(test_integration_gc_reserve_code_migration);
     
     // Summary
     printf("\n========================================\n");
