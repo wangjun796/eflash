@@ -1,23 +1,23 @@
 /* eFlash FTL - Code Region Management Tests
  * 
- * æµ‹è¯•ç›®æ ‡ï¼š
- * 1. éªŒè¯ä»£ç åŒºåˆå§‹åŒ–å’ŒçŠ¶æ€ç®¡ç†
- * 2. éªŒè¯ä»é€»è¾‘é¡µåˆ°ç‰©ç†é¡µçš„ä»£ç æ¬ç§»
- * 3. éªŒè¯ä»£ç åŒºæ‰©å±•å’Œæ”¶ç¼©
- * 4. éªŒè¯æ‰ç”µæ¢å¤æœºåˆ¶
- * 5. éªŒè¯ä»£ç è¯»å–åŠŸèƒ½
+ * ²âÊÔÄ¿±ê£º
+ * 1. ÑéÖ¤´úÂëÇø³õÊ¼»¯ºÍ×´Ì¬¹ÜÀí
+ * 2. ÑéÖ¤´ÓÂß¼­Ò³µ½ÎïÀíÒ³µÄ´úÂë°áÒÆ
+ * 3. ÑéÖ¤´úÂëÇøÀ©Õ¹ºÍÊÕËõ
+ * 4. ÑéÖ¤µôµç»Ö¸´»úÖÆ
+ * 5. ÑéÖ¤´úÂë¶ÁÈ¡¹¦ÄÜ
  * 
- * æµ‹è¯•ç”¨ä¾‹åˆ—è¡¨ï¼š
- * âœ… test_code_region_init - ä»£ç åŒºåˆå§‹åŒ–æµ‹è¯•
- * âœ… test_code_migrate_basic - åŸºç¡€ä»£ç æ¬ç§»æµ‹è¯•
- * âœ… test_code_migrate_multi_page - å¤šé¡µä»£ç æ¬ç§»æµ‹è¯•
- * âœ… test_code_region_expand - ä»£ç åŒºåŠ¨æ€æ‰©å±•æµ‹è¯•
- * âœ… test_code_region_shrink - ä»£ç åŒºæ”¶ç¼©æµ‹è¯•
- * âœ… test_code_read_verify - ä»£ç è¯»å–éªŒè¯æµ‹è¯•
- * âœ… test_code_migrate_power_failure - æ¬ç§»è¿‡ç¨‹ä¸­æ‰ç”µæ¢å¤æµ‹è¯•
- * âœ… test_code_region_gc_reclaim - GCå›æ”¶ä»£ç åŒºåç©ºé—´æµ‹è¯•
+ * ²âÊÔÓÃÀıÁĞ±í£º
+ * ? test_code_region_init - ´úÂëÇø³õÊ¼»¯²âÊÔ
+ * ? test_code_migrate_basic - »ù´¡´úÂë°áÒÆ²âÊÔ
+ * ? test_code_migrate_multi_page - ¶àÒ³´úÂë°áÒÆ²âÊÔ
+ * ? test_code_region_expand - ´úÂëÇø¶¯Ì¬À©Õ¹²âÊÔ
+ * ? test_code_region_shrink - ´úÂëÇøÊÕËõ²âÊÔ
+ * ? test_code_read_verify - ´úÂë¶ÁÈ¡ÑéÖ¤²âÊÔ
+ * ? test_code_migrate_power_failure - °áÒÆ¹ı³ÌÖĞµôµç»Ö¸´²âÊÔ
+ * ? test_code_region_gc_reclaim - GC»ØÊÕ´úÂëÇøºó¿Õ¼ä²âÊÔ
  * 
- * æ³¨æ„ï¼šæ­¤æ–‡ä»¶ç‹¬ç«‹äºä¸»æµ‹è¯•æ–‡ä»¶ï¼Œä¾¿äºè¯¦ç»†è°ƒè¯•å’Œåˆ†æ
+ * ×¢Òâ£º´ËÎÄ¼ş¶ÀÁ¢ÓÚÖ÷²âÊÔÎÄ¼ş£¬±ãÓÚÏêÏ¸µ÷ÊÔºÍ·ÖÎö
  */
 
 #include <stdio.h>
@@ -218,7 +218,7 @@ void test_code_migrate_multi_page(void) {
         
         assert(memcmp(expected_data, read_data, USER_DATA_SIZE) == 0 &&
                "Data should match for each page");
-        printf("    Page %d: âœ“\n", i);
+        printf("    Page %d: ?\n", i);
     }
     
     passed_tests++;
@@ -284,12 +284,88 @@ void test_code_region_shrink(void) {
     setup_test_environment();
     total_tests++;
     
-    printf("  [SKIP] Code region shrink not yet implemented\n");
-    
-    // TODO: Implement shrink functionality
     // Step 1: Create a code region with 5 pages
-    // Step 2: Shrink by 2 pages
-    // Step 3: Verify remaining pages are accessible
+    uint16_t src_lpn = 500;
+    const uint16_t initial_pages = 5;
+    
+    printf("  Creating code region with %d pages...\n", initial_pages);
+    for (uint16_t i = 0; i < initial_pages; i++) {
+        uint8_t test_data[USER_DATA_SIZE];
+        memset(test_data, 0xE0 + i, USER_DATA_SIZE);
+        
+        int ret = eflash_ftl_write(src_lpn + i, test_data);
+        assert(ret == 0 && "Write should succeed");
+    }
+    
+    int ret = eflash_ftl_code_migrate_from_logical(src_lpn, initial_pages);
+    assert(ret == 0 && "Migration should succeed");
+    
+    uint16_t size_before = eflash_ftl_get_code_region_size();
+    assert(size_before == initial_pages && "Initial size should be 5 pages");
+    printf("  Initial code region size: %d pages\n", size_before);
+    
+    // Step 2: Verify data integrity before shrink
+    printf("  Verifying data before shrink...\n");
+    for (uint16_t i = 0; i < initial_pages; i++) {
+        uint8_t expected_data[USER_DATA_SIZE];
+        memset(expected_data, 0xE0 + i, USER_DATA_SIZE);
+        
+        uint8_t read_data[USER_DATA_SIZE];
+        ret = eflash_ftl_code_read(i, read_data, USER_DATA_SIZE);
+        assert(ret == 0 && "Read should succeed");
+        assert(memcmp(expected_data, read_data, USER_DATA_SIZE) == 0 &&
+               "Data should match before shrink");
+    }
+    printf("    All %d pages verified ?\n", initial_pages);
+    
+    // Step 3: Shrink by 2 pages (remove last 2 pages)
+    const uint16_t pages_to_remove = 2;
+    printf("  Shrinking code region by %d pages...\n", pages_to_remove);
+    ret = eflash_ftl_code_region_shrink(pages_to_remove);
+    assert(ret == 0 && "Shrink should succeed");
+    
+    uint16_t size_after = eflash_ftl_get_code_region_size();
+    assert(size_after == (initial_pages - pages_to_remove) && 
+           "Size should be 3 pages after shrink");
+    printf("  Code region size after shrink: %d pages\n", size_after);
+    
+    // Step 4: Verify remaining pages are still accessible and intact
+    printf("  Verifying remaining pages after shrink...\n");
+    const uint16_t remaining_pages = initial_pages - pages_to_remove;
+    for (uint16_t i = 0; i < remaining_pages; i++) {
+        uint8_t expected_data[USER_DATA_SIZE];
+        memset(expected_data, 0xE0 + i, USER_DATA_SIZE);
+        
+        uint8_t read_data[USER_DATA_SIZE];
+        ret = eflash_ftl_code_read(i, read_data, USER_DATA_SIZE);
+        assert(ret == 0 && "Read should succeed");
+        assert(memcmp(expected_data, read_data, USER_DATA_SIZE) == 0 &&
+               "Data should match after shrink");
+        printf("    Page %d: ?\n", i);
+    }
+    
+    // Step 5: Verify removed pages are no longer accessible
+    printf("  Verifying removed pages are no longer accessible...\n");
+    for (uint16_t i = remaining_pages; i < initial_pages; i++) {
+        uint8_t read_data[USER_DATA_SIZE];
+        ret = eflash_ftl_code_read(i, read_data, USER_DATA_SIZE);
+        assert(ret == -1 && "Removed pages should not be accessible");
+        printf("    Page %d (removed): correctly inaccessible ?\n", i);
+    }
+    
+    // Step 6: Test edge case - shrink by 0 pages
+    printf("  Testing edge case: shrink by 0 pages...\n");
+    ret = eflash_ftl_code_region_shrink(0);
+    assert(ret == 0 && "Shrink by 0 should succeed");
+    uint16_t size_unchanged = eflash_ftl_get_code_region_size();
+    assert(size_unchanged == remaining_pages && "Size should remain unchanged");
+    printf("    Shrink by 0: ?\n");
+    
+    // Step 7: Test edge case - try to remove more pages than exist
+    printf("  Testing edge case: try to remove more pages than exist...\n");
+    ret = eflash_ftl_code_region_shrink(remaining_pages + 1);
+    assert(ret == -1 && "Should fail when trying to remove too many pages");
+    printf("    Over-shrink protection: ?\n");
     
     passed_tests++;
     teardown_test_environment();
@@ -334,7 +410,7 @@ void test_code_read_verify(void) {
         expected[j] = (0 * 17 + j * 13) & 0xFF;
     }
     assert(memcmp(partial_data, expected, 100) == 0 && "Partial read data should match");
-    printf("    Partial read (100 bytes): âœ“\n");
+    printf("    Partial read (100 bytes): ?\n");
     
     // Step 3: Read full page from middle
     uint8_t full_page[USER_DATA_SIZE];
@@ -346,7 +422,7 @@ void test_code_read_verify(void) {
         expected_full[j] = (1 * 17 + j * 13) & 0xFF;
     }
     assert(memcmp(full_page, expected_full, USER_DATA_SIZE) == 0 && "Full page data should match");
-    printf("    Full page read (page 1): âœ“\n");
+    printf("    Full page read (page 1): ?\n");
     
     passed_tests++;
     teardown_test_environment();
@@ -450,6 +526,644 @@ void test_code_region_gc_reclaim(void) {
 }
 
 // ============================================================================
+// Test Case 9: Integration Test - Add, Delete, Re-add Code Segments
+// ============================================================================
+
+void test_code_segment_add_delete_readd(void) {
+    setup_test_environment();
+    total_tests++;
+    
+    printf("  === Phase 1: Add initial code segments ===\n");
+    
+    // Add Segment 0: 2 pages at LPN 100
+    uint16_t seg0_lpn = 100;
+    for (uint16_t i = 0; i < 2; i++) {
+        uint8_t test_data[USER_DATA_SIZE];
+        memset(test_data, 0xA0 + i, USER_DATA_SIZE);
+        int ret = eflash_ftl_write(seg0_lpn + i, test_data);
+        assert(ret == 0 && "Write should succeed");
+    }
+    int ret = eflash_ftl_code_migrate_from_logical(seg0_lpn, 2);
+    assert(ret == 0 && "Segment 0 migration should succeed");
+    printf("    Added Segment 0: 2 pages at LPN %d\n", seg0_lpn);
+    
+    // Add Segment 1: 3 pages at LPN 200
+    uint16_t seg1_lpn = 200;
+    for (uint16_t i = 0; i < 3; i++) {
+        uint8_t test_data[USER_DATA_SIZE];
+        memset(test_data, 0xB0 + i, USER_DATA_SIZE);
+        int ret = eflash_ftl_write(seg1_lpn + i, test_data);
+        assert(ret == 0 && "Write should succeed");
+    }
+    ret = eflash_ftl_code_migrate_from_logical(seg1_lpn, 3);
+    assert(ret == 0 && "Segment 1 migration should succeed");
+    printf("    Added Segment 1: 3 pages at LPN %d\n", seg1_lpn);
+    
+    // Add Segment 2: 1 page at LPN 300
+    uint16_t seg2_lpn = 300;
+    uint8_t test_data[USER_DATA_SIZE];
+    memset(test_data, 0xC0, USER_DATA_SIZE);
+    ret = eflash_ftl_write(seg2_lpn, test_data);
+    assert(ret == 0 && "Write should succeed");
+    ret = eflash_ftl_code_migrate_from_logical(seg2_lpn, 1);
+    assert(ret == 0 && "Segment 2 migration should succeed");
+    printf("    Added Segment 2: 1 page at LPN %d\n", seg2_lpn);
+    
+    // Verify total size: 2 + 3 + 1 = 6 pages
+    uint16_t total_size = eflash_ftl_get_code_region_size();
+    assert(total_size == 6 && "Total size should be 6 pages");
+    printf("    Total code region size: %d pages\n", total_size);
+    
+    // Verify migration_map has 3 entries
+    assert(g_code_region.migration_records_count == 3 && "Should have 3 segments");
+    printf("    Migration map entries: %d\n", g_code_region.migration_records_count);
+    
+    // Verify each segment's data
+    printf("  Verifying Segment 0 data...\n");
+    for (uint16_t i = 0; i < 2; i++) {
+        uint8_t expected[USER_DATA_SIZE];
+        memset(expected, 0xA0 + i, USER_DATA_SIZE);
+        uint8_t read_data[USER_DATA_SIZE];
+        ret = eflash_ftl_code_read(i, read_data, USER_DATA_SIZE);
+        assert(ret == 0 && "Read should succeed");
+        assert(memcmp(expected, read_data, USER_DATA_SIZE) == 0 && "Segment 0 data mismatch");
+    }
+    
+    printf("  Verifying Segment 1 data...\n");
+    for (uint16_t i = 0; i < 3; i++) {
+        uint8_t expected[USER_DATA_SIZE];
+        memset(expected, 0xB0 + i, USER_DATA_SIZE);
+        uint8_t read_data[USER_DATA_SIZE];
+        ret = eflash_ftl_code_read(2 + i, read_data, USER_DATA_SIZE);
+        assert(ret == 0 && "Read should succeed");
+        assert(memcmp(expected, read_data, USER_DATA_SIZE) == 0 && "Segment 1 data mismatch");
+    }
+    
+    printf("  Verifying Segment 2 data...\n");
+    {
+        uint8_t expected[USER_DATA_SIZE];
+        memset(expected, 0xC0, USER_DATA_SIZE);
+        uint8_t read_data[USER_DATA_SIZE];
+        ret = eflash_ftl_code_read(5, read_data, USER_DATA_SIZE);
+        assert(ret == 0 && "Read should succeed");
+        assert(memcmp(expected, read_data, USER_DATA_SIZE) == 0 && "Segment 2 data mismatch");
+    }
+    
+    printf("  === Phase 2: Delete middle segment (Segment 1) ===\n");
+    
+    // Calculate logical address of Segment 1
+    uint32_t seg1_logical_addr = (uint32_t)seg1_lpn * USER_DATA_SIZE;
+    printf("    Deleting Segment 1 at logical address 0x%06X...\n", seg1_logical_addr);
+    
+    ret = eflash_ftl_code_region_delete_segment(seg1_logical_addr);
+    assert(ret == 0 && "Delete segment should succeed");
+    
+    // Verify migration_map updated: should have 2 entries now
+    printf("    DEBUG: migration_records_count=%d, code_size_bytes=%d\n", 
+           g_code_region.migration_records_count, g_code_region.code_size_bytes);
+    assert(g_code_region.migration_records_count == 2 && "Should have 2 segments after delete");
+    printf("    Migration map entries after delete: %d\n", g_code_region.migration_records_count);
+    
+    // Verify total size: 6 - 3 = 3 pages
+    total_size = eflash_ftl_get_code_region_size();
+    printf("    DEBUG: total_size=%d, expected=3\n", total_size);
+    assert(total_size == 3 && "Total size should be 3 pages after delete");
+    printf("    Total code region size after delete: %d pages\n", total_size);
+    
+    // Verify Segment 0 still intact
+    printf("  Verifying Segment 0 data after delete...\n");
+    for (uint16_t i = 0; i < 2; i++) {
+        uint8_t expected[USER_DATA_SIZE];
+        memset(expected, 0xA0 + i, USER_DATA_SIZE);
+        uint8_t read_data[USER_DATA_SIZE];
+        ret = eflash_ftl_code_read(i, read_data, USER_DATA_SIZE);
+        assert(ret == 0 && "Read should succeed");
+        assert(memcmp(expected, read_data, USER_DATA_SIZE) == 0 && "Segment 0 data corrupted");
+    }
+    
+    // Verify Segment 2 moved forward (should now be at page offset 2)
+    printf("  Verifying Segment 2 data after move...\n");
+    {
+        uint8_t expected[USER_DATA_SIZE];
+        memset(expected, 0xC0, USER_DATA_SIZE);
+        uint8_t read_data[USER_DATA_SIZE];
+        ret = eflash_ftl_code_read(2, read_data, USER_DATA_SIZE);
+        assert(ret == 0 && "Read should succeed");
+        assert(memcmp(expected, read_data, USER_DATA_SIZE) == 0 && "Segment 2 data corrupted after move");
+    }
+    
+    // Verify migration_map entries are correct
+    printf("  Verifying migration_map consistency...\n");
+    assert(g_code_region.migration_map[0].logical_addr == (uint32_t)seg0_lpn * USER_DATA_SIZE);
+    assert(g_code_region.migration_map[0].size == 2 * USER_DATA_SIZE);
+    assert(g_code_region.migration_map[1].logical_addr == (uint32_t)seg2_lpn * USER_DATA_SIZE);
+    assert(g_code_region.migration_map[1].size == USER_DATA_SIZE);
+    printf("    Migration map entries verified\n");
+    
+    printf("  === Phase 3: Add new segment after delete ===\n");
+    
+    // Add Segment 3: 2 pages at LPN 400
+    uint16_t seg3_lpn = 400;
+    for (uint16_t i = 0; i < 2; i++) {
+        uint8_t test_data[USER_DATA_SIZE];
+        memset(test_data, 0xD0 + i, USER_DATA_SIZE);
+        int ret = eflash_ftl_write(seg3_lpn + i, test_data);
+        assert(ret == 0 && "Write should succeed");
+    }
+    ret = eflash_ftl_code_migrate_from_logical(seg3_lpn, 2);
+    assert(ret == 0 && "Segment 3 migration should succeed");
+    printf("    Added Segment 3: 2 pages at LPN %d\n", seg3_lpn);
+    
+    // Verify total size: 3 + 2 = 5 pages
+    total_size = eflash_ftl_get_code_region_size();
+    assert(total_size == 5 && "Total size should be 5 pages");
+    printf("    Total code region size: %d pages\n", total_size);
+    
+    // Verify migration_map has 3 entries
+    printf("    DEBUG: migration_records_count=%d, expected=3\n", g_code_region.migration_records_count);
+    assert(g_code_region.migration_records_count == 3 && "Should have 3 segments");
+    printf("    Migration map entries: %d\n", g_code_region.migration_records_count);
+    
+    // Debug: Print migration map
+    printf("    DEBUG: Migration map after adding Segment 3:\n");
+    for (int i = 0; i < g_code_region.migration_records_count; i++) {
+        printf("      [%d] logical=0x%06X, physical=0x%06X, size=%d\n",
+               i, g_code_region.migration_map[i].logical_addr,
+               g_code_region.migration_map[i].physical_addr,
+               g_code_region.migration_map[i].size);
+    }
+    fflush(stdout);
+    
+    // Verify all segments data
+    printf("  Verifying all segments data...\n");
+    
+    // Segment 0 (pages 0-1)
+    for (uint16_t i = 0; i < 2; i++) {
+        uint8_t expected[USER_DATA_SIZE];
+        memset(expected, 0xA0 + i, USER_DATA_SIZE);
+        uint8_t read_data[USER_DATA_SIZE];
+        ret = eflash_ftl_code_read(i, read_data, USER_DATA_SIZE);
+        assert(ret == 0 && "Read should succeed");
+        assert(memcmp(expected, read_data, USER_DATA_SIZE) == 0);
+    }
+    printf("    Segment 0: OK\n");
+    
+    // Segment 2 (page 2, moved forward)
+    {
+        uint8_t expected[USER_DATA_SIZE];
+        memset(expected, 0xC0, USER_DATA_SIZE);
+        uint8_t read_data[USER_DATA_SIZE];
+        ret = eflash_ftl_code_read(2, read_data, USER_DATA_SIZE);
+        assert(ret == 0 && "Read should succeed");
+        if (memcmp(expected, read_data, USER_DATA_SIZE) != 0) {
+            printf("    DEBUG: Segment 2 mismatch! Expected 0xC0, got: ");
+            for (int j = 0; j < 16; j++) printf("%02X ", read_data[j]);
+            printf("\n");
+        }
+        assert(memcmp(expected, read_data, USER_DATA_SIZE) == 0);
+    }
+    printf("    Segment 2: OK\n");
+    
+    // Segment 3 (pages 3-4, newly added)
+    printf("    DEBUG: Verifying Segment 3 (pages 3-4)...\n");
+    fflush(stdout);
+    for (uint16_t i = 0; i < 2; i++) {
+        uint8_t expected[USER_DATA_SIZE];
+        memset(expected, 0xD0 + i, USER_DATA_SIZE);
+        uint8_t read_data[USER_DATA_SIZE];
+        uint16_t page_to_read = 3 + i;
+        printf("      Reading page %d...\n", page_to_read);
+        fflush(stdout);
+        ret = eflash_ftl_code_read(page_to_read, read_data, USER_DATA_SIZE);
+        if (ret != 0) {
+            printf("      ERROR: Read failed with ret=%d\n", ret);
+            fflush(stdout);
+        }
+        assert(ret == 0 && "Read should succeed");
+        if (memcmp(expected, read_data, USER_DATA_SIZE) != 0) {
+            printf("      DEBUG: Segment 3 page %d mismatch! Expected 0x%02X, got: ",
+                   page_to_read, 0xD0 + i);
+            for (int j = 0; j < 16; j++) printf("%02X ", read_data[j]);
+            printf("\n");
+            fflush(stdout);
+        }
+        assert(memcmp(expected, read_data, USER_DATA_SIZE) == 0);
+    }
+    printf("    Segment 3: OK\n");
+    
+    printf("  === Phase 4: Delete first segment ===\n");
+    
+    // Delete Segment 0 (first segment)
+    uint32_t seg0_logical_addr = (uint32_t)seg0_lpn * USER_DATA_SIZE;
+    ret = eflash_ftl_code_region_delete_segment(seg0_logical_addr);
+    assert(ret == 0 && "Delete first segment should succeed");
+    
+    // Verify migration_map: 2 entries
+    assert(g_code_region.migration_records_count == 2 && "Should have 2 segments");
+    printf("    Migration map entries: %d\n", g_code_region.migration_records_count);
+    
+    // Verify total size: 5 - 2 = 3 pages
+    total_size = eflash_ftl_get_code_region_size();
+    assert(total_size == 3 && "Total size should be 3 pages");
+    printf("    Total code region size: %d pages\n", total_size);
+    
+    // Verify remaining segments moved forward
+    printf("  Verifying remaining segments after first delete...\n");
+    
+    // Segment 2 should now be at page 0
+    {
+        uint8_t expected[USER_DATA_SIZE];
+        memset(expected, 0xC0, USER_DATA_SIZE);
+        uint8_t read_data[USER_DATA_SIZE];
+        ret = eflash_ftl_code_read(0, read_data, USER_DATA_SIZE);
+        assert(ret == 0 && "Read should succeed");
+        assert(memcmp(expected, read_data, USER_DATA_SIZE) == 0);
+    }
+    printf("    Segment 2 (now at page 0): OK\n");
+    
+    // Segment 3 should now be at pages 1-2
+    printf("    DEBUG: Verifying Segment 3 after deleting Segment 0...\n");
+    printf("    DEBUG: migration_map after delete:\n");
+    for (int i = 0; i < g_code_region.migration_records_count; i++) {
+        printf("      [%d] logical=0x%06X, physical=0x%06X, size=%d\n",
+               i, g_code_region.migration_map[i].logical_addr,
+               g_code_region.migration_map[i].physical_addr,
+               g_code_region.migration_map[i].size);
+    }
+    fflush(stdout);
+    for (uint16_t i = 0; i < 2; i++) {
+        uint8_t expected[USER_DATA_SIZE];
+        memset(expected, 0xD0 + i, USER_DATA_SIZE);
+        uint8_t read_data[USER_DATA_SIZE];
+        uint16_t page_to_read = 1 + i;
+        printf("      Reading page %d (expected 0x%02X)...\n", page_to_read, 0xD0 + i);
+        ret = eflash_ftl_code_read(page_to_read, read_data, USER_DATA_SIZE);
+        if (ret != 0) {
+            printf("      ERROR: Read failed with ret=%d\n", ret);
+        }
+        assert(ret == 0 && "Read should succeed");
+        if (memcmp(expected, read_data, USER_DATA_SIZE) != 0) {
+            printf("      DEBUG: Segment 3 page %d mismatch! Expected 0x%02X\n",
+                   page_to_read, 0xD0 + i);
+            // Find first mismatch
+            int mismatch_pos = -1;
+            for (int j = 0; j < USER_DATA_SIZE; j++) {
+                if (expected[j] != read_data[j]) {
+                    mismatch_pos = j;
+                    break;
+                }
+            }
+            if (mismatch_pos >= 0) {
+                int start = (mismatch_pos > 8) ? mismatch_pos - 8 : 0;
+                printf("      DEBUG: First mismatch at byte %d (0-based). Data around mismatch:\n", mismatch_pos);
+                printf("             Expected: ");
+                for (int j = start; j < start + 32 && j < USER_DATA_SIZE; j++) {
+                    printf("%02X ", expected[j]);
+                }
+                printf("\n             Got:      ");
+                for (int j = start; j < start + 32 && j < USER_DATA_SIZE; j++) {
+                    printf("%02X ", read_data[j]);
+                }
+                printf("\n");
+            } else {
+                // Unexpected: memcmp said mismatch but we can't find it
+                printf("      DEBUG: No individual byte mismatch found!\n");
+                // Print all 464 bytes
+                printf("      Expected: ");
+                for (int j = 0; j < USER_DATA_SIZE; j++) printf("%02X ", expected[j]);
+                printf("\n      Got:      ");
+                for (int j = 0; j < USER_DATA_SIZE; j++) printf("%02X ", read_data[j]);
+                printf("\n");
+            }
+        }
+        fflush(stdout);
+        assert(memcmp(expected, read_data, USER_DATA_SIZE) == 0);
+    }
+    printf("    Segment 3 (now at pages 1-2): OK\n");
+    
+    printf("  === Phase 5: Delete last segment ===\n");
+    
+    // Delete Segment 3 (last segment)
+    uint32_t seg3_logical_addr = (uint32_t)seg3_lpn * USER_DATA_SIZE;
+    ret = eflash_ftl_code_region_delete_segment(seg3_logical_addr);
+    assert(ret == 0 && "Delete last segment should succeed");
+    
+    // Verify migration_map: 1 entry
+    assert(g_code_region.migration_records_count == 1 && "Should have 1 segment");
+    printf("    Migration map entries: %d\n", g_code_region.migration_records_count);
+    
+    // Verify total size: 3 - 2 = 1 page
+    total_size = eflash_ftl_get_code_region_size();
+    assert(total_size == 1 && "Total size should be 1 page");
+    printf("    Total code region size: %d pages\n", total_size);
+    
+    // Verify Segment 2 still intact
+    {
+        uint8_t expected[USER_DATA_SIZE];
+        memset(expected, 0xC0, USER_DATA_SIZE);
+        uint8_t read_data[USER_DATA_SIZE];
+        ret = eflash_ftl_code_read(0, read_data, USER_DATA_SIZE);
+        assert(ret == 0 && "Read should succeed");
+        assert(memcmp(expected, read_data, USER_DATA_SIZE) == 0);
+    }
+    printf("    Segment 2: OK\n");
+    
+    printf("  === Phase 6: Final cleanup - delete all segments ===\n");
+    
+    // Delete last remaining segment
+    uint32_t seg2_logical_addr = (uint32_t)seg2_lpn * USER_DATA_SIZE;
+    ret = eflash_ftl_code_region_delete_segment(seg2_logical_addr);
+    assert(ret == 0 && "Delete last segment should succeed");
+    
+    // Verify migration_map: 0 entries
+    assert(g_code_region.migration_records_count == 0 && "Should have 0 segments");
+    printf("    Migration map entries: %d\n", g_code_region.migration_records_count);
+    
+    // Verify total size: 0 pages
+    total_size = eflash_ftl_get_code_region_size();
+    assert(total_size == 0 && "Total size should be 0 pages");
+    printf("    Total code region size: %d pages\n", total_size);
+    
+    printf("  === Integration test completed successfully ===\n");
+    
+    passed_tests++;
+    teardown_test_environment();
+}
+
+// ============================================================================
+// Test Case 10: Comprehensive Integration Test - Stress Test with Memory Leak Detection
+// ============================================================================
+
+void test_code_segment_stress_with_leak_detection(void) {
+    setup_test_environment();
+    total_tests++;
+    
+    printf("  === Comprehensive Stress Test with Memory Leak Detection ===\n");
+    
+    // Record initial state
+    uint16_t initial_records = g_code_region.migration_records_count;
+    uint32_t initial_code_size = g_code_region.code_size_bytes;
+    assert(initial_records == 0 && "Should start with 0 records");
+    assert(initial_code_size == 0 && "Should start with 0 code size");
+    printf("  Initial state: records=%d, code_size=%d bytes\n", initial_records, initial_code_size);
+    
+    // =========================================================================
+    // Phase 1: Add multiple segments in a loop
+    // =========================================================================
+    printf("\n  === Phase 1: Add 10 code segments ===\n");
+    
+    const int num_segments = 10;
+    uint16_t segment_lpns[num_segments];
+    uint16_t segment_sizes[num_segments];
+    uint32_t total_expected_pages = 0;
+    
+    for (int i = 0; i < num_segments; i++) {
+        segment_lpns[i] = 1000 + i * 10;
+        segment_sizes[i] = (i % 3) + 1; // Sizes: 1, 2, 3, 1, 2, 3, ...
+        total_expected_pages += segment_sizes[i];
+        
+        // Write data
+        for (uint16_t j = 0; j < segment_sizes[i]; j++) {
+            uint8_t test_data[USER_DATA_SIZE];
+            memset(test_data, 0x10 + i, USER_DATA_SIZE);
+            int ret = eflash_ftl_write(segment_lpns[i] + j, test_data);
+            assert(ret == 0 && "Write should succeed");
+        }
+        
+        // Migrate to code region
+        int ret = eflash_ftl_code_migrate_from_logical(segment_lpns[i], segment_sizes[i]);
+        assert(ret == 0 && "Migration should succeed");
+        
+        printf("    Added Segment %d: %d pages at LPN %d\n", i, segment_sizes[i], segment_lpns[i]);
+    }
+    
+    // Verify state after adding
+    assert(g_code_region.migration_records_count == num_segments && "Should have 10 segments");
+    uint16_t total_size = eflash_ftl_get_code_region_size();
+    assert(total_size == total_expected_pages && "Total size should match");
+    printf("  After Phase 1: records=%d, total_pages=%d\n", 
+           g_code_region.migration_records_count, total_size);
+    
+    // Verify all data integrity
+    printf("  Verifying all segments data integrity...\n");
+    uint16_t page_offset = 0;
+    for (int i = 0; i < num_segments; i++) {
+        for (uint16_t j = 0; j < segment_sizes[i]; j++) {
+            uint8_t expected[USER_DATA_SIZE];
+            memset(expected, 0x10 + i, USER_DATA_SIZE);
+            uint8_t read_data[USER_DATA_SIZE];
+            int ret = eflash_ftl_code_read(page_offset + j, read_data, USER_DATA_SIZE);
+            assert(ret == 0 && "Read should succeed");
+            assert(memcmp(expected, read_data, USER_DATA_SIZE) == 0 && "Data mismatch");
+        }
+        page_offset += segment_sizes[i];
+    }
+    printf("    All %d segments verified successfully\n", num_segments);
+    
+    // =========================================================================
+    // Phase 2: Delete segments in alternating pattern (every other segment)
+    // =========================================================================
+    printf("\n  === Phase 2: Delete alternating segments (0, 2, 4, 6, 8) ===\n");
+    
+    uint32_t deleted_pages = 0;
+    int remaining_count = 0;
+    
+    for (int i = 0; i < num_segments; i += 2) {
+        uint32_t logical_addr = (uint32_t)segment_lpns[i] * USER_DATA_SIZE;
+        printf("    Deleting Segment %d (logical=0x%06X, %d pages)...\n", i, logical_addr, segment_sizes[i]);
+        int ret = eflash_ftl_code_region_delete_segment(logical_addr);
+        assert(ret == 0 && "Delete should succeed");
+        deleted_pages += segment_sizes[i];
+        remaining_count++;
+        
+        // Print migration_map after each delete
+        printf("      Migration map after delete:\n");
+        for (int j = 0; j < g_code_region.migration_records_count; j++) {
+            printf("        [%d] logical=0x%06X, physical=0x%06X, size=%d\n",
+                   j, g_code_region.migration_map[j].logical_addr,
+                   g_code_region.migration_map[j].physical_addr,
+                   g_code_region.migration_map[j].size);
+        }
+        fflush(stdout);
+    }
+    
+    // Verify state after deletion
+    int expected_remaining = num_segments / 2;
+    assert(g_code_region.migration_records_count == expected_remaining && "Should have 5 segments remaining");
+    total_size = eflash_ftl_get_code_region_size();
+    assert(total_size == (total_expected_pages - deleted_pages) && "Size should decrease correctly");
+    printf("  After Phase 2: records=%d, total_pages=%d\n", 
+           g_code_region.migration_records_count, total_size);
+    
+    // Verify remaining segments data integrity
+    printf("  Verifying remaining segments...\n");
+    printf("    DEBUG: Migration map after Phase 2 deletes:\n");
+    for (int i = 0; i < g_code_region.migration_records_count; i++) {
+        printf("      [%d] logical=0x%06X, physical=0x%06X, size=%d\n",
+               i, g_code_region.migration_map[i].logical_addr,
+               g_code_region.migration_map[i].physical_addr,
+               g_code_region.migration_map[i].size);
+    }
+    fflush(stdout);
+    page_offset = 0;
+    for (int i = 1; i < num_segments; i += 2) {
+        for (uint16_t j = 0; j < segment_sizes[i]; j++) {
+            uint8_t expected[USER_DATA_SIZE];
+            memset(expected, 0x10 + i, USER_DATA_SIZE);
+            uint8_t read_data[USER_DATA_SIZE];
+            printf("    Reading page_offset=%d, expected=0x%02X\n", page_offset + j, 0x10 + i);
+            int ret = eflash_ftl_code_read(page_offset + j, read_data, USER_DATA_SIZE);
+            if (ret != 0) {
+                printf("    ERROR: Read failed with ret=%d\n", ret);
+            }
+            assert(ret == 0 && "Read should succeed");
+            if (memcmp(expected, read_data, USER_DATA_SIZE) != 0) {
+                printf("    DEBUG: Page %d mismatch! Expected 0x%02X, got: ",
+                       page_offset + j, 0x10 + i);
+                for (int k = 0; k < 16; k++) printf("%02X ", read_data[k]);
+                printf("\n");
+            }
+            fflush(stdout);
+            assert(memcmp(expected, read_data, USER_DATA_SIZE) == 0 && "Data corrupted after delete");
+        }
+        page_offset += segment_sizes[i];
+    }
+    printf("    All remaining segments verified\n");
+    
+    // =========================================================================
+    // Phase 3: Add new segments to fill gaps
+    // =========================================================================
+    printf("\n  === Phase 3: Add 5 new segments ===\n");
+    
+    uint16_t new_segment_lpns[5];
+    uint16_t new_segment_sizes[5];
+    uint32_t new_pages = 0;
+    
+    for (int i = 0; i < 5; i++) {
+        new_segment_lpns[i] = 2000 + i * 10;
+        new_segment_sizes[i] = (i % 2) + 1; // Sizes: 1, 2, 1, 2, 1
+        new_pages += new_segment_sizes[i];
+        
+        for (uint16_t j = 0; j < new_segment_sizes[i]; j++) {
+            uint8_t test_data[USER_DATA_SIZE];
+            memset(test_data, 0x50 + i, USER_DATA_SIZE);
+            int ret = eflash_ftl_write(new_segment_lpns[i] + j, test_data);
+            assert(ret == 0 && "Write should succeed");
+        }
+        
+        int ret = eflash_ftl_code_migrate_from_logical(new_segment_lpns[i], new_segment_sizes[i]);
+        assert(ret == 0 && "Migration should succeed");
+        printf("    Added New Segment %d: %d pages at LPN %d\n", i, new_segment_sizes[i], new_segment_lpns[i]);
+    }
+    
+    // Verify state after re-adding
+    assert(g_code_region.migration_records_count == (expected_remaining + 5) && "Should have 10 segments");
+    total_size = eflash_ftl_get_code_region_size();
+    assert(total_size == (total_expected_pages - deleted_pages + new_pages) && "Size should be correct");
+    printf("  After Phase 3: records=%d, total_pages=%d\n", 
+           g_code_region.migration_records_count, total_size);
+    
+    // =========================================================================
+    // Phase 4: Delete all remaining original segments
+    // =========================================================================
+    printf("\n  === Phase 4: Delete all original remaining segments (1, 3, 5, 7, 9) ===\n");
+    
+    for (int i = 1; i < num_segments; i += 2) {
+        uint32_t logical_addr = (uint32_t)segment_lpns[i] * USER_DATA_SIZE;
+        int ret = eflash_ftl_code_region_delete_segment(logical_addr);
+        assert(ret == 0 && "Delete should succeed");
+        printf("    Deleted Segment %d\n", i);
+    }
+    
+    // Verify only new segments remain
+    assert(g_code_region.migration_records_count == 5 && "Should have 5 new segments");
+    total_size = eflash_ftl_get_code_region_size();
+    assert(total_size == new_pages && "Size should equal new pages only");
+    printf("  After Phase 4: records=%d, total_pages=%d\n", 
+           g_code_region.migration_records_count, total_size);
+    
+    // Verify new segments data
+    printf("  Verifying new segments...\n");
+    page_offset = 0;
+    for (int i = 0; i < 5; i++) {
+        for (uint16_t j = 0; j < new_segment_sizes[i]; j++) {
+            uint8_t expected[USER_DATA_SIZE];
+            memset(expected, 0x50 + i, USER_DATA_SIZE);
+            uint8_t read_data[USER_DATA_SIZE];
+            int ret = eflash_ftl_code_read(page_offset + j, read_data, USER_DATA_SIZE);
+            assert(ret == 0 && "Read should succeed");
+            assert(memcmp(expected, read_data, USER_DATA_SIZE) == 0 && "New segment data corrupted");
+        }
+        page_offset += new_segment_sizes[i];
+    }
+    printf("    All new segments verified\n");
+    
+    // =========================================================================
+    // Phase 5: Edge case tests
+    // =========================================================================
+    printf("\n  === Phase 5: Edge case tests ===\n");
+    
+    // Test 1: Try to delete non-existent segment
+    printf("  Testing delete non-existent segment...\n");
+    uint32_t fake_logical_addr = 99999 * USER_DATA_SIZE;
+    int ret = eflash_ftl_code_region_delete_segment(fake_logical_addr);
+    assert(ret == -1 && "Should fail for non-existent segment");
+    printf("    Non-existent segment delete correctly rejected\n");
+    
+    // Test 2: Verify migration_map consistency
+    printf("  Verifying migration_map consistency...\n");
+    uint32_t cumulative_size = 0;
+    for (int i = 0; i < g_code_region.migration_records_count; i++) {
+        assert(g_code_region.migration_map[i].size > 0 && "Segment size should be > 0");
+        assert(g_code_region.migration_map[i].size % USER_DATA_SIZE == 0 && "Size should be page-aligned");
+        cumulative_size += g_code_region.migration_map[i].size;
+    }
+    assert(cumulative_size == g_code_region.code_size_bytes && "Cumulative size should match total");
+    printf("    Migration map consistency verified\n");
+    
+    // =========================================================================
+    // Phase 6: Cleanup - delete all segments
+    // =========================================================================
+    printf("\n  === Phase 6: Cleanup - delete all segments ===\n");
+    
+    for (int i = 0; i < 5; i++) {
+        uint32_t logical_addr = (uint32_t)new_segment_lpns[i] * USER_DATA_SIZE;
+        int ret = eflash_ftl_code_region_delete_segment(logical_addr);
+        assert(ret == 0 && "Delete should succeed");
+    }
+    
+    // Final state verification
+    assert(g_code_region.migration_records_count == 0 && "Should have 0 records");
+    assert(g_code_region.code_size_bytes == 0 && "Should have 0 code size");
+    total_size = eflash_ftl_get_code_region_size();
+    assert(total_size == 0 && "Should have 0 pages");
+    printf("  Final state: records=%d, code_size=%d bytes, pages=%d\n", 
+           g_code_region.migration_records_count, g_code_region.code_size_bytes, total_size);
+    
+    // Memory leak detection: verify no orphaned records
+    printf("\n  === Memory Leak Detection ===\n");
+    bool has_leak = false;
+    for (int i = 0; i < MAX_MIGRATION_RECORDS; i++) {
+        if (g_code_region.migration_map[i].logical_addr != 0 ||
+            g_code_region.migration_map[i].physical_addr != 0 ||
+            g_code_region.migration_map[i].size != 0) {
+            printf("    WARNING: Orphaned record at index %d: logical=0x%06X, physical=0x%06X, size=%d\n",
+                   i, g_code_region.migration_map[i].logical_addr,
+                   g_code_region.migration_map[i].physical_addr,
+                   g_code_region.migration_map[i].size);
+            has_leak = true;
+        }
+    }
+    assert(!has_leak && "No memory leaks detected - all records properly cleaned");
+    printf("    No memory leaks detected - all records properly cleaned\n");
+    
+    printf("\n  === Comprehensive stress test completed successfully ===\n");
+    
+    passed_tests++;
+    teardown_test_environment();
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 
@@ -467,6 +1181,8 @@ int main(void) {
     RUN_TEST(test_code_read_verify);
     RUN_TEST(test_code_migrate_power_failure);
     RUN_TEST(test_code_region_gc_reclaim);
+    RUN_TEST(test_code_segment_add_delete_readd);
+    RUN_TEST(test_code_segment_stress_with_leak_detection);
     
     // Summary
     printf("\n========================================\n");
@@ -477,10 +1193,10 @@ int main(void) {
     printf("========================================\n");
     
     if (failed_tests > 0) {
-        printf("\nâŒ SOME TESTS FAILED!\n");
+        printf("\n? SOME TESTS FAILED!\n");
         return EXIT_FAILURE;
     } else {
-        printf("\nâœ… ALL TESTS PASSED!\n");
+        printf("\n? ALL TESTS PASSED!\n");
         return EXIT_SUCCESS;
     }
 }

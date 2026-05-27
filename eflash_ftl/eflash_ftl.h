@@ -154,8 +154,27 @@ PACKED_STRUCT_END
 
 // --- Code Region Information Structure ---
 // Stored in a dedicated system page for power-failure recovery
+// Total size: 464 bytes (fits in one logical page)
+
+// Migration record: maps a code segment from logical to physical address
+// Each record represents one continuous code segment
 PACKED_STRUCT
 typedef struct {
+    uint32_t    logical_addr;     // 4 bytes: Logical byte address (start of segment)
+    uint32_t    physical_addr;    // 4 bytes: Physical byte address (PPN * 512 + offset)
+    uint16_t    size;             // 2 bytes: Segment size in bytes (max 64KB)
+} ATTRIBUTE_PACKED migration_record_t;
+PACKED_STRUCT_END
+
+// Maximum number of migration records that fit in available space
+// Available: 464 - 26 (header) - 2 (checksum) - 2 (count) = 434 bytes
+// Each record: 10 bytes (4 + 4 + 2)
+// Max records: 434 / 10 = 43 records (with 4 bytes padding)
+#define MAX_MIGRATION_RECORDS  43
+
+PACKED_STRUCT
+typedef struct {
+    // Header (26 bytes)
     uint32_t    magic;            // CODE_REGION_MAGIC (0xC0DE)
     uint16_t    start_ppn;        // Code region start physical page (always 0)
     uint16_t    num_pages;        // Number of pages in code region
@@ -166,10 +185,26 @@ typedef struct {
     uint16_t    pages_migrated;   // Number of pages already migrated
     uint16_t    total_pages;      // Total pages to migrate
     uint32_t    code_size_bytes;  // Total code size in bytes
-    uint8_t     reserved2[8];     // Reserved
+    
+    // Checksum (2 bytes)
     uint16_t    checksum;         // Checksum for validation
+    
+    // Migration record count (2 bytes)
+    // Tracks the number of valid entries in migration_map[]
+    // Used for power-failure recovery and space reuse when code region is deleted
+    uint16_t    migration_records_count;
+    
+    // Migration mapping array (43 records ¡Á 10 bytes = 430 bytes)
+    // Records logical ¡ú physical address mappings for power-failure recovery
+    migration_record_t migration_map[MAX_MIGRATION_RECORDS];
+    
+    // Remaining padding (4 bytes)
+    uint8_t     reserved2[4];     // Padding to fill 464 bytes
 } ATTRIBUTE_PACKED code_region_info_t;
 PACKED_STRUCT_END
+
+// Global code region info (extern declaration for test access)
+extern code_region_info_t g_code_region;
 
 // --- Complete Page Structure (512 bytes = 464 user data + 48 metadata) ---
 PACKED_STRUCT
@@ -254,6 +289,7 @@ int  eflash_ftl_code_region_init(void);  // Initialize code region management
 int  eflash_ftl_code_migrate_from_logical(uint16_t src_lpn, uint16_t num_pages);  // Migrate code from logical to physical
 int  eflash_ftl_code_region_expand(uint16_t additional_pages);  // Expand code region
 int  eflash_ftl_code_region_shrink(uint16_t pages_to_remove);  // Shrink code region
+int  eflash_ftl_code_region_delete_segment(uint32_t logical_addr);  // Delete a code segment by logical address
 uint16_t eflash_ftl_get_code_region_size(void);  // Get current code region size in pages
 int  eflash_ftl_code_region_recover(void);  // Recover from power failure during migration
 int  eflash_ftl_gc_reclaim_code_region(uint16_t pages_needed);  // GC to reclaim pages after code region
