@@ -3264,6 +3264,161 @@ int eflash_ftl_gc_reclaim_code_region(uint16_t pages_needed) {
 }
 
 /**
+ * eflash_ftl_gc_reserve_physical_range: GC to reserve a contiguous physical page range
+ *
+ * @start_ppn: Starting physical page number of the range to reserve
+ * @num_pages: Number of pages to reserve
+ * @return: 0 on success, -1 on failure
+ *
+ * Description:
+ *   Performs targeted GC to free and reserve a contiguous physical page range.
+ *   This is used to prepare physical space for code region before migration.
+ *   All valid data in the range is migrated out, all pages are erased,
+ *   and both head and tail pointers are ensured to be outside the range.
+ *
+ * Key guarantees:
+ *   1. All pages in [start_ppn, start_ppn + num_pages) are erased and free
+ *   2. gc_head_page is NOT within the reserved range (migration destinations are safe)
+ *   3. gc_tail_page is NOT within the reserved range (GC scanning skips it)
+ *   4. GC migration destinations never land in the reserved range
+ */
+int eflash_ftl_gc_reserve_physical_range(uint16_t start_ppn, uint16_t num_pages) {
+    if (!FTL->is_initialized) {
+        FTL_DEBUG("[GC_RESERVE] ERROR: FTL not initialized\n");
+        return -1;
+    }
+
+    if (num_pages == 0) {
+        return 0;
+    }
+
+    uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
+
+    if (start_ppn + num_pages > EFLASH_TOTAL_PAGES) {
+        FTL_DEBUG("[GC_RESERVE] ERROR: Range [%d, %d) exceeds total pages %d\n",
+                 start_ppn, start_ppn + num_pages, EFLASH_TOTAL_PAGES);
+        return -1;
+    }
+
+    uint16_t end_ppn = start_ppn + num_pages;
+
+    FTL_DEBUG("[GC_RESERVE] ========== Reserving range [%d, %d) ==========\n",
+             start_ppn, end_ppn);
+    FTL_DEBUG("[GC_RESERVE] Initial state: head=%d, tail=%d, free=%d\n",
+             FTL->gc_head_page, FTL->gc_tail_page, eflash_ftl_get_free_pages());
+
+    if (FTL->gc_in_progress) {
+        FTL_DEBUG("[GC_RESERVE] ERROR: GC already in progress\n");
+        return -1;
+    }
+    FTL->gc_in_progress = true;
+
+    /*
+     * Step 1: Move head out of reserved range.
+     * This guarantees that all subsequent page allocations during migration
+     * will use pages outside the reserved range.
+     */
+    {
+        uint16_t head_before = FTL->gc_head_page;
+        if (FTL->gc_head_page >= start_ppn && FTL->gc_head_page < end_ppn) {
+            FTL->gc_head_page = end_ppn;
+            if (FTL->gc_head_page > last_user_page) {
+                FTL->gc_head_page = 0;
+                if (FTL->gc_head_page >= start_ppn && FTL->gc_head_page < end_ppn) {
+                    FTL_DEBUG("[GC_RESERVE] ERROR: Cannot move head out of reserved range\n");
+                    FTL->gc_in_progress = false;
+                    return -1;
+                }
+            }
+            FTL_DEBUG("[GC_RESERVE] Head moved: %d -> %d (out of reserved range)\n",
+                     head_before, FTL->gc_head_page);
+        } else {
+            FTL_DEBUG("[GC_RESERVE] Head %d already outside reserved range\n", FTL->gc_head_page);
+        }
+    }
+
+    /*
+     * Step 2: Free all pages in the reserved range.
+     * For each page: if it has valid data, migrate it out; then erase.
+     */
+    uint16_t pages_migrated = 0;
+    uint16_t pages_erased = 0;
+
+    for (uint16_t ppn = start_ppn; ppn < end_ppn; ppn++) {
+        FTL_DEBUG("[GC_RESERVE] Processing PPN %d (%d/%d)...\n",
+                 ppn, ppn - start_ppn + 1, num_pages);
+
+        bool valid = is_page_still_valid(ppn);
+
+        if (valid) {
+            FTL_DEBUG("[GC_RESERVE] PPN %d has VALID data, migrating...\n", ppn);
+
+            if (gc_migrate_page(ppn) != 0) {
+                FTL_DEBUG("[GC_RESERVE] ERROR: Failed to migrate PPN %d\n", ppn);
+                FTL->gc_in_progress = false;
+                return -1;
+            }
+            pages_migrated++;
+
+            /*
+             * After migration, head may have advanced and potentially wrapped
+             * back into the reserved range. Check and adjust if needed.
+             */
+            if (FTL->gc_head_page >= start_ppn && FTL->gc_head_page < end_ppn) {
+                uint16_t head_before = FTL->gc_head_page;
+                FTL->gc_head_page = end_ppn;
+                if (FTL->gc_head_page > last_user_page) {
+                    FTL->gc_head_page = 0;
+                }
+                FTL_DEBUG("[GC_RESERVE] Head re-entered range post-migration, adjusted: %d -> %d\n",
+                         head_before, FTL->gc_head_page);
+            }
+        } else {
+            FTL_DEBUG("[GC_RESERVE] PPN %d is STALE/BLANK, no migration needed\n", ppn);
+        }
+
+        if (eflash_hw_erase(ppn) != 0) {
+            FTL_DEBUG("[GC_RESERVE] ERROR: Failed to erase PPN %d\n", ppn);
+            FTL->gc_in_progress = false;
+            return -1;
+        }
+        pages_erased++;
+        FTL_DEBUG("[GC_RESERVE] PPN %d erased\n", ppn);
+    }
+
+    /*
+     * Step 3: Move tail out of reserved range.
+     * This ensures future GC scans skip the reserved area.
+     */
+    {
+        uint16_t tail_before = FTL->gc_tail_page;
+        if (FTL->gc_tail_page >= start_ppn && FTL->gc_tail_page < end_ppn) {
+            FTL->gc_tail_page = end_ppn;
+            if (FTL->gc_tail_page > last_user_page) {
+                FTL->gc_tail_page = 0;
+                if (FTL->gc_tail_page >= start_ppn && FTL->gc_tail_page < end_ppn) {
+                    FTL->gc_tail_page = end_ppn;
+                }
+            }
+            FTL_DEBUG("[GC_RESERVE] Tail moved: %d -> %d (out of reserved range)\n",
+                     tail_before, FTL->gc_tail_page);
+        } else {
+            FTL_DEBUG("[GC_RESERVE] Tail %d already outside reserved range\n", FTL->gc_tail_page);
+        }
+    }
+
+    FTL->gc_in_progress = false;
+
+    FTL_DEBUG("[GC_RESERVE] ========== Range [%d, %d) reserved ==========\n",
+             start_ppn, end_ppn);
+    FTL_DEBUG("[GC_RESERVE] Migrated: %d, Erased: %d\n", pages_migrated, pages_erased);
+    FTL_DEBUG("[GC_RESERVE] Final state: head=%d, tail=%d, free=%d\n",
+             FTL->gc_head_page, FTL->gc_tail_page, eflash_ftl_get_free_pages());
+
+    return 0;
+}
+
+/**
  * calculate_code_region_checksum: Calculate checksum for code region info
  */
 static uint16_t calculate_code_region_checksum(const code_region_info_t *info) {

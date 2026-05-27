@@ -293,6 +293,7 @@ int  eflash_ftl_code_region_delete_segment(uint32_t logical_addr);  // Delete a 
 uint16_t eflash_ftl_get_code_region_size(void);  // Get current code region size in pages
 int  eflash_ftl_code_region_recover(void);  // Recover from power failure during migration
 int  eflash_ftl_gc_reclaim_code_region(uint16_t pages_needed);  // GC to reclaim pages after code region
+int  eflash_ftl_gc_reserve_physical_range(uint16_t start_ppn, uint16_t num_pages);  // GC to reserve a contiguous physical page range for code
 int  eflash_ftl_code_read(uint16_t page_offset, uint8_t *buffer, uint16_t size);  // Read code from code region
 
 // --- Visualization Functions (for debugging, only available when FTL_DEBUG_ENABLE is defined) ---

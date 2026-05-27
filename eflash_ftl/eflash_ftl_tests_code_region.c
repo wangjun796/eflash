@@ -1164,6 +1164,130 @@ void test_code_segment_stress_with_leak_detection(void) {
 }
 
 // ============================================================================
+// Test Case 11: GC Reserve Physical Range for Code Region
+// ============================================================================
+
+void test_gc_reserve_physical_range(void) {
+    setup_test_environment();
+    total_tests++;
+    
+    printf("  === Phase 1: Write test data ===\n");
+    
+    const uint16_t num_sectors = 80;
+    for (uint16_t i = 0; i < num_sectors; i++) {
+        uint8_t data[USER_DATA_SIZE];
+        memset(data, 0xC0 + (i % 16), USER_DATA_SIZE);
+        int ret = eflash_ftl_write(i, data);
+        assert(ret == 0 && "Write should succeed");
+    }
+    
+    uint16_t head_before = g_ftl_instance.gc_head_page;
+    uint16_t tail_before = g_ftl_instance.gc_tail_page;
+    uint32_t free_before = eflash_ftl_get_free_pages();
+    printf("    Wrote %d sectors. head=%d, tail=%d, free=%d\n",
+           num_sectors, head_before, tail_before, free_before);
+    
+    printf("  === Phase 2: Reserve physical range ===\n");
+    
+    // Reserve a range that should contain written data pages
+    // After init (~25 system pages) + 80 user writes, head ~105
+    // Reserve [60, 70) - should be purely user data
+    uint16_t reserve_start = 60;
+    uint16_t reserve_pages = 10;
+    uint16_t reserve_end = reserve_start + reserve_pages;
+    
+    printf("    Reserving PPN [%d, %d)...\n", reserve_start, reserve_end);
+    int ret = eflash_ftl_gc_reserve_physical_range(reserve_start, reserve_pages);
+    assert(ret == 0 && "Reserve should succeed");
+    
+    printf("  === Phase 3: Verify head/tail outside reserved range ===\n");
+    
+    uint16_t head_after = g_ftl_instance.gc_head_page;
+    uint16_t tail_after = g_ftl_instance.gc_tail_page;
+    uint32_t free_after = eflash_ftl_get_free_pages();
+    
+    printf("    After reserve: head=%d, tail=%d, free=%d\n", head_after, tail_after, free_after);
+    
+    assert(!(head_after >= reserve_start && head_after < reserve_end) &&
+           "Head must be outside reserved range");
+    printf("    Head %d is outside reserved range ?\n", head_after);
+    
+    assert(!(tail_after >= reserve_start && tail_after < reserve_end) &&
+           "Tail must be outside reserved range");
+    printf("    Tail %d is outside reserved range ?\n", tail_after);
+    
+    printf("  === Phase 4: Verify all reserved pages are erased ===\n");
+    
+    for (uint16_t ppn = reserve_start; ppn < reserve_end; ppn++) {
+        uint8_t page[EFLASH_PAGE_SIZE];
+        ret = eflash_hw_read(ppn, page);
+        assert(ret == 0 && "Hardware read should succeed");
+        
+        bool all_ff = true;
+        for (int b = 0; b < EFLASH_PAGE_SIZE; b++) {
+            if (page[b] != 0xFF) {
+                all_ff = false;
+                printf("    PPN %d byte %d = 0x%02X (not 0xFF)\n", ppn, b, page[b]);
+                break;
+            }
+        }
+        assert(all_ff && "Reserved page must be erased");
+    }
+    printf("    All %d reserved pages are erased ?\n", reserve_pages);
+    
+    printf("  === Phase 5: Verify migrated data still readable ===\n");
+    
+    for (uint16_t i = 0; i < num_sectors; i++) {
+        uint8_t read_data[USER_DATA_SIZE];
+        ret = eflash_ftl_read(i, read_data);
+        assert(ret == 0 && "Read should succeed");
+        
+        uint8_t expected = 0xC0 + (i % 16);
+        assert(read_data[0] == expected && "Data must match after migration");
+    }
+    printf("    All %d sectors still readable after reservation ?\n", num_sectors);
+    
+    printf("  === Phase 6: New writes don't use reserved range ===\n");
+    
+    for (uint16_t i = 100; i < 110; i++) {
+        uint8_t data[USER_DATA_SIZE];
+        memset(data, 0xDD, USER_DATA_SIZE);
+        ret = eflash_ftl_write(i, data);
+        assert(ret == 0 && "Write should succeed");
+    }
+    
+    // Verify reserved pages are still erased (untouched by new writes)
+    for (uint16_t ppn = reserve_start; ppn < reserve_end; ppn++) {
+        uint8_t page[EFLASH_PAGE_SIZE];
+        eflash_hw_read(ppn, page);
+        bool all_ff = true;
+        for (int b = 0; b < EFLASH_PAGE_SIZE; b++) {
+            if (page[b] != 0xFF) {
+                all_ff = false;
+                break;
+            }
+        }
+        assert(all_ff && "Reserved page must remain erased after new writes");
+    }
+    printf("    Reserved pages intact after new writes ?\n");
+    
+    printf("  === Phase 7: Edge case - reserve 0 pages ===\n");
+    ret = eflash_ftl_gc_reserve_physical_range(reserve_end, 0);
+    assert(ret == 0 && "Reserve 0 pages should succeed");
+    printf("    Reserve 0 pages: ?\n");
+    
+    printf("  === Phase 8: Edge case - range exceeds total pages ===\n");
+    ret = eflash_ftl_gc_reserve_physical_range(2000, 100);
+    assert(ret == -1 && "Should fail when range exceeds total pages");
+    printf("    Range overflow detection: ?\n");
+    
+    printf("\n  === GC reserve physical range test completed ===\n");
+    
+    passed_tests++;
+    teardown_test_environment();
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 
@@ -1183,6 +1307,7 @@ int main(void) {
     RUN_TEST(test_code_region_gc_reclaim);
     RUN_TEST(test_code_segment_add_delete_readd);
     RUN_TEST(test_code_segment_stress_with_leak_detection);
+    RUN_TEST(test_gc_reserve_physical_range);
     
     // Summary
     printf("\n========================================\n");
