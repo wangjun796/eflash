@@ -35,7 +35,15 @@ static uint16_t skip_code_region(uint16_t ppn);
 // Global static FTL instance (no dynamic allocation - suitable for embedded systems)
 eflash_ftl_t g_ftl_instance;
 static bool g_ftl_initialized = false;
-ftl_page_t *g_ftl_page_ptr = (ftl_page_t*)FLASH_FILE_REMAP_ADDR; // Pointer to FTL page buffer for debugging(g_ftl_page_ptr,2048 or g_ftl_page_ptr[ppn])
+ftl_page_t *g_ftl_page_ptr = (ftl_page_t*)FLASH_FILE_REMAP_ADDR;
+
+// --- Read/Write Cache (Global) ---
+static map_cache_entry_t g_map_cache[MAP_CACHE_SIZE];
+static uint8_t          g_map_cache_idx = 0;
+
+static page_cache_slot_t g_page_cache[PAGE_CACHE_SLOTS];
+static uint32_t          g_cache_seq_counter = 0;
+static uint8_t           g_dirty_count = 0;
 
 /**
  * eflash_get_ftl: Get the global FTL instance
@@ -91,7 +99,6 @@ eflash_ftl_t* eflash_get_ftl(void) {
 #define SYS_OBJ_HEADER_PAGES      8       // Base object header table size (8 pages)
 #define SYS_FREE_LIST_BASE_LPN    8       // Free list starts at LPN 8
 #define SYS_FREE_LIST_PAGES       4       // Free list size (4 pages)
-#define SYS_RESERVED_LPN_COUNT    12      // Total reserved LPNs for system areas
 
 // --- BCH ECC Wrapper Functions ---
 
@@ -227,6 +234,8 @@ static bool is_blank_page(uint16_t page) {
 
 // --- Forward Declarations for Internal Functions ---
 static int get_header_page_info(uint16_t obj_id, uint16_t *out_log_page, uint16_t *out_offset);
+int eflash_ftl_write_through(uint16_t sector_id, const uint8_t *data);
+static void content_cache_flush(void);
 
 // --- System Page Read/Write Functions ---
 
@@ -247,7 +256,7 @@ static int get_header_page_info(uint16_t obj_id, uint16_t *out_log_page, uint16_
  */
 int write_system_page(uint16_t lpn, const uint8_t *data) {
     FTL_DEBUG("[SYS_WRITE] Writing system page LPN=%d (sector_id=%d)\n", lpn, lpn);
-    return eflash_ftl_write(lpn, data);
+    return eflash_ftl_write_through(lpn, data);
 }
 
 /**
@@ -289,6 +298,130 @@ static bool is_valid_page(uint16_t page, ftl_meta_t *meta) {
     return (meta->status == TXN_STATUS_COMMITTED ||
             meta->status == TXN_STATUS_READY ||
             meta->status == TXN_STATUS_INVALID);
+}
+
+// ========================================================================
+// Cache Management Functions
+// ========================================================================
+
+static void map_cache_upsert(uint16_t lpn, uint16_t ppn) {
+    for (int i = 0; i < MAP_CACHE_SIZE; i++) {
+        if (g_map_cache[i].lpn == lpn) {
+            g_map_cache[i].ppn = ppn;
+            return;
+        }
+    }
+    g_map_cache[g_map_cache_idx].lpn = lpn;
+    g_map_cache[g_map_cache_idx].ppn = ppn;
+    g_map_cache_idx = (g_map_cache_idx + 1) % MAP_CACHE_SIZE;
+}
+
+static uint16_t map_cache_lookup(uint16_t lpn) {
+    for (int i = 0; i < MAP_CACHE_SIZE; i++) {
+        if (g_map_cache[i].lpn == lpn && g_map_cache[i].ppn != PAGE_NONE) {
+            return g_map_cache[i].ppn;
+        }
+    }
+    return PAGE_NONE;
+}
+
+static void map_cache_invalidate(uint16_t lpn) {
+    for (int i = 0; i < MAP_CACHE_SIZE; i++) {
+        if (g_map_cache[i].lpn == lpn) {
+            g_map_cache[i].lpn = PAGE_NONE;
+            g_map_cache[i].ppn = PAGE_NONE;
+        }
+    }
+}
+
+static int content_cache_find(uint16_t lpn) {
+    for (int i = 0; i < PAGE_CACHE_SLOTS; i++) {
+        if (g_page_cache[i].valid && g_page_cache[i].lpn == lpn) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int content_cache_find_free(void) {
+    for (int i = 0; i < PAGE_CACHE_SLOTS; i++) {
+        if (!g_page_cache[i].valid) return i;
+    }
+    return -1;
+}
+
+static int content_cache_find_min_seq(void) {
+    int min_slot = -1;
+    uint32_t min_seq = 0xFFFFFFFF;
+    for (int i = 0; i < PAGE_CACHE_SLOTS; i++) {
+        if (g_page_cache[i].valid && g_page_cache[i].cache_seq < min_seq) {
+            min_seq = g_page_cache[i].cache_seq;
+            min_slot = i;
+        }
+    }
+    return min_slot;
+}
+
+static void content_cache_evict_one(int slot) {
+    if (!g_page_cache[slot].valid) return;
+    if (g_page_cache[slot].dirty) {
+        eflash_ftl_write_through(g_page_cache[slot].lpn,
+                                 g_page_cache[slot].data);
+        g_dirty_count--;
+    }
+    g_page_cache[slot].valid = 0;
+    g_page_cache[slot].lpn = PAGE_NONE;
+}
+
+static void content_cache_fill(uint16_t lpn, const uint8_t *data) {
+    int slot = content_cache_find(lpn);
+    if (slot < 0) {
+        slot = content_cache_find_free();
+        if (slot < 0) {
+            slot = content_cache_find_min_seq();
+            content_cache_evict_one(slot);
+        }
+        g_page_cache[slot].lpn  = lpn;
+        g_page_cache[slot].valid = 1;
+    }
+    g_page_cache[slot].dirty     = 0;
+    g_page_cache[slot].cache_seq = ++g_cache_seq_counter;
+    memcpy(g_page_cache[slot].data, data, USER_DATA_SIZE);
+}
+
+static void content_cache_invalidate(uint16_t lpn) {
+    int slot = content_cache_find(lpn);
+    if (slot >= 0) {
+        if (g_page_cache[slot].dirty) {
+            g_dirty_count--;
+        }
+        g_page_cache[slot].valid = 0;
+        g_page_cache[slot].lpn = PAGE_NONE;
+    }
+}
+
+static void content_cache_flush(void) {
+    int indices[PAGE_CACHE_SLOTS];
+    for (int i = 0; i < PAGE_CACHE_SLOTS; i++) indices[i] = i;
+
+    for (int i = 0; i < PAGE_CACHE_SLOTS - 1; i++) {
+        for (int j = i + 1; j < PAGE_CACHE_SLOTS; j++) {
+            if (g_page_cache[indices[i]].cache_seq >
+                g_page_cache[indices[j]].cache_seq) {
+                int tmp = indices[i];
+                indices[i] = indices[j];
+                indices[j] = tmp;
+            }
+        }
+    }
+
+    for (int i = 0; i < PAGE_CACHE_SLOTS; i++) {
+        int slot = indices[i];
+        if (g_page_cache[slot].valid && g_page_cache[slot].dirty) {
+            eflash_ftl_write_through(g_page_cache[slot].lpn,
+                                     g_page_cache[slot].data);
+        }
+    }
 }
 
 /**
@@ -1132,17 +1265,102 @@ static void scan_and_rebuild_max_obj_id(void) {
 }
 
 
+// ========================================================================
+// Root Page Binary Search (O(log N) instead of O(N))
+// ========================================================================
+
+static bool probe_is_committed(uint16_t ppn) {
+    ftl_meta_t meta;
+    if (!is_valid_page(ppn, &meta)) return false;
+    return (meta.status == TXN_STATUS_COMMITTED);
+}
+
+static uint16_t find_root_full_scan(ftl_meta_t *out_meta) {
+    uint32_t max_count = 0;
+    uint16_t max_epoch = 0;
+    uint16_t root = PAGE_NONE;
+    ftl_meta_t meta;
+
+    for (int i = 0; i < EFLASH_TOTAL_PAGES; i++) {
+        if (is_valid_page(i, &meta) && meta.status == TXN_STATUS_COMMITTED) {
+            if (meta.epoch > max_epoch ||
+                (meta.epoch == max_epoch && meta.global_count > max_count)) {
+                max_epoch = meta.epoch;
+                max_count = meta.global_count;
+                root = i;
+                if (out_meta) memcpy(out_meta, &meta, sizeof(ftl_meta_t));
+            }
+        }
+    }
+    return root;
+}
+
+static uint16_t find_root_binary(void) {
+    uint16_t last_ppn = EFLASH_TOTAL_PAGES - 1;
+    bool c0  = probe_is_committed(0);
+    bool cl  = probe_is_committed(last_ppn);
+    uint16_t root = PAGE_NONE;
+
+    if (c0 && !cl) {
+        uint16_t lo = 0, hi = last_ppn;
+        while (lo < hi) {
+            uint16_t mid = (lo + hi + 1) / 2;
+            if (probe_is_committed(mid)) lo = mid;
+            else hi = mid - 1;
+        }
+        root = lo;
+    } else if (!c0 && cl) {
+        uint16_t lo = 0, hi = last_ppn;
+        while (lo < hi) {
+            uint16_t mid = (lo + hi) / 2;
+            if (probe_is_committed(mid)) hi = mid;
+            else lo = mid + 1;
+        }
+        root = last_ppn;
+        if (!probe_is_committed(root)) root = lo;
+    } else if (c0 && cl) {
+        uint16_t lo = 0, hi = last_ppn;
+        while (lo < hi) {
+            uint16_t mid = (lo + hi) / 2;
+            if (!probe_is_committed(mid)) hi = mid;
+            else lo = mid + 1;
+        }
+        uint16_t first_b = lo;
+        lo = first_b; hi = last_ppn;
+        while (lo < hi) {
+            uint16_t mid = (lo + hi + 1) / 2;
+            if (probe_is_committed(mid)) lo = mid;
+            else hi = mid - 1;
+        }
+        root = lo;
+        if (!probe_is_committed(root)) root = first_b > 0 ? first_b - 1 : PAGE_NONE;
+    }
+
+    if (root == PAGE_NONE || root >= EFLASH_TOTAL_PAGES) {
+        return PAGE_NONE;
+    }
+
+    ftl_meta_t root_meta;
+    if (!is_valid_page(root, &root_meta) || root_meta.status != TXN_STATUS_COMMITTED) {
+        return PAGE_NONE;
+    }
+
+    return root;
+}
+
 // --- FTL Initialization and Pre-allocation ---
 
 int eflash_ftl_init(void) {
     FTL_DEBUG("[INIT] Starting eflash_ftl_init\n");
 
+    memset(g_map_cache, 0, sizeof(g_map_cache));
+    g_map_cache_idx = 0;
+    memset(g_page_cache, 0, sizeof(g_page_cache));
+    g_cache_seq_counter = 0;
+    g_dirty_count = 0;
+
     // Step 1: Initialize space manager (memory-only, no Flash writes)
     eflash_mgr_init(EFLASH_TOTAL_PAGES);
-
-    ftl_meta_t meta;
-    uint32_t max_count = 0;
-    uint16_t max_epoch = 0;
 
     FTL->root_page = PAGE_NONE;
     FTL->shadow_root = PAGE_NONE;
@@ -1178,30 +1396,31 @@ int eflash_ftl_init(void) {
         FTL->ext_hdr_addrs[i] = PAGE_NONE;
     }
 
-    // Step 2: Scan entire chip to find latest COMMITTED page as Root
-    FTL_DEBUG("[INIT] Scanning %d pages for valid root...\n", EFLASH_TOTAL_PAGES);
-    for (int i = 0; i < EFLASH_TOTAL_PAGES; i++) {
-        if (is_valid_page(i, &meta) && meta.status == TXN_STATUS_COMMITTED) {
-            if (meta.epoch > max_epoch ||
-                (meta.epoch == max_epoch && meta.global_count > max_count)) {
-                max_epoch = meta.epoch;
-                max_count = meta.global_count;
-                FTL->root_page = i;
-                FTL->next_count = max_count + 1;
-                FTL->current_epoch = max_epoch;
-                FTL_DEBUG("[INIT] Found valid root at page %d, epoch=%d, count=%d\n",
-                         i, max_epoch, max_count);
-            }
-        }
-
-        // Output progress every 1000 pages scanned
-        if (i % 1000 == 0 && i > 0) {
-            FTL_DEBUG("[INIT] Scanned %d/%d pages...\n", i, EFLASH_TOTAL_PAGES);
+    // Step 2: Binary search (O(log N)) to find root, fallback to full scan
+    FTL_DEBUG("[INIT] Root binary search...\n");
+    FTL->root_page = find_root_binary();
+    if (FTL->root_page != PAGE_NONE) {
+        ftl_meta_t root_meta;
+        is_valid_page(FTL->root_page, &root_meta);
+        FTL->next_count = root_meta.global_count + 1;
+        FTL->current_epoch = root_meta.epoch;
+        FTL_DEBUG("[INIT] Binary search OK. Root: ppn=%d, epoch=%d, count=%d\n",
+                 FTL->root_page, (int)FTL->current_epoch, (int)root_meta.global_count);
+    } else {
+        FTL_DEBUG("[INIT] Binary search failed, fallback full scan...\n");
+        ftl_meta_t root_meta;
+        FTL->root_page = find_root_full_scan(&root_meta);
+        if (FTL->root_page == PAGE_NONE) {
+            FTL_DEBUG("[INIT] No valid root found (first boot)\n");
+            FTL->next_count = 1;
+            FTL->current_epoch = 0;
+        } else {
+            FTL->next_count = root_meta.global_count + 1;
+            FTL->current_epoch = root_meta.epoch;
+            FTL_DEBUG("[INIT] Full scan OK. Root: ppn=%d, epoch=%d, count=%d\n",
+                     FTL->root_page, (int)FTL->current_epoch, (int)root_meta.global_count);
         }
     }
-
-    FTL_DEBUG("[INIT] Scan complete. Root page: %d, next_count: %d, epoch: %d\n",
-             FTL->root_page, FTL->next_count, FTL->current_epoch);
 
     // Step 2.3: Recover extended free node table from Flash
     // This must be done AFTER root_page is found (Radix Tree is functional)
@@ -1513,118 +1732,163 @@ int eflash_ftl_obj_write_body(uint16_t obj_id, const uint8_t *data, uint32_t siz
     return -1;
 }
 
-int eflash_ftl_write(uint16_t sector_id, const uint8_t *data) {
-    // Parameter validation
+int eflash_ftl_write_through(uint16_t sector_id, const uint8_t *data) {
     if (!FTL || !FTL->is_initialized) return -1;
     if (data == NULL) return -1;
-    if (sector_id == PAGE_NONE) return -1;  // Invalid sector ID (0xFFFF)
-    
-    // Validate sector_id range: must be within logical address space
-    // Maximum logical pages = total flash size / user data size per page
+    if (sector_id == PAGE_NONE) return -1;
+
     uint32_t max_logical_pages = (EFLASH_TOTAL_PAGES * EFLASH_PAGE_SIZE) / USER_DATA_SIZE;
     if (sector_id >= max_logical_pages) {
-        FTL_DEBUG("[WRITE] ERROR: sector_id=%d exceeds max_logical_pages=%u\n", 
+        FTL_DEBUG("[WRITE_THROUGH] WARN: sector_id=%d >= max=%u\n",
                   sector_id, max_logical_pages);
-        //return -1; //support virtual logical pages
     }
 
-    // CRITICAL: Trigger GC BEFORE tracing the tree to avoid race condition
-    // If GC is triggered during allocation, it will modify the radix tree,
-    // making the traced path information invalid.
-    // By triggering GC first, we ensure:
-    // 1. Sufficient free space for allocation
-    // 2. No GC will be triggered during this write operation
-    // 3. The traced path remains valid throughout the write
     if (eflash_ftl_gc_trigger() != 0) {
-        FTL_DEBUG("[WRITE] ERROR: GC trigger failed, no space available\n");
+        FTL_DEBUG("[WRITE_THROUGH] GC trigger failed, no space\n");
         return -1;
     }
 
-    FTL_DEBUG("[WRITE] sector_id=%d\n", sector_id);
+    FTL_DEBUG("[WRITE_THROUGH] sector_id=%d\n", sector_id);
 
-    uint16_t base_root = (FTL->active_txn_id != TXN_ID_NONE) ? FTL->shadow_root : FTL->root_page;
+    uint16_t base_root = (FTL->active_txn_id != TXN_ID_NONE)
+                         ? FTL->shadow_root : FTL->root_page;
 
-    // Step 1: Call trace_tree to build metadata template for new node (excluding data page info)
     ftl_meta_t new_node_meta;
     int trace_result = trace_tree(base_root, sector_id, &new_node_meta);
     if (trace_result < 0) {
-        FTL_DEBUG("[WRITE] ERROR: trace_tree failed!\n");
+        FTL_DEBUG("[WRITE_THROUGH] trace_tree failed!\n");
         return -1;
     }
 
     bool is_new_write = (trace_result == 0);
-    uint16_t old_phys_page = (uint16_t)((trace_result == EFLASH_TOTAL_PAGES) ? 0 : trace_result);  // For update write, this is the old page number
-    
+
     if (is_new_write) {
-        if ((EFLASH_TOTAL_PAGES - 1)  == FTL->valid_page_count)
+        if ((EFLASH_TOTAL_PAGES - 1) == FTL->valid_page_count)
             return -1;
-        FTL_DEBUG("[WRITE] Write type: NEW (sector_id=%d not in tree)\n", sector_id);
-    } else {
-        FTL_DEBUG("[WRITE] Write type: UPDATE (sector_id=%d found at page %d)\n", sector_id, old_phys_page);
     }
 
-    // Step 2: Allocate physical page using Head/Tail mechanism
-    // Note: GC has already been triggered above, so this should not trigger GC again
     int new_phys = allocate_physical_page();
     if (new_phys < 0) {
-        FTL_DEBUG("[WRITE] ERROR: Failed to allocate physical page!\n");
+        FTL_DEBUG("[WRITE_THROUGH] allocate_physical_page failed!\n");
         return -1;
     }
 
-    FTL_DEBUG("[WRITE] Allocated physical page=%d\n", new_phys);
-
-    // Step 3: Write user data + metadata to same physical page
-    // Note: Each physical page is both data page and metadata node page
     if (write_full_page(new_phys, data, &new_node_meta) != 0) {
-        FTL_DEBUG("[WRITE] ERROR: Failed to write page!\n");
+        FTL_DEBUG("[WRITE_THROUGH] write_full_page failed!\n");
         return -1;
     }
 
-    // Step 4: Update FTL root pointer
     if (FTL->active_txn_id != TXN_ID_NONE) {
-        // Transaction mode: update shadow root
         FTL->shadow_root = new_phys;
     } else {
-        // Non-transaction mode: update root directly
         FTL->root_page = new_phys;
     }
 
-    // Step 5: Update valid page counter if this is a new write
     if (is_new_write) {
         FTL->valid_page_count++;
-        FTL_DEBUG("[WRITE] New sector added, valid_page_count=%u\n", FTL->valid_page_count);
-    }
-    else {
-        if (FTL->active_txn_id == TXN_ID_NONE){
-            if (old_phys_page != 0)
-                ;// eflash_hw_erase(old_phys_page);//TODO:not erase page in gc 
-        }            
     }
 
-    FTL_DEBUG("[WRITE] Success: root_page=%d, next_count=%d\n",
-              (FTL->active_txn_id != TXN_ID_NONE) ? FTL->shadow_root : FTL->root_page,
-              FTL->next_count);
+    map_cache_upsert(sector_id, (uint16_t)new_phys);
+    content_cache_invalidate(sector_id);
+
+    FTL_DEBUG("[WRITE_THROUGH] OK ppn=%d\n", new_phys);
+    return 0;
+}
+
+int eflash_ftl_write(uint16_t sector_id, const uint8_t *data) {
+    return eflash_ftl_write_through(sector_id, data);
+}
+
+int eflash_ftl_write_back(uint16_t sector_id, const uint8_t *data) {
+    if (!FTL || !FTL->is_initialized) return -1;
+    if (data == NULL) return -1;
+    if (sector_id == PAGE_NONE) return -1;
+
+    int slot = content_cache_find(sector_id);
+    if (slot >= 0) {
+        memcpy(g_page_cache[slot].data, data, USER_DATA_SIZE);
+        if (!g_page_cache[slot].dirty) {
+            g_page_cache[slot].dirty = 1;
+            g_dirty_count++;
+        }
+        g_page_cache[slot].cache_seq = ++g_cache_seq_counter;
+        map_cache_invalidate(sector_id);
+        if (g_dirty_count >= FLUSH_THRESHOLD) {
+            content_cache_flush();
+        }
+        return 0;
+    }
+
+    slot = content_cache_find_free();
+    if (slot < 0) {
+        slot = content_cache_find_min_seq();
+        if (slot < 0) {
+            eflash_ftl_write_through(sector_id, data);
+            return 0;
+        }
+        content_cache_evict_one(slot);
+    }
+
+    g_page_cache[slot].lpn      = sector_id;
+    g_page_cache[slot].valid    = 1;
+    g_page_cache[slot].dirty    = 1;
+    g_page_cache[slot].cache_seq = ++g_cache_seq_counter;
+    memcpy(g_page_cache[slot].data, data, USER_DATA_SIZE);
+    g_dirty_count++;
+    map_cache_invalidate(sector_id);
+
+    if (g_dirty_count >= FLUSH_THRESHOLD) {
+        content_cache_flush();
+    }
 
     return 0;
 }
 
+int eflash_ftl_cache_flush(void) {
+    content_cache_flush();
+    return 0;
+}
+
 int eflash_ftl_read(uint16_t sector_id, uint8_t *data) {
-    // Parameter validation
+    int cache_slot;
+
     if (!FTL || !FTL->is_initialized) return -1;
     if (data == NULL) return -1;
-    //if (sector_id == PAGE_NONE) return -1;  // Invalid sector ID (0xFFFF)
-    
-    // Validate sector_id range: must be within logical address space
+
+    cache_slot = content_cache_find(sector_id);
+    if (cache_slot >= 0) {
+        memcpy(data, g_page_cache[cache_slot].data, USER_DATA_SIZE);
+        g_page_cache[cache_slot].cache_seq = ++g_cache_seq_counter;
+        return 0;
+    }
+
     uint32_t max_logical_pages = (EFLASH_TOTAL_PAGES * EFLASH_PAGE_SIZE) / USER_DATA_SIZE;
     if (sector_id >= max_logical_pages) {
-        FTL_DEBUG("[READ] ERROR: sector_id=%d exceeds max_logical_pages=%u\n", 
+        FTL_DEBUG("[READ] ERROR: sector_id=%d exceeds max_logical_pages=%u\n",
                   sector_id, max_logical_pages);
-        //return -1; //support virtual logical pages
     }
-    
+
     if (FTL->root_page == PAGE_NONE) return -1;
 
-    uint16_t lpn = sector_id;  // Logical Page Number
+    uint16_t lpn = sector_id;
+
+    uint16_t ppn = map_cache_lookup(lpn);
+    if (ppn != PAGE_NONE) {
+        uint8_t meta_buf[EFLASH_PAGE_SIZE];
+        if (eflash_hw_read(ppn, meta_buf) == 0 &&
+            verify_and_correct_page(meta_buf) == 0) {
+            uint8_t read_sector_id_high = meta_buf[META_OFFSET + 25];
+            uint8_t read_sector_id_low  = meta_buf[META_OFFSET + 24];
+            uint16_t read_sector_id = (uint16_t)((read_sector_id_high << 8) | read_sector_id_low);
+
+            if (read_sector_id == lpn) {
+                memcpy(data, meta_buf, USER_DATA_SIZE);
+                content_cache_fill(lpn, data);
+                return 0;
+            }
+        }
+        map_cache_invalidate(lpn);
+    }
 
     FTL_DEBUG("[READ] LPN=%d, root_page=%d\n", lpn, FTL->root_page);
 
@@ -1648,11 +1912,10 @@ int eflash_ftl_read(uint16_t sector_id, uint8_t *data) {
         // FTL_DEBUG("[READ] depth=%d, cur_sector=%d, adr[depth]=%d\n", depth, cur_meta.sector_id, cur_meta.adr[depth]);
 
         if (cur_meta.sector_id == lpn) {
-            // Found matching node, data is in first USER_DATA_SIZE bytes of current page
             FTL_DEBUG("[READ] Found match at depth=%d, reading data from PPN %d\n", depth, current);
-            // Data already in meta_buf and verified/corrected by verify_and_correct_page
             memcpy(data, meta_buf, USER_DATA_SIZE);
-            FTL_DEBUG("[READ] Success, first byte=0x%02X\n", data[0]);
+            map_cache_upsert(lpn, current);
+            content_cache_fill(lpn, data);
             return 0;
         }
 
@@ -1689,7 +1952,8 @@ int eflash_ftl_read(uint16_t sector_id, uint8_t *data) {
             if (cur_meta.sector_id == lpn) {
                 FTL_DEBUG("[READ] Found match after jump at depth=%d, reading data from PPN %d\n", depth, current);
                 memcpy(data, meta_buf, USER_DATA_SIZE);
-                FTL_DEBUG("[READ] Success, first byte=0x%02X\n", data[0]);
+                map_cache_upsert(lpn, current);
+                content_cache_fill(lpn, data);
                 return 0;
             }
         } else {
@@ -1876,19 +2140,22 @@ void eflash_ftl_txn_begin(void) {
 int eflash_ftl_txn_commit(void) {
     if (FTL->active_txn_id == TXN_ID_NONE || FTL->shadow_root == PAGE_NONE) return -1;
 
-    FTL_DEBUG("[TXN_COMMIT] Committing transaction on page %d (full rewrite mode)\n", FTL->shadow_root);
+    FTL_DEBUG("[TXN_COMMIT] >>> ENTRY: active_txn_id=%d, shadow_root=%d, root_page=%d\n",
+              FTL->active_txn_id, FTL->shadow_root, FTL->root_page);
 
-    // Atomic commit: need to read entire page, modify status, recalculate ECC, then write back
+    content_cache_flush();
+
     uint8_t full_page[EFLASH_PAGE_SIZE];
 
-    // 1. Read current page
     if (eflash_hw_read(FTL->shadow_root, full_page) != 0) {
-        FTL_DEBUG("[TXN_COMMIT] ERROR: Failed to read page\n");
+        FTL_DEBUG("[TXN_COMMIT] ERROR: Failed to read page %d\n", FTL->shadow_root);
         return -1;
     }
 
-    // 2. Modify status to COMMITTED
     ftl_meta_t *meta = (ftl_meta_t *)(full_page + META_OFFSET);
+
+    FTL_DEBUG("[TXN_COMMIT] Page %d: sector_id=%d, status=0x%02X, txn_id=%d, count=%d\n",
+              FTL->shadow_root, meta->sector_id, meta->status, meta->txn_id, meta->global_count);
 
     if (meta->status != TXN_STATUS_READY) {
         FTL_DEBUG("[TXN_COMMIT] ERROR: Page status is not READY (0x%02X)\n", meta->status);
@@ -1897,25 +2164,33 @@ int eflash_ftl_txn_commit(void) {
 
     meta->status = TXN_STATUS_COMMITTED;
 
-    // 3. Recalculate entire page ECC (because metadata changed, and ECC covers user data + metadata)
     calc_page_ecc(full_page);
 
-    // 4. Erase and rewrite entire page
     if (eflash_hw_erase(FTL->shadow_root) != 0) {
-        FTL_DEBUG("[TXN_COMMIT] ERROR: Failed to erase page\n");
+        FTL_DEBUG("[TXN_COMMIT] ERROR: Failed to erase page %d\n", FTL->shadow_root);
         return -1;
     }
     if (eflash_hw_prog(FTL->shadow_root, full_page) != 0) {
-        FTL_DEBUG("[TXN_COMMIT] ERROR: Failed to program page\n");
+        FTL_DEBUG("[TXN_COMMIT] ERROR: Failed to program page %d\n", FTL->shadow_root);
         return -1;
     }
 
-    FTL_DEBUG("[TXN_COMMIT] Transaction committed successfully\n");
+    FTL_DEBUG("[TXN_COMMIT] Page %d status changed to COMMITTED\n", FTL->shadow_root);
 
-    // Commit successful, shadow tree becomes main tree
     FTL->root_page = FTL->shadow_root;
     FTL->shadow_root = PAGE_NONE;
     FTL->active_txn_id = TXN_ID_NONE;
+
+    FTL_DEBUG("[TXN_COMMIT] root_page updated to %d, invalidating content cache\n", FTL->root_page);
+
+    for (int i = 0; i < PAGE_CACHE_SLOTS; i++) {
+        g_page_cache[i].valid = 0;
+        g_page_cache[i].lpn = PAGE_NONE;
+        g_page_cache[i].dirty = 0;
+    }
+    g_dirty_count = 0;
+
+    FTL_DEBUG("[TXN_COMMIT] OK, commit complete\n");
     return 0;
 }
 
@@ -1951,7 +2226,8 @@ int eflash_ftl_txn_commit_with_update(void) {
 
     FTL_DEBUG("[TXN_COMMIT_UPDATE] Committing transaction on page %d (word update mode)\n", FTL->shadow_root);
 
-    // Step 1: Read the entire page to get current data
+    content_cache_flush();
+
     uint8_t page_buf[EFLASH_PAGE_SIZE];
     if (eflash_hw_read(FTL->shadow_root, page_buf) != 0) {
         FTL_DEBUG("[TXN_COMMIT_UPDATE] ERROR: Failed to read page\n");
@@ -2018,10 +2294,18 @@ int eflash_ftl_txn_commit_with_update(void) {
 
     FTL_DEBUG("[TXN_COMMIT_UPDATE] Status and ECC updated successfully (3 word updates, no erase needed)\n");
 
-    // Step 6: Commit successful, shadow tree becomes main tree
     FTL->root_page = FTL->shadow_root;
     FTL->shadow_root = PAGE_NONE;
     FTL->active_txn_id = TXN_ID_NONE;
+
+    FTL_DEBUG("[TXN_COMMIT_UPDATE] root_page updated to %d, invalidating content cache\n", FTL->root_page);
+
+    for (int i = 0; i < PAGE_CACHE_SLOTS; i++) {
+        g_page_cache[i].valid = 0;
+        g_page_cache[i].lpn = PAGE_NONE;
+        g_page_cache[i].dirty = 0;
+    }
+    g_dirty_count = 0;
 
     FTL_DEBUG("[TXN_COMMIT_UPDATE] Transaction committed, root_page=%d\n", FTL->root_page);
     return 0;
@@ -2240,7 +2524,7 @@ static int gc_migrate_page(uint16_t src_page) {
 
     // 3. Use normal write flow to rewrite data (this triggers trace_tree, allocates new page, updates root)
     //    Note: Only pass user data, let eflash_ftl_write automatically create new metadata
-    if (eflash_ftl_write( meta->sector_id, user_data) != 0) {
+    if (eflash_ftl_write_through( meta->sector_id, user_data) != 0) {
         FTL_DEBUG("[GC_MIGRATE] ERROR: Failed to rewrite data during migration\n");
         return -1;
     }

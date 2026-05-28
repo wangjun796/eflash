@@ -912,7 +912,7 @@ void test_code_segment_stress_with_leak_detection(void) {
     // =========================================================================
     printf("\n  === Phase 1: Add 10 code segments ===\n");
     
-    const int num_segments = 10;
+    #define num_segments  10
     uint16_t segment_lpns[num_segments];
     uint16_t segment_sizes[num_segments];
     uint32_t total_expected_pages = 0;
@@ -1997,11 +1997,12 @@ void test_code_and_data_coexistence(void) {
  * preserves the tree structure, and write_full_page only writes once.
  */
 static void test_trim_radix_tree_integrity(void) {
+    #define NUM_SECTORS  8
     printf("\n  === Trim Radix Tree Integrity Test ===\n");
     setup_test_environment();
+    total_tests++;
 
     int ret;
-    const uint16_t NUM_SECTORS = 8;
     uint8_t original[NUM_SECTORS][USER_DATA_SIZE];
 
 #define TG(n) ((uint8_t)((n) & 0xFF))
@@ -2083,6 +2084,773 @@ static void test_trim_radix_tree_integrity(void) {
 }
 
 // ============================================================================
+// Crash Recovery Helper: Simulates power loss by deinit+reinit FTL
+// The flash file is preserved across the cycle; only RAM state is lost.
+// ============================================================================
+static void simulate_crash_recovery(void) {
+    eflash_deinit();
+    int ret = eflash_init(TEST_FLASH_FILE);
+    if (ret != 0) {
+        printf("[ERROR] Flash re-init after crash failed\n");
+        exit(EXIT_FAILURE);
+    }
+    ret = eflash_ftl_init();
+    if (ret != 0) {
+        printf("[ERROR] FTL re-init after crash failed\n");
+        exit(EXIT_FAILURE);
+    }
+    printf("[CRASH] Simulated power-loss recovery: FTL rebuilt from Flash\n");
+}
+
+// ============================================================================
+// Test Case 14: Power-Loss Consistency (write_through vs write_back)
+// ============================================================================
+//
+// Purpose: Validate metadata/data consistency under crash:
+//   - write_through: data+metadata on Flash ¡ú survives crash
+//   - write_back + flush: data+metadata on Flash ¡ú survives crash
+//   - write_back unflushed: data only in cache ¡ú LOST after crash
+//
+void test_power_loss_consistency(void) {
+    setup_test_environment();
+    total_tests++;
+
+    // Structure
+    //  Phase A : prepare LPNs, write + flush, verify   ->  snapshot
+    //  Phase B : crash 1, read back                     ->  all survived
+    //  Phase C : write_back NO flush, crash 2           ->  unflushed lost
+
+    const uint8_t USER_LPN_BASE = 20;
+    const uint16_t WT_LPN  = USER_LPN_BASE;       // write_through
+    const uint16_t WB_FL_LPN = USER_LPN_BASE + 5; // write_back flushed
+    const uint16_t WB_NF_LPN = USER_LPN_BASE + 10; // write_back NOT flushed
+
+    uint8_t wt_pattern[USER_DATA_SIZE];
+    uint8_t wb_flush_pattern[USER_DATA_SIZE];
+    uint8_t wb_nf_pattern[USER_DATA_SIZE];
+    uint8_t buf[USER_DATA_SIZE];
+    int ret;
+
+    // ---- Phase A: Create persistent data ----
+    printf("  Phase A: Write data and flush to Flash\n");
+
+    memset(wt_pattern, 0xAA, USER_DATA_SIZE);
+    memcpy(wt_pattern, "WT_THRU", 7);
+
+    memset(wb_flush_pattern, 0xBB, USER_DATA_SIZE);
+    memcpy(wb_flush_pattern, "WB_FLSH", 7);
+
+    memset(wb_nf_pattern, 0xCC, USER_DATA_SIZE);
+    memcpy(wb_nf_pattern, "WB_NFLUSH", 9);
+
+    ret = eflash_ftl_write_through(WT_LPN, wt_pattern);
+    assert(ret == 0 && "A: write_through LPN");
+    printf("    write_through(LPN=%d) done\n", WT_LPN);
+
+    for (int i = 0; i < 4; i++) {
+        ret = eflash_ftl_write_back(WB_FL_LPN + i, wb_flush_pattern);
+        assert(ret == 0 && "A: write_back flushed LPN");
+    }
+    printf("    write_back x4 (LPN=%d..%d) -> auto-flushed (threshold=%d)\n",
+           WB_FL_LPN, WB_FL_LPN + 3, FLUSH_THRESHOLD);
+
+    eflash_ftl_cache_flush();
+    printf("    Explicit cache_flush() done\n");
+
+    // Verify reads before crash
+    ret = eflash_ftl_read(WT_LPN, buf);
+    assert(ret == 0 && "A: read write_through");
+    assert(memcmp(buf, wt_pattern, USER_DATA_SIZE) == 0 && "A: write_through data");
+
+    for (int i = 0; i < 4; i++) {
+        ret = eflash_ftl_read(WB_FL_LPN + i, buf);
+        assert(ret == 0 && "A: read write_back flushed");
+        assert(memcmp(buf, wb_flush_pattern, USER_DATA_SIZE) == 0 && "A: flushed data");
+    }
+    printf("    Pre-crash reads: all OK\n");
+
+    // ---- Phase B: Crash #1 - all flushed data should survive ----
+    printf("\n  Phase B: Crash #1 - verify flushed data survives\n");
+    simulate_crash_recovery();
+
+    ret = eflash_ftl_read(WT_LPN, buf);
+    if (ret != 0 || memcmp(buf, wt_pattern, USER_DATA_SIZE) != 0) {
+        printf("    FAIL: write_through data LOST after crash!\n");
+        failed_tests++;
+        teardown_test_environment();
+        return;
+    }
+    printf("    write_through (LPN=%d) -> survived crash ?\n", WT_LPN);
+
+    for (int i = 0; i < 4; i++) {
+        ret = eflash_ftl_read(WB_FL_LPN + i, buf);
+        if (ret != 0 || memcmp(buf, wb_flush_pattern, USER_DATA_SIZE) != 0) {
+            printf("    FAIL: write_back flushed data LOST after crash!\n");
+            failed_tests++;
+            teardown_test_environment();
+            return;
+        }
+    }
+    printf("    write_back flushed (LPN=%d..%d) -> survived crash ?\n",
+           WB_FL_LPN, WB_FL_LPN + 3);
+
+    // ---- Phase C: Crash #2 - unflushed data should be LOST ----
+    printf("\n  Phase C: Crash #2 - verify unflushed write_back is lost\n");
+
+    // Write only 1 page via write_back - won't trigger auto-flush (FLUSH_THRESHOLD=2)
+    ret = eflash_ftl_write_back(WB_NF_LPN, wb_nf_pattern);
+    assert(ret == 0 && "C: write_back (unflushed, only 1 page)");
+    printf("    write_back x1 (LPN=%d) -> NOT flushed, cached only\n", WB_NF_LPN);
+
+    // Verify reads from active cache (should work NOW)
+    ret = eflash_ftl_read(WB_NF_LPN, buf);
+    assert(ret == 0 && "C: read from cache");
+    assert(memcmp(buf, wb_nf_pattern, USER_DATA_SIZE) == 0 && "C: cache data");
+    printf("    Pre-crash read from cache: OK (data NOT yet on Flash)\n");
+
+    // Now crash without flushing
+    simulate_crash_recovery();
+
+    // Verify unflushed data is GONE
+    ret = eflash_ftl_read(WB_NF_LPN, buf);
+    if (ret == 0) {
+        if (memcmp(buf, wb_nf_pattern, USER_DATA_SIZE) == 0) {
+            printf("    FAIL: unflushed write_back data SURVIVED crash!\n");
+            printf("    This means data was flushed unexpectedly.\n");
+            failed_tests++;
+            teardown_test_environment();
+            return;
+        }
+    }
+    printf("    write_back unflushed (LPN=%d) -> LOST after crash ?\n", WB_NF_LPN);
+
+    // Flushed data should STILL be intact after crash #2
+    ret = eflash_ftl_read(WT_LPN, buf);
+    assert(ret == 0 && "C: WT still intact after crash 2");
+    assert(memcmp(buf, wt_pattern, USER_DATA_SIZE) == 0 && "C: WT data intact");
+
+    for (int i = 0; i < 4; i++) {
+        ret = eflash_ftl_read(WB_FL_LPN + i, buf);
+        assert(ret == 0 && "C: WB flushed still intact after crash 2");
+        assert(memcmp(buf, wb_flush_pattern, USER_DATA_SIZE) == 0);
+    }
+    printf("    Flushed data (WT + WB) still intact after crash #2 ?\n");
+
+    printf("\n  === Power-loss consistency test passed ===\n");
+    passed_tests++;
+    teardown_test_environment();
+}
+
+// ============================================================================
+// Test Case 15: Read/Write Boundary Conditions
+// ============================================================================
+//
+// Purpose: Validate error handling and edge cases for eflash_ftl_read and
+//          eflash_ftl_write (which delegates to write_back).
+//
+void test_read_write_boundary(void) {
+    setup_test_environment();
+    total_tests++;
+
+    uint8_t buf[USER_DATA_SIZE];
+    uint8_t pattern[USER_DATA_SIZE];
+    int ret;
+
+    memset(pattern, 0xAB, USER_DATA_SIZE);
+    pattern[0] = 'B'; pattern[1] = 'D'; pattern[2] = 'R'; pattern[3] = 'Y';
+
+    const uint16_t LPN = 20;
+    const uint32_t MAX_LPN = (EFLASH_TOTAL_PAGES * EFLASH_PAGE_SIZE) / USER_DATA_SIZE;
+
+    printf("  B1: Read with NULL data pointer\n");
+    ret = eflash_ftl_read(LPN, NULL);
+    assert(ret == -1 && "B1: NULL data should return -1");
+
+    printf("  B2: Write with NULL data pointer\n");
+    ret = eflash_ftl_write(LPN, NULL);
+    assert(ret == -1 && "B2: NULL data should return -1");
+
+    printf("  B3: Write with sector_id = PAGE_NONE (0xFFFF)\n");
+    ret = eflash_ftl_write(PAGE_NONE, pattern);
+    assert(ret == -1 && "B3: PAGE_NONE sector_id should return -1");
+
+    printf("  B4: Read with sector_id = PAGE_NONE\n");
+    ret = eflash_ftl_read(PAGE_NONE, buf);
+    if (ret != -1) {
+        printf("    B4 NOTE: read PAGE_NONE returned %d (not -1), "
+               "max check only logs warning\n", ret);
+    }
+
+    printf("  B5: Read unmapped LPN (never written)\n");
+    ret = eflash_ftl_read(LPN, buf);
+    assert(ret == -1 && "B5: unmapped LPN should return -1");
+
+    printf("  B6: Read LPN beyond max_logical_pages (%u)\n", MAX_LPN);
+    ret = eflash_ftl_read((uint16_t)(MAX_LPN + 10), buf);
+    printf("    B6: read LPN=%u returned %d (trace_tree handles overflow)\n",
+           (unsigned)(MAX_LPN + 10), ret);
+
+    printf("  B7: Write normal data to LPN=%d and read back\n", LPN);
+    ret = eflash_ftl_write(LPN, pattern);
+    assert(ret == 0 && "B7: write should succeed");
+    memset(buf, 0, USER_DATA_SIZE);
+    ret = eflash_ftl_read(LPN, buf);
+    assert(ret == 0 && "B7: read after write should succeed");
+    assert(memcmp(buf, pattern, USER_DATA_SIZE) == 0 && "B7: data round-trip");
+
+    printf("  B8: Repeated writes to same LPN (COW stress)\n");
+    for (int i = 0; i < 5; i++) {
+        pattern[4] = (uint8_t)i;
+        ret = eflash_ftl_write(LPN, pattern);
+        assert(ret == 0 && "B8: repeated write");
+    }
+    ret = eflash_ftl_read(LPN, buf);
+    assert(ret == 0 && "B8: read after repeated writes");
+    assert(buf[4] == 4 && "B8: last write value");
+
+    printf("  B9: Write to system reserved LPN (0)\n");
+    pattern[0] = 'S'; pattern[1] = 'Y'; pattern[2] = 'S';
+    ret = eflash_ftl_write_through(0, pattern);
+    if (ret == 0) {
+        ret = eflash_ftl_read(0, buf);
+        printf("    B9: wrote to system LPN 0, read returned %d\n", ret);
+    } else {
+        printf("    B9: write to system LPN 0 returned %d (system LPN protected?)\n", ret);
+    }
+
+    printf("  B10: Write-read at LPN = max_logical_pages - 1\n");
+    uint16_t boundary_lpn = (uint16_t)(MAX_LPN - 1);
+    memset(pattern, 0xCD, USER_DATA_SIZE);
+    pattern[0] = 'M'; pattern[1] = 'A'; pattern[2] = 'X';
+    ret = eflash_ftl_write(boundary_lpn, pattern);
+    assert(ret == 0 && "B10: write at boundary LPN");
+    ret = eflash_ftl_read(boundary_lpn, buf);
+    assert(ret == 0 && "B10: read at boundary LPN");
+    assert(memcmp(buf, pattern, USER_DATA_SIZE) == 0 && "B10: boundary data match");
+
+    printf("  B11: Sequential write + read of multiple LPNs\n");
+    for (uint16_t i = 30; i < 35; i++) {
+        pattern[0] = (uint8_t)(i & 0xFF);
+        ret = eflash_ftl_write(i, pattern);
+        assert(ret == 0 && "B11: sequential write");
+    }
+    for (uint16_t i = 30; i < 35; i++) {
+        ret = eflash_ftl_read(i, buf);
+        assert(ret == 0 && "B11: sequential read");
+        assert(buf[0] == (uint8_t)(i & 0xFF) && "B11: LPN verification");
+    }
+
+    printf("  B12: Write via write_through and verify data survives immediate read\n");
+    uint8_t wt_buf[USER_DATA_SIZE];
+    memset(wt_buf, 0xEE, USER_DATA_SIZE);
+    memcpy(wt_buf, "WT_DIRECT", 9);
+    ret = eflash_ftl_write_through(40, wt_buf);
+    assert(ret == 0 && "B12: write_through");
+    ret = eflash_ftl_read(40, buf);
+    assert(ret == 0 && "B12: read after write_through");
+    assert(memcmp(buf, wt_buf, USER_DATA_SIZE) == 0 && "B12: write_through data");
+
+    printf("\n  === Read/Write boundary tests passed ===\n");
+    passed_tests++;
+    teardown_test_environment();
+}
+
+// ============================================================================
+// Test Case 16: Partial Cache Power Loss
+// ============================================================================
+//
+// Purpose: Simulate power loss when write_back cache is partially filled
+//          (below FLUSH_THRESHOLD). Validate:
+//          - Flushed data survives crash
+//          - Cached-only data is lost
+//          - FTL remains operational after recovery
+//
+void test_power_loss_partial_cache(void) {
+    setup_test_environment();
+    total_tests++;
+
+    const uint16_t LPN_WT  = 20;   // write_through, always survives
+    const uint16_t LPN_WB1 = 25;   // write_back batch (2 pages ¡ú auto-flush)
+    const uint16_t LPN_WB2 = 26;
+    const uint16_t LPN_CACHE = 30; // write_back ¡Á1, below threshold, stays cached
+
+    uint8_t wt_pattern[USER_DATA_SIZE];
+    uint8_t wb_pattern[USER_DATA_SIZE];
+    uint8_t cached_pattern[USER_DATA_SIZE];
+    uint8_t buf[USER_DATA_SIZE];
+    int ret;
+
+    memset(wt_pattern, 0xDD, USER_DATA_SIZE);
+    memcpy(wt_pattern, "WT_SURVIVE", 10);
+
+    memset(wb_pattern, 0xEE, USER_DATA_SIZE);
+    memcpy(wb_pattern, "WB_FLUSHED", 10);
+
+    memset(cached_pattern, 0xFF, USER_DATA_SIZE);
+    memcpy(cached_pattern, "CACHE_LOST", 10);
+
+    // ---- Phase 1: Mixed writes ----
+    printf("  Phase 1: Mixed strategy writes\n");
+
+    ret = eflash_ftl_write_through(LPN_WT, wt_pattern);
+    assert(ret == 0 && "P1: write_through");
+    printf("    write_through(LPN=%d) -> Flash\n", LPN_WT);
+
+    // Write 2 via write_back ¡ú auto-flushes at 2nd (FLUSH_THRESHOLD=2)
+    ret = eflash_ftl_write_back(LPN_WB1, wb_pattern);
+    assert(ret == 0 && "P1: wb 1st");
+    ret = eflash_ftl_write_back(LPN_WB2, wb_pattern);
+    assert(ret == 0 && "P1: wb 2nd (triggers auto-flush)");
+    printf("    write_back x2 (LPN=%d,%d) -> auto-flushed\n", LPN_WB1, LPN_WB2);
+
+    // Write 1 via write_back ¡ú below threshold, stays in cache
+    ret = eflash_ftl_write_back(LPN_CACHE, cached_pattern);
+    assert(ret == 0 && "P1: wb cached-only");
+    printf("    write_back x1 (LPN=%d) -> cached only (dirty_count=1 < THRESHOLD=%d)\n",
+           LPN_CACHE, FLUSH_THRESHOLD);
+
+    // Verify reads work before crash
+    ret = eflash_ftl_read(LPN_WT, buf);
+    assert(ret == 0 && memcmp(buf, wt_pattern, USER_DATA_SIZE) == 0);
+    ret = eflash_ftl_read(LPN_WB1, buf);
+    assert(ret == 0 && memcmp(buf, wb_pattern, USER_DATA_SIZE) == 0);
+    ret = eflash_ftl_read(LPN_WB2, buf);
+    assert(ret == 0 && memcmp(buf, wb_pattern, USER_DATA_SIZE) == 0);
+    ret = eflash_ftl_read(LPN_CACHE, buf);
+    assert(ret == 0 && memcmp(buf, cached_pattern, USER_DATA_SIZE) == 0);
+    printf("    Pre-crash: all 4 reads OK\n");
+
+    // ---- Phase 2: Crash ----
+    printf("\n  Phase 2: Simulate power loss (cache partially filled)\n");
+    simulate_crash_recovery();
+
+    // ---- Phase 3: Verify after crash ----
+    printf("\n  Phase 3: Post-crash verification\n");
+
+    ret = eflash_ftl_read(LPN_WT, buf);
+    assert(ret == 0 && "P3: WT should survive");
+    assert(memcmp(buf, wt_pattern, USER_DATA_SIZE) == 0 && "P3: WT data");
+    printf("    write_through(LPN=%d) -> survived ?\n", LPN_WT);
+
+    ret = eflash_ftl_read(LPN_WB1, buf);
+    assert(ret == 0 && "P3: WB1 flushed should survive");
+    assert(memcmp(buf, wb_pattern, USER_DATA_SIZE) == 0 && "P3: WB1 data");
+    ret = eflash_ftl_read(LPN_WB2, buf);
+    assert(ret == 0 && "P3: WB2 flushed should survive");
+    assert(memcmp(buf, wb_pattern, USER_DATA_SIZE) == 0 && "P3: WB2 data");
+    printf("    write_back flushed (LPN=%d,%d) -> survived ?\n", LPN_WB1, LPN_WB2);
+
+    ret = eflash_ftl_read(LPN_CACHE, buf);
+    if (ret == 0) {
+        if (memcmp(buf, cached_pattern, USER_DATA_SIZE) == 0) {
+            printf("    FAIL: cached-only data survived crash!\n");
+            failed_tests++;
+            teardown_test_environment();
+            return;
+        }
+    }
+    printf("    write_back cached-only (LPN=%d) -> LOST ?\n", LPN_CACHE);
+
+    // ---- Phase 4: FTL is still healthy after recovery ----
+    printf("\n  Phase 4: Verify FTL operational after crash recovery\n");
+
+    uint8_t new_data[USER_DATA_SIZE];
+    memset(new_data, 0x77, USER_DATA_SIZE);
+    memcpy(new_data, "POST_CRASH_OK", 13);
+
+    // Can write to the lost LPN
+    ret = eflash_ftl_write(LPN_CACHE, new_data);
+    assert(ret == 0 && "P4: write to recovered LPN");
+    ret = eflash_ftl_read(LPN_CACHE, buf);
+    assert(ret == 0 && "P4: read new data");
+    assert(memcmp(buf, new_data, USER_DATA_SIZE) == 0 && "P4: new data");
+    printf("    Re-wrote LPN=%d after crash -> OK ?\n", LPN_CACHE);
+
+    // Can write more via write_back
+    for (uint16_t i = 35; i < 38; i++) {
+        memset(new_data, (uint8_t)(i & 0xFF), USER_DATA_SIZE);
+        new_data[0] = 'N';
+        ret = eflash_ftl_write_back(i, new_data);
+        assert(ret == 0 && "P4: more write_back");
+    }
+    eflash_ftl_cache_flush();
+    simulate_crash_recovery();
+    for (uint16_t i = 35; i < 38; i++) {
+        ret = eflash_ftl_read(i, buf);
+        assert(ret == 0 && "P4: read after crash2");
+        assert(buf[0] == 'N' && "P4: data after crash2");
+    }
+    printf("    More write_back + crash2 -> all survived ?\n");
+
+    printf("\n  === Partial cache power-loss test passed ===\n");
+    passed_tests++;
+    teardown_test_environment();
+}
+
+// ============================================================================
+// Test Case 19: Write-Back Cache Stress Test
+// ============================================================================
+//
+// Purpose: Stress-test the write_back caching mechanism:
+//   1. Single write_back ¡ú read coherence (cache hit)
+//   2. Same LPN update ¡ú cache update correctness
+//   3. Auto-flush at FLUSH_THRESHOLD=2 + crash recovery
+//   4. Cache full (4 slots) + FIFO eviction (6 pages)
+//   5. Mixed write_through + write_back survival after crash
+//   6. Cache-only data lost on power loss (no flush)
+//   7. Stress: 50 LPNs via write_back, flush all, verify all
+//
+void test_write_back_cache_stress(void) {
+    setup_test_environment();
+    total_tests++;
+
+    uint8_t wbuf[USER_DATA_SIZE];
+    uint8_t rbuf[USER_DATA_SIZE];
+    int ret;
+
+    printf("  === Write-Back Cache Stress Test ===\n");
+
+    // ---- Test 1: Single write_back + read coherence ----
+    printf("\n  [1] Single write_back + read from cache\n");
+    memset(wbuf, 0xA1, USER_DATA_SIZE);
+    memcpy(wbuf, "CACHE_OK_001", 12);
+    ret = eflash_ftl_write_back(500, wbuf);
+    assert(ret == 0);
+    ret = eflash_ftl_read(500, rbuf);
+    assert(ret == 0);
+    assert(memcmp(rbuf, wbuf, USER_DATA_SIZE) == 0);
+    printf("        Single write_back(500) + read -> OK\n");
+
+    // ---- Test 2: Update same LPN in cache ----
+    printf("\n  [2] Update already-cached page\n");
+    memset(wbuf, 0xB2, USER_DATA_SIZE);
+    memcpy(wbuf, "CACHE_UPDATED", 13);
+    ret = eflash_ftl_write_back(500, wbuf);
+    assert(ret == 0);
+    ret = eflash_ftl_read(500, rbuf);
+    assert(ret == 0);
+    assert(memcmp(rbuf, "CACHE_UPDATED", 13) == 0);
+    assert(rbuf[USER_DATA_SIZE - 1] == (uint8_t)0xB2);
+    printf("        Cache update -> latest version returned OK\n");
+
+    // ---- Test 3: Auto-flush at FLUSH_THRESHOLD=2 + crash recovery ----
+    printf("\n  [3] Auto-flush at FLUSH_THRESHOLD=%d + crash\n", FLUSH_THRESHOLD);
+
+    memset(wbuf, 0xC3, USER_DATA_SIZE);
+    memcpy(wbuf, "AUTOFLUSH_P1", 12);
+    ret = eflash_ftl_write_back(501, wbuf);
+    assert(ret == 0);
+
+    memset(wbuf, 0xC4, USER_DATA_SIZE);
+    memcpy(wbuf, "AUTOFLUSH_P2", 12);
+    ret = eflash_ftl_write_back(502, wbuf);
+    assert(ret == 0);
+
+    eflash_ftl_cache_flush();
+    simulate_crash_recovery();
+
+    ret = eflash_ftl_read(501, rbuf);
+    assert(ret == 0);
+    assert(memcmp(rbuf, "AUTOFLUSH_P1", 12) == 0);
+
+    ret = eflash_ftl_read(502, rbuf);
+    assert(ret == 0);
+    assert(memcmp(rbuf, "AUTOFLUSH_P2", 12) == 0);
+    printf("        Auto-flush at threshold + crash -> both survived OK\n");
+
+    // ---- Test 4: Cache full (4 slots) + FIFO eviction ----
+    printf("\n  [4] Cache full (4 slots) + FIFO eviction\n");
+
+    for (int i = 0; i < 4; i++) {
+        memset(wbuf, (uint8_t)(0xD0 + i), USER_DATA_SIZE);
+        char label[16];
+        snprintf(label, sizeof(label), "FIFO_SLOT%02d_", i);
+        memcpy(wbuf, label, 12);
+        ret = eflash_ftl_write_back((uint16_t)(510 + i), wbuf);
+        assert(ret == 0);
+    }
+
+    memset(wbuf, 0xE4, USER_DATA_SIZE);
+    memcpy(wbuf, "FIFO_EVICT04", 12);
+    ret = eflash_ftl_write_back(514, wbuf);
+    assert(ret == 0);
+
+    memset(wbuf, 0xE5, USER_DATA_SIZE);
+    memcpy(wbuf, "FIFO_EVICT05", 12);
+    ret = eflash_ftl_write_back(515, wbuf);
+    assert(ret == 0);
+
+    eflash_ftl_cache_flush();
+
+    for (int i = 0; i < 6; i++) {
+        ret = eflash_ftl_read((uint16_t)(510 + i), rbuf);
+        assert(ret == 0);
+        if (i < 4) {
+            char expected[16];
+            snprintf(expected, sizeof(expected), "FIFO_SLOT%02d_", i);
+            assert(memcmp(rbuf, expected, 12) == 0);
+        } else {
+            char expected[16];
+            snprintf(expected, sizeof(expected), "FIFO_EVICT%02d", i);
+            assert(memcmp(rbuf, expected, 12) == 0);
+        }
+    }
+    printf("        FIFO eviction + 6 pages verified OK\n");
+
+    // ---- Test 5: Mixed write_through + write_back ----
+    printf("\n  [5] Mixed write_through + write_back\n");
+
+    memset(wbuf, 0xFA, USER_DATA_SIZE);
+    memcpy(wbuf, "WT_SURVIVE_1", 12);
+    ret = eflash_ftl_write_through(520, wbuf);
+    assert(ret == 0);
+
+    memset(wbuf, 0xFB, USER_DATA_SIZE);
+    memcpy(wbuf, "WB_SURVIVE_1", 12);
+    ret = eflash_ftl_write_back(521, wbuf);
+    assert(ret == 0);
+
+    eflash_ftl_cache_flush();
+    simulate_crash_recovery();
+
+    ret = eflash_ftl_read(520, rbuf);
+    assert(ret == 0);
+    assert(memcmp(rbuf, "WT_SURVIVE_1", 12) == 0);
+
+    ret = eflash_ftl_read(521, rbuf);
+    assert(ret == 0);
+    assert(memcmp(rbuf, "WB_SURVIVE_1", 12) == 0);
+    printf("        WT(520) + WB(521) both survive crash OK\n");
+
+    // ---- Test 6: Cache-only data lost on power loss ----
+    printf("\n  [6] Cache-only data lost on power loss (no flush)\n");
+
+    memset(wbuf, 0x66, USER_DATA_SIZE);
+    memcpy(wbuf, "LOST_ON_CRASH", 13);
+    ret = eflash_ftl_write_back(600, wbuf);
+    assert(ret == 0);
+
+    simulate_crash_recovery();
+
+    ret = eflash_ftl_read(600, rbuf);
+    assert(ret != 0 || memcmp(rbuf, "LOST_ON_CRASH", 13) != 0);
+    printf("        Cache-only data correctly LOST after crash OK\n");
+
+    // ---- Test 7: Stress - 50 LPNs via write_back, flush, verify ----
+    printf("\n  [7] Stress: 50 LPNs write_back + flush + verify\n");
+
+    for (int i = 0; i < 50; i++) {
+        memset(wbuf, (uint8_t)((i & 0xFF) | 0x80), USER_DATA_SIZE);
+        snprintf((char *)wbuf, USER_DATA_SIZE, "STRESS_%03d", i);
+        ret = eflash_ftl_write_back((uint16_t)(700 + i), wbuf);
+        assert(ret == 0);
+    }
+
+    eflash_ftl_cache_flush();
+    simulate_crash_recovery();
+
+    int errs = 0;
+    for (int i = 0; i < 50; i++) {
+        ret = eflash_ftl_read((uint16_t)(700 + i), rbuf);
+        char expected[16];
+        snprintf(expected, sizeof(expected), "STRESS_%03d", i);
+        if (ret != 0 || memcmp(rbuf, expected, 10) != 0) {
+            errs++;
+        }
+    }
+    assert(errs == 0);
+    printf("        50 pages write_back + flush + crash -> %d errors OK\n", errs);
+
+    printf("\n  === write_back cache stress test passed ===\n");
+    passed_tests++;
+    teardown_test_environment();
+}
+
+// ============================================================================
+// Test Case 20: content_cache_flush Unit Test
+// ============================================================================
+//
+// Purpose: Unit-test content_cache_flush (via eflash_ftl_cache_flush):
+//   1. Empty cache flush ¡ª no-op
+//   2. Single dirty page flush ¡ú dirty_count=0, data on Flash
+//   3. Partial dirty flush (2 dirty + 2 clean via auto-flush patterns)
+//   4. All 4 slots dirty at once ¡ú complete flush, survive crash
+//   5. FIFO order ¡ª oldest & newest both persisted after flush
+//   6. Flush + power loss ¡ª 20 pages survive crash
+//   7. Update + flush ¡ª latest version persisted
+//   8. Dirty count regression ¡ª no double-decrement (verify no spurious flush)
+//
+void test_content_cache_flush_unit(void) {
+    setup_test_environment();
+    total_tests++;
+
+    uint8_t wbuf[USER_DATA_SIZE];
+    uint8_t rbuf[USER_DATA_SIZE];
+    int ret;
+
+    printf("  === content_cache_flush Unit Test ===\n");
+
+    // ---- Test 1: Empty cache flush ¡ª no-op ----
+    printf("\n  [1] Empty cache flush\n");
+    ret = eflash_ftl_cache_flush();
+    assert(ret == 0);
+    printf("        Empty cache flush -> no-op OK\n");
+
+    // ---- Test 2: Single dirty page flush ----
+    printf("\n  [2] Single dirty page flush\n");
+    memset(wbuf, 0x11, USER_DATA_SIZE);
+    memcpy(wbuf, "SINGLE_DIRTY", 12);
+    ret = eflash_ftl_write_back(800, wbuf);
+    assert(ret == 0);
+    ret = eflash_ftl_cache_flush();
+    assert(ret == 0);
+    simulate_crash_recovery();
+    ret = eflash_ftl_read(800, rbuf);
+    assert(ret == 0);
+    assert(memcmp(rbuf, "SINGLE_DIRTY", 12) == 0);
+    printf("        Single dirty page flushed -> survives crash OK\n");
+
+    // ---- Test 3: Partial dirty (2 auto-flushed + 2 explicitly flushed) ----
+    printf("\n  [3] Partial dirty + explicit flush\n");
+
+    for (int i = 0; i < 4; i++) {
+        memset(wbuf, (uint8_t)(0xA0 + i), USER_DATA_SIZE);
+        char label[16] = {0};
+        snprintf(label, sizeof(label), "PARTIAL_%02d", i);
+        memcpy(wbuf, label, 12);
+        ret = eflash_ftl_write_back((uint16_t)(810 + i), wbuf);
+        assert(ret == 0);
+    }
+    eflash_ftl_cache_flush();
+    simulate_crash_recovery();
+    for (int i = 0; i < 4; i++) {
+        ret = eflash_ftl_read((uint16_t)(810 + i), rbuf);
+        assert(ret == 0);
+        char expected[16] = {0};
+        snprintf(expected, sizeof(expected), "PARTIAL_%02d", i);
+        assert(memcmp(rbuf, expected, 12) == 0);
+    }
+    printf("        4 pages flushed -> all survive crash OK\n");
+
+    // ---- Test 4: All 4 slots dirty at once ¡ª complete flush ----
+    printf("\n  [4] All 4 slots dirty at once -> flush all\n");
+
+    for (int i = 0; i < 4; i++) {
+        memset(wbuf, (uint8_t)(0xB0 + i), USER_DATA_SIZE);
+        char label[16] = {0};
+        snprintf(label, sizeof(label), "ALLDIRTY_%02d", i);
+        memcpy(wbuf, label, 12);
+        ret = eflash_ftl_write_back((uint16_t)(820 + i), wbuf);
+        assert(ret == 0);
+    }
+    eflash_ftl_cache_flush();
+    simulate_crash_recovery();
+    for (int i = 0; i < 4; i++) {
+        ret = eflash_ftl_read((uint16_t)(820 + i), rbuf);
+        assert(ret == 0);
+        char expected[16] = {0};
+        snprintf(expected, sizeof(expected), "ALLDIRTY_%02d", i);
+        assert(memcmp(rbuf, expected, 12) == 0);
+    }
+    printf("        All 4 dirty pages flushed -> survive crash OK\n");
+
+    // ---- Test 5: FIFO flush order ¡ª oldest & newest both persisted ----
+    printf("\n  [5] Flush order: oldest & newest persisted\n");
+
+    for (int i = 0; i < 4; i++) {
+        memset(wbuf, (uint8_t)(0xC0 + i), USER_DATA_SIZE);
+        char label[16] = {0};
+        snprintf(label, sizeof(label), "FIFO_%02d____", i);
+        memcpy(wbuf, label, 12);
+        ret = eflash_ftl_write_back((uint16_t)(830 + i), wbuf);
+        assert(ret == 0);
+    }
+    eflash_ftl_cache_flush();
+    simulate_crash_recovery();
+
+    ret = eflash_ftl_read(830, rbuf);
+    assert(ret == 0);
+    assert(memcmp(rbuf, "FIFO_00____", 12) == 0);
+
+    ret = eflash_ftl_read(833, rbuf);
+    assert(ret == 0);
+    assert(memcmp(rbuf, "FIFO_03____", 12) == 0);
+    printf("        Oldest(830) and newest(833) both persisted OK\n");
+
+    // ---- Test 6: Flush + power loss ¡ª 20 pages survive ----
+    printf("\n  [6] Flush + power loss: 20 pages survive\n");
+
+    const int N = 20;
+    for (int i = 0; i < N; i++) {
+        memset(wbuf, (uint8_t)((i & 0xFF) | 0xD0), USER_DATA_SIZE);
+        char label[16] = {0};
+        snprintf(label, sizeof(label), "FLUSHED_%03d", i);
+        memcpy(wbuf, label, 12);
+        ret = eflash_ftl_write_back((uint16_t)(900 + i), wbuf);
+        assert(ret == 0);
+    }
+    eflash_ftl_cache_flush();
+    simulate_crash_recovery();
+
+    int errs = 0;
+    for (int i = 0; i < N; i++) {
+        ret = eflash_ftl_read((uint16_t)(900 + i), rbuf);
+        char expected[16] = {0};
+        snprintf(expected, sizeof(expected), "FLUSHED_%03d", i);
+        if (ret != 0 || memcmp(rbuf, expected, 12) != 0) {
+            errs++;
+        }
+    }
+    printf("        %d pages flushed -> %d errors after crash\n", N, errs);
+    assert(errs == 0);
+
+    // ---- Test 7: Update + flush ¡ª latest version persisted ----
+    printf("\n  [7] Update + flush: latest version survives\n");
+
+    memset(wbuf, 0xE1, USER_DATA_SIZE);
+    memcpy(wbuf, "UPDATE_V1", 9);
+    ret = eflash_ftl_write_back(950, wbuf);
+    assert(ret == 0);
+
+    memset(wbuf, 0xE2, USER_DATA_SIZE);
+    memcpy(wbuf, "UPDATE_V2", 9);
+    ret = eflash_ftl_write_back(950, wbuf);
+    assert(ret == 0);
+
+    eflash_ftl_cache_flush();
+    simulate_crash_recovery();
+
+    ret = eflash_ftl_read(950, rbuf);
+    assert(ret == 0);
+    assert(memcmp(rbuf, "UPDATE_V2", 9) == 0);
+    printf("        Update V1->V2, flush, crash -> V2 survived OK\n");
+
+    // ---- Test 8: Dirty count regression ¡ª no double-decrement ----
+    printf("\n  [8] Dirty count regression: no double-decrement\n");
+
+    for (int i = 0; i < 2; i++) {
+        memset(wbuf, (uint8_t)(0xF0 + i), USER_DATA_SIZE);
+        ret = eflash_ftl_write_back((uint16_t)(960 + i), wbuf);
+        assert(ret == 0);
+    }
+
+    memset(wbuf, 0xFA, USER_DATA_SIZE);
+    memcpy(wbuf, "SINGLE_NOFLUSH", 14);
+    ret = eflash_ftl_write_back(962, wbuf);
+    assert(ret == 0);
+
+    simulate_crash_recovery();
+
+    ret = eflash_ftl_read(962, rbuf);
+    assert(ret != 0 || memcmp(rbuf, "SINGLE_NOFLUSH", 14) != 0);
+    printf("        dirty_count=1 after auto-flush -> no spurious flush OK\n");
+
+    printf("\n  === content_cache_flush unit test passed ===\n");
+    passed_tests++;
+    teardown_test_environment();
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 
@@ -2106,6 +2874,11 @@ int main(void) {
     RUN_TEST(test_integration_gc_reserve_code_migration);
     RUN_TEST(test_code_and_data_coexistence);
     RUN_TEST(test_trim_radix_tree_integrity);
+    RUN_TEST(test_power_loss_consistency);
+    RUN_TEST(test_read_write_boundary);
+    RUN_TEST(test_power_loss_partial_cache);
+    RUN_TEST(test_write_back_cache_stress);
+    RUN_TEST(test_content_cache_flush_unit);
     
     // Summary
     printf("\n========================================\n");

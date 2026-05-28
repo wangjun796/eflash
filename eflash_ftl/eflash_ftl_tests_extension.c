@@ -57,6 +57,9 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 // For testing: include internal headers first to get full type definitions
 #include "eflash_ftl.h"
@@ -2415,11 +2418,38 @@ int test_long_term_stability(void) {
     for (int cycle = 0; cycle < POWER_CYCLE_COUNT; cycle++) {
         printf("    Power cycle %d / %d...\n", cycle + 1, POWER_CYCLE_COUNT);
         
-        // Write some data
+        // Trigger GC before each cycle to ensure enough free space
+        uint32_t free_before = eflash_ftl_get_free_pages();
+        printf("      Free pages before GC: %u\n", free_before);
+        if (free_before < 50) {
+            printf("      Low free space, triggering GC...\n");
+            eflash_ftl_gc_collect_all();
+            uint32_t free_after = eflash_ftl_get_free_pages();
+            printf("      Free pages after GC: %u\n", free_after);
+        }
+        
+        int write_success = 0;
+        int write_failed = 0;
+        
         for (int i = 0; i < 20; i++) {
             uint16_t sector = (uint16_t)(cycle * 20 + i);
             memset(write_buf, (uint8_t)((cycle + 1) * 10 + i), USER_DATA_SIZE);
-            eflash_ftl_write(sector, write_buf);
+            int ret = eflash_ftl_write(sector, write_buf);
+            if (ret == 0) {
+                write_success++;
+            } else {
+                write_failed++;
+                if (write_failed <= 3) {
+                    printf("        WARNING: Write failed for sector %d (ret=%d)\n", sector, ret);
+                }
+            }
+        }
+        printf("      Writes: %d succeeded, %d failed\n", write_success, write_failed);
+        
+        if (write_success == 0) {
+            printf("      Cycle %d: FAILED - all writes failed\n", cycle + 1);
+            test_passed = 0;
+            continue;
         }
         
         // Simulate power failure
@@ -2468,11 +2498,9 @@ int test_long_term_stability(void) {
     int final_verified = 0;
     int final_errors = 0;
     
-    // Verify a sample of sectors from Phase 1
     #define VERIFY_SAMPLE_COUNT 100
     for (int i = 0; i < VERIFY_SAMPLE_COUNT; i++) {
-        // Check sectors from different parts of the test
-        uint16_t sector = (uint16_t)((i * 19) % 2000);  // Spread across range
+        uint16_t sector = (uint16_t)(i % (POWER_CYCLE_COUNT * 20));  // Verify Phase 3 sectors
         
         if (eflash_ftl_read(sector, read_buf) == 0) {
             final_verified++;

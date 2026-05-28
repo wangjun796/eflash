@@ -107,6 +107,31 @@ PACKED_STRUCT_END
 #define PAGE_NONE             0xFFFF
 #define TXN_ID_NONE           0xFFFF
 
+// --- Read/Write Cache Configuration ---
+#define MAP_CACHE_SIZE          64
+#define PAGE_CACHE_SLOTS        4
+#define FLUSH_THRESHOLD         2
+#define ROOT_BINARY_PROBE_POINTS 6
+
+// --- LPN->PPN Mapping Cache Entry (4 bytes) ---
+PACKED_STRUCT
+typedef struct {
+    uint16_t lpn;
+    uint16_t ppn;
+} ATTRIBUTE_PACKED map_cache_entry_t;
+PACKED_STRUCT_END
+
+// --- Page Content Cache Slot (2+1+1+464=468 bytes, packed) ---
+PACKED_STRUCT
+typedef struct {
+    uint16_t    lpn;
+    uint8_t     dirty;
+    uint8_t     valid;
+    uint32_t    cache_seq;
+    uint8_t     data[USER_DATA_SIZE];
+} ATTRIBUTE_PACKED page_cache_slot_t;
+PACKED_STRUCT_END
+
 // --- Metadata Structure (48 bytes) ---
 PACKED_STRUCT
 typedef struct {
@@ -194,8 +219,8 @@ typedef struct {
     // Used for power-failure recovery and space reuse when code region is deleted
     uint16_t    migration_records_count;
     
-    // Migration mapping array (43 records °¡ 10 bytes = 430 bytes)
-    // Records logical °˙ physical address mappings for power-failure recovery
+    // Migration mapping array (43 records ùù 10 bytes = 430 bytes)
+    // Records logical ùù physical address mappings for power-failure recovery
     migration_record_t migration_map[MAX_MIGRATION_RECORDS];
     
     // Remaining padding (4 bytes)
@@ -256,6 +281,11 @@ uint16_t find_phys_page_by_sector(uint16_t sector);
 // Read/write interface based on sector_id (recommended)
 int  eflash_ftl_write(uint16_t sector_id, const uint8_t *data);
 int  eflash_ftl_read(uint16_t sector_id, uint8_t *data);
+
+// Write-through / Write-back interface (cache-aware)
+int  eflash_ftl_write_through(uint16_t sector_id, const uint8_t *data);
+int  eflash_ftl_write_back(uint16_t sector_id, const uint8_t *data);
+int  eflash_ftl_cache_flush(void);
 
 // Read/write interface based on logical address (optional)
 int  eflash_ftl_write_logical(uint32_t logical_addr, const uint8_t *data, int16_t size);

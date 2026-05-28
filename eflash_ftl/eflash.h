@@ -41,7 +41,7 @@ extern "C" {
 #define SYS_OBJ_HEADER_PAGES        8   ///< Base object header table size
 #define SYS_FREE_LIST_BASE_LPN      8   ///< Free list base LPN
 #define SYS_FREE_LIST_PAGES         4   ///< Free list size
-#define SYS_RESERVED_LPN_COUNT      12  ///< Total reserved system LPNs
+#define SYS_RESERVED_LPN_COUNT      13  ///< Total reserved system LPNs (0-12, including code region page)
 
 // Object Types
 #define OBJ_TYPE_NORMAL         0x00    ///< Normal object header
