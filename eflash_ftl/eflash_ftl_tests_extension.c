@@ -2500,7 +2500,7 @@ int test_long_term_stability(void) {
     
     #define VERIFY_SAMPLE_COUNT 100
     for (int i = 0; i < VERIFY_SAMPLE_COUNT; i++) {
-        uint16_t sector = (uint16_t)(i % (POWER_CYCLE_COUNT * 20));  // Verify Phase 3 sectors
+        uint16_t sector = (uint16_t)((i * 19) % 2000);  // Spread across range
         
         if (eflash_ftl_read(sector, read_buf) == 0) {
             final_verified++;
