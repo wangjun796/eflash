@@ -2420,8 +2420,8 @@ static bool is_page_still_valid(uint16_t ppn) {
     FTL_DEBUG("[GC_VALID] Page %d: sector_id=%d, status=0x%02X, count=%d\n",
              ppn, meta.sector_id, meta.status, meta.global_count);
 
-    // Check status: must be COMMITTED or READY to be potentially valid
-    if (meta.status != TXN_STATUS_COMMITTED && meta.status != TXN_STATUS_READY) {
+
+    if (meta.status == TXN_STATUS_BLANK){
         FTL_DEBUG("[GC_VALID] Page %d: invalid status 0x%02X\n", ppn, meta.status);
         return false;
     }
