@@ -111,6 +111,9 @@ PACKED_STRUCT_END
 #define MAP_CACHE_SIZE          64
 #define PAGE_CACHE_SLOTS        4
 #define FLUSH_THRESHOLD         2
+#ifndef EFLASH_CACHE_ENABLE
+#define EFLASH_CACHE_ENABLE     1
+#endif
 #define ROOT_BINARY_PROBE_POINTS 6
 
 // --- LPN->PPN Mapping Cache Entry (4 bytes) ---

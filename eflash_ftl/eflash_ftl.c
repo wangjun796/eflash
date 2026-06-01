@@ -334,6 +334,7 @@ static void map_cache_invalidate(uint16_t lpn) {
     }
 }
 
+#if EFLASH_CACHE_ENABLE
 static int content_cache_find(uint16_t lpn) {
     for (int i = 0; i < PAGE_CACHE_SLOTS; i++) {
         if (g_page_cache[i].valid && g_page_cache[i].lpn == lpn) {
@@ -423,6 +424,15 @@ static void content_cache_flush(void) {
         }
     }
 }
+#else
+static int content_cache_find(uint16_t lpn) { (void)lpn; return -1; }
+static int content_cache_find_free(void) { return -1; }
+static int content_cache_find_min_seq(void) { return -1; }
+static void content_cache_evict_one(int slot) { (void)slot; }
+static void content_cache_fill(uint16_t lpn, const uint8_t *data) { (void)lpn; (void)data; }
+static void content_cache_invalidate(uint16_t lpn) { (void)lpn; }
+static void content_cache_flush(void) { }
+#endif
 
 /**
  * write_full_page: Write a complete page with data and metadata
