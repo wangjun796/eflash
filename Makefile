@@ -6,22 +6,52 @@ CFLAGS   = -std=c11 -Wall -Wextra \
 
 INC_DIRS = -Ieflash_ftl -Iecc
 
-SRC = eflash_ftl/eflash_ftl.c \
+SRC_CODE_REGION = eflash_ftl/eflash_ftl.c \
       eflash_ftl/eflash_ftl_tests_code_region.c \
       eflash_ftl/eflash_mgr.c \
       eflash_ftl/eflash_sim.c \
       ecc/bch.c \
       ecc/gf13.c
 
-TARGET = eflash_ftl_tests_code_region.exe
+SRC_EXTENSION = eflash_ftl/eflash_ftl.c \
+      eflash_ftl/eflash_ftl_tests_extension.c \
+      eflash_ftl/eflash_mgr.c \
+      eflash_ftl/eflash_sim.c \
+      eflash_ftl/eflash_ftl_visual.c \
+      ecc/bch.c \
+      ecc/gf13.c
 
-.PHONY: test clean
+SRC_STABILITY = eflash_ftl/eflash_ftl.c \
+      eflash_ftl/eflash_ftl_tests_stability.c \
+      eflash_ftl/eflash_mgr.c \
+      eflash_ftl/eflash_sim.c \
+      eflash_ftl/eflash_ftl_visual.c \
+      ecc/bch.c \
+      ecc/gf13.c
 
-$(TARGET): $(SRC)
+TARGET_CODE_REGION = eflash_ftl_tests_code_region.exe
+TARGET_EXTENSION   = eflash_ftl_tests_extension.exe
+TARGET_STABILITY   = eflash_ftl_tests_stability.exe
+
+.PHONY: test test-extension test-stability clean
+
+$(TARGET_CODE_REGION): $(SRC_CODE_REGION)
 	$(CC) $(CFLAGS) $(INC_DIRS) -o $@ $^
 
-test: $(TARGET)
-	./$(TARGET)
+$(TARGET_EXTENSION): $(SRC_EXTENSION)
+	$(CC) $(CFLAGS) $(INC_DIRS) -o $@ $^
+
+$(TARGET_STABILITY): $(SRC_STABILITY)
+	$(CC) $(CFLAGS) $(INC_DIRS) -o $@ $^
+
+test: $(TARGET_CODE_REGION)
+	./$(TARGET_CODE_REGION)
+
+test-extension: $(TARGET_EXTENSION)
+	./$(TARGET_EXTENSION)
+
+test-stability: $(TARGET_STABILITY)
+	./$(TARGET_STABILITY)
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET_CODE_REGION) $(TARGET_EXTENSION) $(TARGET_STABILITY)

@@ -1412,30 +1412,23 @@ int eflash_ftl_init(void) {
         FTL->ext_hdr_addrs[i] = PAGE_NONE;
     }
 
-    // Step 2: Binary search (O(log N)) to find root, fallback to full scan
-    FTL_DEBUG("[INIT] Root binary search...\n");
-    FTL->root_page = find_root_binary();
-    if (FTL->root_page != PAGE_NONE) {
-        ftl_meta_t root_meta;
-        is_valid_page(FTL->root_page, &root_meta);
+    // Step 2: Use full scan to find root (O(N), but robust against GC gaps)
+    // NOTE: find_root_binary assumes committed pages are contiguous, which breaks
+    // after GC invalidates old committed pages. Full scan correctly picks the page
+    // with highest epoch + global_count, which is always the true root.
+    FTL_DEBUG("[INIT] Root full scan...\n");
+    ftl_meta_t root_meta;
+    FTL->root_page = find_root_full_scan(&root_meta);
+    if (FTL->root_page == PAGE_NONE) {
+        FTL_DEBUG("[INIT] No valid root found (first boot)\n");
+        FTL->next_count = 1;
+        FTL->current_epoch = 0;
+    } else {
         FTL->next_count = root_meta.global_count + 1;
         FTL->current_epoch = root_meta.epoch;
-        FTL_DEBUG("[INIT] Binary search OK. Root: ppn=%d, epoch=%d, count=%d\n",
-                 FTL->root_page, (int)FTL->current_epoch, (int)root_meta.global_count);
-    } else {
-        FTL_DEBUG("[INIT] Binary search failed, fallback full scan...\n");
-        ftl_meta_t root_meta;
-        FTL->root_page = find_root_full_scan(&root_meta);
-        if (FTL->root_page == PAGE_NONE) {
-            FTL_DEBUG("[INIT] No valid root found (first boot)\n");
-            FTL->next_count = 1;
-            FTL->current_epoch = 0;
-        } else {
-            FTL->next_count = root_meta.global_count + 1;
-            FTL->current_epoch = root_meta.epoch;
-            FTL_DEBUG("[INIT] Full scan OK. Root: ppn=%d, epoch=%d, count=%d\n",
-                     FTL->root_page, (int)FTL->current_epoch, (int)root_meta.global_count);
-        }
+        FTL_DEBUG("[INIT] Full scan OK. Root: ppn=%d, sector_id=%d, epoch=%d, count=%d, status=0x%02X\n",
+                 FTL->root_page, root_meta.sector_id, (int)FTL->current_epoch,
+                 (int)root_meta.global_count, root_meta.status);
     }
 
     // Step 2.3: Recover extended free node table from Flash

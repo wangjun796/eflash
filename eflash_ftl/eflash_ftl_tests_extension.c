@@ -86,7 +86,7 @@
 // #define ASSERT FORCE_ASSERT
 
 // Test flash file name
-#define TEST_FLASH_FILE "test_flash_extension.bin"
+#define TEST_FLASH_FILE "test_flash_stability_v5.bin"
 
 // Metadata offset definition (same as in eflash_ftl.c)
 #define META_OFFSET USER_DATA_SIZE
@@ -181,23 +181,29 @@ static void print_system_state(const char *tag, uint32_t initial_free_bytes) {
 
 // 初始化测试Flash
 static void init_test_flash(void) {
+    printf("[TEST_INIT] Starting init_test_flash...\n");
     // Force close any existing file handle first
     eflash_deinit();
     
     // Remove old file (retry if needed for Windows filesystem)
+    printf("[TEST_INIT] Removing old test file: %s\n", TEST_FLASH_FILE);
     for (int i = 0; i < 3; i++) {
-        if (remove(TEST_FLASH_FILE) == 0) break;
+        if (remove(TEST_FLASH_FILE) == 0) { printf("[TEST_INIT] Old file removed\n"); break; }
+        printf("[TEST_INIT] Remove attempt %d failed, retrying...\n", i+1);
 #ifdef _WIN32
         Sleep(10);
 #endif
     }
     
     // Initialize flash (will create new file and fill with 0xFF)
+    printf("[TEST_INIT] Calling eflash_init(%s)...\n", TEST_FLASH_FILE);
     int ret = eflash_init(TEST_FLASH_FILE);
+    printf("[TEST_INIT] eflash_init returned %d\n", ret);
     if (ret != 0) {
         fprintf(stderr, "Failed to initialize test flash\n");
         exit(EXIT_FAILURE);
     }
+    printf("[TEST_INIT] init_test_flash complete\n");
 }
 
 // 清理测试Flash
@@ -2265,6 +2271,69 @@ int test_invalid_parameters(void) {
  * - 验证数据完整性
  * - 监控GC效率
  */
+static void dump_all_pages(const char *tag) {
+    printf("\n  ====== [DUMP %s] Full Flash Page Scan ======\n", tag);
+    printf("  %-6s %-10s %-6s %-12s %-8s %-8s %s\n",
+           "PPN", "sector_id", "epoch", "global_count", "status", "is_comm", "notes");
+    printf("  ------ ---------- ------ ------------ -------- -------- -----\n");
+
+    int blank_count = 0;
+    int valid_count = 0;
+    int committed_count = 0;
+    int ready_count = 0;
+    int invalid_count = 0;
+
+    for (int ppn = 0; ppn < EFLASH_TOTAL_PAGES; ppn++) {
+        uint8_t buf[EFLASH_PAGE_SIZE];
+        if (eflash_hw_read(ppn, buf) != 0) {
+            printf("  %-6d [READ ERROR]\n", ppn);
+            continue;
+        }
+
+        int is_blank = 1;
+        for (int bi = 0; bi < EFLASH_PAGE_SIZE; bi++) {
+            if (buf[bi] != 0xFF) { is_blank = 0; break; }
+        }
+
+        if (is_blank) {
+            blank_count++;
+            continue;
+        }
+
+        ftl_meta_t *meta = (ftl_meta_t *)(buf + META_OFFSET);
+        uint8_t status = meta->status;
+        const char *status_str = "???";
+        int is_comm = 0;
+
+        switch (status) {
+            case 0xFF: status_str = "BLANK"; break;
+            case 0x21: status_str = "COMMIT"; is_comm = 1; committed_count++; break;
+            case 0xAD: status_str = "READY"; ready_count++; break;
+            case 0x00: status_str = "INVALID"; invalid_count++; break;
+            case 0xEF: status_str = "PENDING"; break;
+            default: status_str = "UNKNOWN"; break;
+        }
+
+        valid_count++;
+
+        if (valid_count <= 50 || is_comm) {
+            printf("  %-6d %-10d %-6d %-12u 0x%02X(%s) %-8s",
+                   ppn, meta->sector_id, meta->epoch, meta->global_count,
+                   status, status_str, is_comm ? "YES" : "no");
+            if (is_comm) {
+                printf(" *** COMMITTED ***");
+            }
+            printf("\n");
+        }
+    }
+
+    printf("  ------ ---------- ------ ------------ -------- -------- -----\n");
+    printf("  Total: %d pages, Blank: %d, Valid: %d, Committed: %d, Ready: %d, Invalid: %d\n",
+           EFLASH_TOTAL_PAGES, blank_count, valid_count, committed_count, ready_count, invalid_count);
+    printf("  ====== [DUMP %s END] ======\n\n", tag);
+    fflush(stdout);
+}
+
 int test_long_term_stability(void) {
     printf("\n========================================\n");
     printf("TEST: Long-term Stability Test\n");
@@ -2439,11 +2508,11 @@ int test_long_term_stability(void) {
     
     #define POWER_CYCLE_COUNT 10
     int power_cycle_success = 0;
+    int first_cycle_dumped = 0;
     
     for (int cycle = 0; cycle < POWER_CYCLE_COUNT; cycle++) {
         printf("    Power cycle %d / %d...\n", cycle + 1, POWER_CYCLE_COUNT);
         
-        // Trigger GC before each cycle to ensure enough free space
         uint32_t free_before = eflash_ftl_get_free_pages();
         printf("      Free pages before GC: %u\n", free_before);
         if (free_before < 50) {
@@ -2478,12 +2547,19 @@ int test_long_term_stability(void) {
         
         // Simulate power failure
         PRINT_ROOT_STATE("BEFORE_DEINIT");
+        if (!first_cycle_dumped) {
+            dump_all_pages("BEFORE_DEINIT");
+        }
         eflash_deinit();
         
         // Restart
         eflash_init(TEST_FLASH_FILE);
         eflash_ftl_init();
         PRINT_ROOT_STATE("AFTER_INIT");
+        if (!first_cycle_dumped) {
+            dump_all_pages("AFTER_INIT");
+            first_cycle_dumped = 1;
+        }
         
         // Verify last written data
         int verified = 0;
@@ -7446,6 +7522,33 @@ int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
 
+    RUN_TEST(test_free_list_extension);
+    RUN_TEST(test_free_list_extension_stress);
+    RUN_TEST(test_cross_page_boundary);
+    RUN_TEST(test_ecc_boundary_cases);
+    RUN_TEST(test_maximum_capacity);
+    RUN_TEST(test_invalid_parameters);
+    RUN_TEST(test_radix_tree_max_depth);
+    RUN_TEST(test_valid_page_count_consistency);
+    RUN_TEST(test_object_header_link_chain);
+    RUN_TEST(test_metadata_corruption_recovery);
+    RUN_TEST(test_aligned_unaligned_access);
+    RUN_TEST(test_transaction_functionality);
+    RUN_TEST(test_large_data_read_write);
+    RUN_TEST(test_object_header_reuse);
+    RUN_TEST(test_sector_id_wraparound);
+    RUN_TEST(test_transaction_mixed_read_write);
+    RUN_TEST(test_fragmented_allocation);
+    RUN_TEST(test_gc_threshold_variation);
+    RUN_TEST(test_partial_system_page_corruption);
+    RUN_TEST(test_logical_address_edge_cases);
+    RUN_TEST(test_head_wraparound);
+    RUN_TEST(test_real_free_pages_accuracy);
+    RUN_TEST(test_gc_migration_integrity);
+    RUN_TEST(test_gc_emergency_mode);
+    RUN_TEST(test_transaction_consistency_verification);
+    RUN_TEST(test_trim_operations);
+    RUN_TEST(test_power_failure_extreme);
     RUN_TEST(test_long_term_stability);
 
     // Summary
