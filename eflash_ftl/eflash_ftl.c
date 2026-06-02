@@ -470,28 +470,34 @@ static int write_full_page(uint16_t ppn, const uint8_t *data, const ftl_meta_t *
  */
 static int allocate_physical_page(void) {
     uint16_t last_user_page = EFLASH_TOTAL_PAGES - 1;
-    //if (last_user_page == FTL->valid_page_count)
-    //    return -1;//full error,1 page reserved for ftl write(continue write in full state will write cover valid old page)
-    // Handle wraparound: reset head to 0 WITHOUT triggering GC
-    // GC should have been triggered by the caller before allocation
+
     if (FTL->gc_head_page > last_user_page) {
-        FTL->gc_head_page = 0;  // Wrap around to PPN 0
-        // IMPORTANT: Do NOT trigger GC here!
-        // The caller (eflash_ftl_write) has already triggered GC if needed.
-        // Triggering GC here would cause:
-        // 1. Race condition: GC modifies radix tree while trace_tree is in progress
-        // 2. Recursive calls: GC -> write -> allocate -> GC -> ...
+        FTL->gc_head_page = 0;
         FTL_DEBUG("[ALLOC_PHYS] WARNING: Head wrapped to 0 (GC should have been triggered by caller)\n");
     }
 
-    // Take current head as the page to allocate
-    uint16_t ppn = FTL->gc_head_page;  // Physical Page Number
-    
-    // Move to next physical page
+    if (FTL->gc_head_page == FTL->gc_tail_page && FTL->valid_page_count > 0) {
+        if (is_page_still_valid(FTL->gc_head_page)) {
+            FTL_DEBUG("[ALLOC_PHYS] === ERROR: Flash is full! ===\n");
+            FTL_DEBUG("[ALLOC_PHYS]   head_page    = %d (VALID)\n", FTL->gc_head_page);
+            FTL_DEBUG("[ALLOC_PHYS]   tail_page    = %d\n", FTL->gc_tail_page);
+            FTL_DEBUG("[ALLOC_PHYS]   next_count   = %u\n", FTL->next_count);
+            FTL_DEBUG("[ALLOC_PHYS]   valid_pages  = %u\n", FTL->valid_page_count);
+            FTL_DEBUG("[ALLOC_PHYS]   total_pages  = %u\n", FTL->total_user_pages);
+            FTL_DEBUG("[ALLOC_PHYS]   free(est)    = %u\n", eflash_ftl_get_free_pages());
+            FTL_DEBUG("[ALLOC_PHYS]   free(real)   = %u\n", eflash_ftl_get_real_free_pages());
+            FTL_DEBUG("[ALLOC_PHYS]   gc_in_progress = %d\n", FTL->gc_in_progress);
+            FTL_DEBUG("[ALLOC_PHYS]   Returning -1 to caller\n");
+            return -1;
+        }
+    }
+
+    uint16_t ppn = FTL->gc_head_page;
     FTL->gc_head_page++;
 
-    FTL_DEBUG("[ALLOC_PHYS] Allocated physical page %d (next head=%d)\n",
-             ppn, FTL->gc_head_page);
+    FTL_DEBUG("[ALLOC_PHYS] Allocated ppn=%d, next_head=%d, tail=%d, free(est)=%u, free(real)=%u\n",
+             ppn, FTL->gc_head_page, FTL->gc_tail_page,
+             eflash_ftl_get_free_pages(), eflash_ftl_get_real_free_pages());
 
     return ppn;
 }
@@ -2833,12 +2839,43 @@ int eflash_ftl_gc_collect_all(void) {
                 break;
             }
         } else {
-            // estimated < real: This should NOT happen in normal operation
-            // It indicates a bug in free page counting logic
-            FTL_DEBUG("[GC_CONSISTENT] ⚠ WARNING: estimated (%u) < real (%u)\n",
+            FTL_DEBUG("[GC_CONSISTENT] ⚠ WARNING: estimated (%u) < real (%u) - reclaiming stale pages\n",
                      current_estimated_free, target_real_free);
-            FTL_DEBUG("[GC_CONSISTENT] This indicates a counting inconsistency bug!\n");
-            break;
+
+            uint16_t current_page = FTL->gc_tail_page;
+
+            int ret = gc_collect_one_page(current_page);
+
+            if (ret >= 0) {
+                uint16_t tail_before_op = FTL->gc_tail_page;
+                total_pages_freed++;
+
+                FTL_DEBUG("[GC_TAIL] Consistent GC: page %d reclaimed, tail will move: %d -> ", current_page, FTL->gc_tail_page);
+                
+                FTL->gc_tail_page++;
+                FTL_DEBUG("%d (increment)\n", FTL->gc_tail_page);
+                
+                if (FTL->gc_tail_page > last_user_page) {
+                    FTL->gc_tail_page = 0;
+                    FTL_DEBUG("[GC_TAIL] Round-wrap: tail reset to 0\n");
+                }
+                
+                uint16_t tail_before_skip = FTL->gc_tail_page;
+                FTL->gc_tail_page = skip_code_region(FTL->gc_tail_page);
+                if (FTL->gc_tail_page != tail_before_skip) {
+                    FTL_DEBUG("[GC_TAIL] Code region skip: tail adjusted %d -> %d\n",
+                             tail_before_skip, FTL->gc_tail_page);
+                }
+
+                FTL_DEBUG("[GC_TAIL] Consistent GC: final tail position: %d (was %d, delta=%d)\n",
+                         FTL->gc_tail_page, tail_before_op,
+                         (int16_t)FTL->gc_tail_page - (int16_t)tail_before_op);
+            } else {
+                FTL_DEBUG("[GC_CONSISTENT] ✗ CRITICAL ERROR: Failed to collect page %d\n",
+                         current_page);
+                FTL_DEBUG("[GC_CONSISTENT] Stopping to prevent data corruption\n");
+                break;
+            }
         }
 
         iterations++;

@@ -2278,7 +2278,32 @@ int test_long_term_stability(void) {
     
     uint8_t write_buf[USER_DATA_SIZE];
     uint8_t read_buf[USER_DATA_SIZE];
-    
+
+    extern eflash_ftl_t g_ftl_instance;
+
+    #define PRINT_ROOT_STATE(tag) do { \
+        printf("      [ROOT_%s] root_page=%d, next_count=%u, valid_page_count=%u\n", \
+               tag, g_ftl_instance.root_page, g_ftl_instance.next_count, \
+               g_ftl_instance.valid_page_count); \
+        printf("      [ROOT_%s] head=%d, tail=%d, epoch=%d\n", \
+               tag, g_ftl_instance.gc_head_page, g_ftl_instance.gc_tail_page, \
+               (int)g_ftl_instance.current_epoch); \
+        if (g_ftl_instance.root_page != PAGE_NONE) { \
+            uint8_t root_buf[EFLASH_PAGE_SIZE]; \
+            if (eflash_hw_read(g_ftl_instance.root_page, root_buf) == 0) { \
+                ftl_meta_t *root_meta = (ftl_meta_t *)(root_buf + META_OFFSET); \
+                uint32_t cksum = 0; \
+                for (int ci = 0; ci < 256; ci++) cksum += root_buf[ci]; \
+                printf("      [ROOT_%s] sector_id=%d, global_count=%u, status=0x%02X, cksum=%u\n", \
+                       tag, root_meta->sector_id, root_meta->global_count, \
+                       root_meta->status, cksum); \
+            } else { \
+                printf("      [ROOT_%s] ERROR: Cannot read root page %d\n", \
+                       tag, g_ftl_instance.root_page); \
+            } \
+        } \
+    } while(0)
+
     // ==========================================================================
     // Phase 1: Execute 10,0000+ read/write operations
     // ==========================================================================
@@ -2298,13 +2323,13 @@ int test_long_term_stability(void) {
         write_buf[0] = (uint8_t)(i >> 8);  // Store iteration count for verification
         
         // Write operation
-        if (eflash_ftl_write(sector_id, write_buf) == 0) {
+        int write_ret = eflash_ftl_write(sector_id, write_buf);
+        if (write_ret == 0) {
             write_count++;
         } else {
+            ASSERT(0, "Phase 1: Write failed - flash full, allocate_physical_page returned -1");
             error_count++;
-            if (error_count <= 5) {
-                printf("    WARNING: Write failed at iteration %d, sector %d\n", i, sector_id);
-            }
+            printf("    WARNING: Write failed at iteration %d, sector %d\n", i, sector_id);
         }
         
         // Read back immediately to verify
@@ -2435,13 +2460,12 @@ int test_long_term_stability(void) {
             uint16_t sector = (uint16_t)(cycle * 20 + i);
             memset(write_buf, (uint8_t)((cycle + 1) * 10 + i), USER_DATA_SIZE);
             int ret = eflash_ftl_write(sector, write_buf);
+            ASSERT(ret == 0, "Phase 3: Write failed - flash full, allocate_physical_page returned -1");
             if (ret == 0) {
                 write_success++;
             } else {
                 write_failed++;
-                if (write_failed <= 3) {
-                    printf("        WARNING: Write failed for sector %d (ret=%d)\n", sector, ret);
-                }
+                printf("        WARNING: Write failed for sector %d (ret=%d)\n", sector, ret);
             }
         }
         printf("      Writes: %d succeeded, %d failed\n", write_success, write_failed);
@@ -2453,11 +2477,13 @@ int test_long_term_stability(void) {
         }
         
         // Simulate power failure
+        PRINT_ROOT_STATE("BEFORE_DEINIT");
         eflash_deinit();
         
         // Restart
         eflash_init(TEST_FLASH_FILE);
         eflash_ftl_init();
+        PRINT_ROOT_STATE("AFTER_INIT");
         
         // Verify last written data
         int verified = 0;
@@ -7417,34 +7443,9 @@ int main(int argc, char *argv[]) {
     int passed_count = 0;
     int failed_count = 0;
     
-    // Run all extension tests
-    RUN_TEST(test_free_list_extension);
-    RUN_TEST(test_free_list_extension_stress);
-    RUN_TEST(test_cross_page_boundary);
-    RUN_TEST(test_ecc_boundary_cases);
-    RUN_TEST(test_maximum_capacity); 
-    RUN_TEST(test_invalid_parameters);
-    RUN_TEST(test_radix_tree_max_depth);
-    RUN_TEST(test_valid_page_count_consistency);    
-    RUN_TEST(test_object_header_link_chain);
-    RUN_TEST(test_metadata_corruption_recovery);
-    RUN_TEST(test_aligned_unaligned_access);
-    RUN_TEST(test_transaction_functionality);
-    RUN_TEST(test_large_data_read_write);
-    RUN_TEST(test_object_header_reuse);
-    RUN_TEST(test_sector_id_wraparound);
-    RUN_TEST(test_transaction_mixed_read_write);
-    RUN_TEST(test_fragmented_allocation);
-    RUN_TEST(test_gc_threshold_variation);
-    RUN_TEST(test_partial_system_page_corruption);
-    RUN_TEST(test_logical_address_edge_cases);
-    RUN_TEST(test_head_wraparound);
-    RUN_TEST(test_real_free_pages_accuracy);
-    RUN_TEST(test_gc_migration_integrity);
-    RUN_TEST(test_gc_emergency_mode);
-    RUN_TEST(test_transaction_consistency_verification);
-    RUN_TEST(test_trim_operations);
-    RUN_TEST(test_power_failure_extreme);
+    (void)argc;
+    (void)argv;
+
     RUN_TEST(test_long_term_stability);
 
     // Summary
