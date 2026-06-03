@@ -45,7 +45,8 @@ eflash-master/
 │   ├── eflash_sim.c/h            # Flash 模拟器（仅用于测试）
 │   ├── eflash_ftl_tests.c        # 基础测试套件 (21 个测试用例)
 │   ├── eflash_ftl_tests_code_region.c  # Code Region 测试 (8 个测试用例)
-│   ├── eflash_ftl_tests_extension.c    # 扩展测试套件 (26 个测试用例)
+│   ├── eflash_ftl_tests_extension.c    # 扩展测试套件 (28 个测试用例)
+│   ├── eflash_ftl_tests_stability.c    # 长期稳定性测试 (独立文件)
 │   ├── eflash_ftl_visual.c       # Radix Tree 可视化工具
 │   ├── example_simple.c          # 公共 API 使用示例
 │   └── API_DESIGN.md             # API 设计说明
