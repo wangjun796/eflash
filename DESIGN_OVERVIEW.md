@@ -1185,6 +1185,23 @@ flowchart TD
 3. 擦除被删除段占用的物理页
 4. 更新 `migration_map` 和 `code_size_bytes`
 
+#### Code Region 测试验证
+
+| 测试用例 | 验证内容 | 结果 |
+|---------|---------|------|
+| test_code_migrate_single_page | 单页搬移正确性 | ✅ |
+| test_code_migrate_multi_page | 多页搬移（12 页） | ✅ |
+| test_code_region_expand | 扩展 2 页 | ✅ |
+| test_code_region_shrink | 收缩 1 页 | ✅ |
+| test_code_read_verify | 搬移后读取验证 | ✅ |
+| test_code_migrate_power_failure | 搬移中掉电恢复 | ✅ |
+| test_code_region_gc_reclaim | GC 回收代码区 | ✅ |
+| test_code_segment_add_delete_readd | 段增删重加（6→3→5→3→1→0 页） | ✅ |
+| test_code_segment_stress_with_leak_detection | 压力测试+泄漏检测 | ✅ |
+| test_code_and_data_coexistence | 代码与数据共存 | ✅ |
+| test_write_back_cache_stress | Write-Back 缓存压力 | ✅ |
+| test_content_cache_flush_unit | 缓存刷写单元测试 | ✅ |
+
 ---
 
 ## 掉电恢复机制
@@ -1396,6 +1413,38 @@ Write-Back 模式下，未刷写的脏页在掉电时丢失。
 | LPN 12 | Code Region 信息 | 高 |
 | LPN 13+ | 对象头扩展区域 | 中 |
 
+### 掉电恢复测试验证
+
+#### Code Region 掉电恢复测试
+
+| 测试用例 | 场景 | 结果 |
+|---------|------|------|
+| test_code_migrate_power_failure | 搬移过程中掉电 | ✅ 恢复成功 |
+| test_power_loss_consistency | 多次掉电一致性 | ✅ 数据一致 |
+| test_power_loss_partial_cache | 部分缓存掉电 | ✅ 缓存重建成功 |
+
+#### 全量扫描根页恢复验证
+
+| 测试用例 | 场景 | 结果 |
+|---------|------|------|
+| test_init_recovery | 基础掉电恢复 | ✅ 数据完整 |
+| test_power_failure | 事务中掉电 | ✅ 事务回滚正确 |
+| test_power_failure_extreme | 5 种极端场景（GC/扩展/Radix Tree 分裂/连续掉电） | ✅ 全部恢复 |
+| test_long_term_stability Phase 3 | 10 次周期性掉电恢复 | ✅ 19-20/20 扇区恢复 |
+
+#### 掉电恢复关键数据
+
+```
+Phase 3 掉电恢复统计（10 次循环）:
+  Cycle 1:  19/20 扇区恢复（1 个扇区在掉电瞬间写入，预期丢失）
+  Cycle 2:  20/20 扇区恢复
+  Cycle 3:  20/20 扇区恢复
+  ...
+  Cycle 10: 20/20 扇区恢复
+  累计:     199/200 扇区恢复（99.5%）
+  每次掉电后写入: 20/20 成功
+```
+
 ---
 
 ## 测试体系
@@ -1404,68 +1453,93 @@ Write-Back 模式下，未刷写的脏页在掉电时丢失。
 
 ```mermaid
 graph TB
-    subgraph "基础测试套件 eflash_ftl_tests.c"
+    subgraph "基础测试套件 eflash_ftl_tests.c (25 用例)"
         T1[test_init_recovery<br/>初始化与恢复]
         T2[test_basic_read_write<br/>基本读写]
         T3[test_object_headers<br/>对象头管理]
         T4[test_transactions<br/>事务管理]
-        T5[test_power_failure<br/>掉电恢复]
-        T6[test_space_management<br/>空间管理]
-        T7[test_ecc_correction<br/>ECC纠错]
-        T8[test_radix_tree<br/>Radix Tree]
-        T9[test_stress<br/>压力测试]
+        T5[test_transactions_with_update<br/>优化提交]
+        T6[test_power_failure<br/>掉电恢复]
+        T7[test_space_management<br/>空间管理]
+        T8[test_ecc_correction<br/>ECC纠错]
+        T9[test_radix_tree<br/>Radix Tree]
+        T10[test_stress<br/>压力测试]
     end
 
-    subgraph "扩展测试套件 eflash_ftl_tests_extension.c"
+    subgraph "代码区测试 eflash_ftl_tests_code_region.c (19 用例)"
+        C1[test_code_migrate_single_page<br/>单页搬移]
+        C2[test_code_migrate_multi_page<br/>多页搬移]
+        C3[test_code_region_expand<br/>代码区扩展]
+        C4[test_code_region_shrink<br/>代码区收缩]
+        C5[test_code_migrate_power_failure<br/>搬移掉电恢复]
+        C6[test_code_and_data_coexistence<br/>代码数据共存]
+        C7[test_write_back_cache_stress<br/>缓存压力]
+        C8[test_power_loss_consistency<br/>掉电一致性]
+    end
+
+    subgraph "扩展测试套件 eflash_ftl_tests_extension.c (27 用例)"
         E1[test_free_list_extension<br/>空闲链表扩展]
         E2[test_cross_page_boundary<br/>跨页边界]
-        E3[test_maximum_capacity<br/>最大容量]
+        E3[test_maximum_capacity<br/>最大容量(6子测试)]
         E4[test_radix_tree_max_depth<br/>Radix Tree深度]
-        E5[test_ecc_boundary_cases<br/>ECC边界]
-        E6[test_power_failure_extreme<br/>极端掉电]
-        E7[test_invalid_parameters<br/>无效参数]
-        E8[test_long_term_stability<br/>长期稳定性]
-        E9[test_valid_page_count_consistency<br/>有效页一致性]
-        E10[test_object_header_link_chain<br/>LINK链完整性]
-        E11[test_metadata_corruption_recovery<br/>元数据损坏恢复]
-        E12[test_aligned_unaligned_access<br/>对齐访问]
-        E13[test_transaction_functionality<br/>事务功能全面]
-        E14[test_large_data_read_write<br/>大数据读写]
-        E15[test_object_header_reuse<br/>对象头重用]
-        E16[test_sector_id_wraparound<br/>扇区ID回绕]
-        E17[test_transaction_mixed_read_write<br/>混合读写事务]
-        E18[test_fragmented_allocation<br/>碎片化分配]
-        E19[test_gc_threshold_variation<br/>GC阈值变化]
-        E20[test_partial_system_page_corruption<br/>系统页损坏]
-        E21[test_logical_address_edge_cases<br/>逻辑地址边界]
-        E22[test_head_wraparound<br/>Head回绕]
-        E23[test_real_free_pages_accuracy<br/>实时空闲页准确性]
-        E24[test_gc_migration_integrity<br/>GC迁移完整性]
-        E25[test_gc_emergency_mode<br/>GC紧急模式]
-        E26[test_transaction_consistency_verification<br/>事务一致性验证]
+        E5[test_ecc_boundary_cases<br/>ECC边界(3/4/8-bit)]
+        E6[test_power_failure_extreme<br/>极端掉电(5场景)]
+        E7[test_invalid_parameters<br/>无效参数防御]
+        E8[test_object_header_link_chain<br/>LINK链完整性]
     end
 
-    T1 --> ALL_TESTS[47个测试用例<br/>100%通过率]
-    T2 --> ALL_TESTS
-    T9 --> ALL_TESTS
+    subgraph "长期稳定性测试 eflash_ftl_tests_stability.c (1 用例)"
+        S1[test_long_term_stability<br/>100K操作+10次掉电]
+    end
+
+    T1 --> ALL_TESTS[72个测试用例<br/>100%通过率]
+    T10 --> ALL_TESTS
+    C1 --> ALL_TESTS
+    C8 --> ALL_TESTS
     E1 --> ALL_TESTS
-    E26 --> ALL_TESTS
+    E8 --> ALL_TESTS
+    S1 --> ALL_TESTS
 
     style ALL_TESTS fill:#99ff99
-    style E26 fill:#ff9999
 ```
 
 ### 测试覆盖率统计
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
-| 总测试用例数 | 47个 | 基础21 + 扩展26 |
+| 总测试用例数 | 72个 | 基础25 + 代码区19 + 扩展27 + 稳定性1 |
 | 功能覆盖率 | ~99% | 几乎所有功能分支 |
 | 代码行覆盖率 | ~92% | 估算值 |
 | 分支覆盖率 | ~90% | 估算值 |
-| 测试/实现比 | 2.07:1 | 优秀 |
-| 测试代码行数 | ~9300行 | eflash_ftl_tests*.c |
-| 实现代码行数 | ~4500行 | eflash_ftl*.c + eflash_mgr.c |
+| 测试/实现比 | 2.5:1 | 优秀 |
+| 测试代码行数 | ~12000行 | eflash_ftl_tests*.c |
+| 实现代码行数 | ~4800行 | eflash_ftl*.c + eflash_mgr.c |
+
+### 各套件详细结果
+
+| 测试套件 | 文件 | 用例数 | 通过 | 失败 | 状态 |
+|---------|------|--------|------|------|------|
+| 基础测试 | eflash_ftl_tests.c | 25 | 25 | 0 | ✅ |
+| 代码区搬移 | eflash_ftl_tests_code_region.c | 19 | 19 | 0 | ✅ |
+| 扩展测试 | eflash_ftl_tests_extension.c | 27 | 27 | 0 | ✅ |
+| 长期稳定性 | eflash_ftl_tests_stability.c | 1 | 1 | 0 | ✅ |
+| **合计** | — | **72** | **72** | **0** | **✅ ALL PASS** |
+
+### 关键验证点
+
+| 验证项 | 结果 | 说明 |
+|-------|------|------|
+| Radix Tree 地址映射 | ✅ | 16 层深度，确定性查找 |
+| Head/Tail GC 环形模型 | ✅ | 包括回绕和紧急模式 |
+| 事务原子性 | ✅ | commit/abort 均正确 |
+| 掉电恢复 | ✅ | 全量扫描根页恢复，10 次循环验证 |
+| ECC 3-bit 纠错 | ✅ | 包括 4/8-bit 边界情况 |
+| 空闲链表扩展 | ✅ | 最多 4 级扩展 |
+| 对象头 LINK 链 | ✅ | 最多 16 级扩展 |
+| Code Region 搬移 | ✅ | 单页/多页/扩展/收缩/掉电恢复 |
+| Write-Back 缓存 | ✅ | 自动刷写、掉电保护 |
+| 空间耗尽保护 | ✅ | allocate_physical_page 返回 -1 |
+| 长期稳定性 | ✅ | 100K+ 操作无数据丢失 |
 
 ---
 
