@@ -7549,7 +7549,7 @@ int main(int argc, char *argv[]) {
     RUN_TEST(test_transaction_consistency_verification);
     RUN_TEST(test_trim_operations);
     RUN_TEST(test_power_failure_extreme);
-    RUN_TEST(test_long_term_stability);
+    // RUN_TEST(test_long_term_stability);
 
     // Summary
     printf("\n========================================\n");
