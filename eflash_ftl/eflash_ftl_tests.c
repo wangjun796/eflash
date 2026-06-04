@@ -109,7 +109,7 @@ static int bch_decode(const struct bch_def *bch, uint8_t *data, size_t len, cons
     return error_count > 0 ? error_count : 1;  // 至少返回1表示有错误被纠正
 }
 
-#define TEST_FLASH_FILE "eflash_test.bin"
+#define TEST_FLASH_FILE "eflash_test_v4.bin"
 
 // Test macros (same as in original tests)
 #define TEST(name) printf("  [TEST] %s...\n", #name)
@@ -1018,6 +1018,9 @@ static int test_gc_manual_trigger(void);
 static int test_read_unwritten_sector(void);
 static int test_variable_size_alloc(void);
 static int test_variable_size_alloc_random_order(void);
+#if EFLASH_CACHE_ENABLE
+static int test_write_back_cache_exhausted(void);
+#endif
 
 int main(void) {
     printf("========================================\n");
@@ -1069,6 +1072,9 @@ int main(void) {
     RUN_TEST(multiple_sequential_commits)
     RUN_TEST(variable_size_alloc)
     RUN_TEST(variable_size_alloc_random_order)
+#if EFLASH_CACHE_ENABLE
+    RUN_TEST(write_back_cache_exhausted)
+#endif
     // free_list_extension moved to eflash_ftl_tests_extension.c
 
     #undef RUN_TEST
@@ -2598,8 +2604,55 @@ int test_variable_size_alloc_random_order(void) {
     PASS();
 }
 
+// ============================================================================
+// Test 26: Write-Back Cache Exhausted Fallback
+// ============================================================================
+// Verifies: When cache is full and all slots need eviction, write_back correctly
+// falls back to write_through and propagates its return value
+#if EFLASH_CACHE_ENABLE
+static int test_write_back_cache_exhausted(void) {
+    TEST(write_back_cache_exhausted);
 
+    init_test_flash();
+    eflash_ftl_init();
 
+    uint8_t write_buf[USER_DATA_SIZE];
+    uint8_t read_buf[USER_DATA_SIZE];
+
+    printf("  [WB_CACHE] Testing write_back cache exhaustion and fallback...\n");
+
+    // Fill all 4 cache slots with different sectors
+    for (int i = 0; i < 4; i++) {
+        memset(write_buf, (uint8_t)(0x10 + i), USER_DATA_SIZE);
+        ASSERT(eflash_ftl_write_back((uint16_t)(100 + i), write_buf) == 0, 
+               "write_back to fill cache slot");
+    }
+    printf("  [WB_CACHE] Filled 4 cache slots with sectors 100-103\n");
+
+    // Now write to 5th sector - should trigger eviction of LRU slot
+    memset(write_buf, 0xCD, USER_DATA_SIZE);
+    int ret = eflash_ftl_write_back(200, write_buf);
+    
+    // Key assertion: should return write_through result, not hardcoded 0
+    ASSERT(ret == 0, "write_back should return write_through result on cache exhaustion");
+    printf("  [WB_CACHE] write_back returned %d on cache exhaustion\n", ret);
+
+    // Verify data was written to flash
+    ASSERT(eflash_ftl_read(200, read_buf) == 0, "read sector 200");
+    ASSERT(memcmp(read_buf, write_buf, USER_DATA_SIZE) == 0, "data should match");
+    printf("  [WB_CACHE] Data verified for sector 200\n");
+
+    // Verify evicted slot data was flushed (sector 100 should be readable)
+    memset(read_buf, 0, USER_DATA_SIZE);
+    memset(write_buf, 0x10, USER_DATA_SIZE);
+    ASSERT(eflash_ftl_read(100, read_buf) == 0, "read evicted sector 100");
+    ASSERT(memcmp(read_buf, write_buf, USER_DATA_SIZE) == 0, "evicted data should be flushed");
+    printf("  [WB_CACHE] Evicted sector 100 data correctly flushed\n");
+
+    cleanup_test_flash();
+    PASS();
+}
+#endif
 
 // test_free_list_extension moved to eflash_ftl_tests_extension.c
 

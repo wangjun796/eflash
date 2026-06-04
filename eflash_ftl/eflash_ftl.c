@@ -70,7 +70,7 @@ eflash_ftl_t* eflash_get_ftl(void) {
 //
 // When disabled, all FTL_DEBUG() calls compile to no-op (zero overhead)
 #ifndef FTL_DEBUG_ENABLE
-#define FTL_DEBUG_ENABLE 1  // Enabled for debugging delete operations
+#define FTL_DEBUG_ENABLE 0  // Disabled by default, enable with -DFTL_DEBUG_ENABLE=1 for debugging
 #endif
 
 #if FTL_DEBUG_ENABLE
@@ -947,7 +947,7 @@ int eflash_ftl_obj_set_header(uint16_t obj_id, const obj_header_t *hdr) {
 
     // Step 1: Read the entire system page through FTL layer
     uint8_t page_buf[USER_DATA_SIZE];  // System pages only contain user data area
-    memset(page_buf, 0, USER_DATA_SIZE);  // Á°Æ‰øùÁºìÂÜ≤Âå∫Ê∏ÖÈõ∂
+    memset(page_buf, 0, USER_DATA_SIZE);  // »∑±£ª∫≥Â«¯«Â¡„
     int ret = read_system_page(lpn, page_buf);
     FTL_DEBUG("[OBJ_SET] read_system_page returned: %d\n", ret);
     
@@ -1832,8 +1832,8 @@ int eflash_ftl_write_back(uint16_t sector_id, const uint8_t *data) {
     if (slot < 0) {
         slot = content_cache_find_min_seq();
         if (slot < 0) {
-            eflash_ftl_write_through(sector_id, data);
-            return 0;
+            // All cache slots invalid, fallback to write-through
+            return eflash_ftl_write_through(sector_id, data);
         }
         content_cache_evict_one(slot);
     }
@@ -2589,15 +2589,30 @@ static int gc_collect_one_page(uint16_t ppn) {
     bool valid = is_page_still_valid(ppn);
 
     if (valid) {
-        //if head == tail directly move pointers
+        // CRITICAL FIX: When head == tail, we must still migrate the valid page
+        // before moving pointers. Skipping migration would cause data loss because
+        // the Radix Tree still points to this PPN, but the data would be erased.
         if (FTL->gc_head_page == FTL->gc_tail_page) {
+            FTL_DEBUG("[GC_COLLECT] Page %d is VALID (head==tail=%d), migrating before pointer move...\n", 
+                     ppn, FTL->gc_head_page);
+            
+            // Migrate valid page first
+            if (gc_migrate_page(ppn) != 0) {
+                FTL_DEBUG("[GC_COLLECT] ERROR: Migration failed for page %d (head==tail)\n", ppn);
+                return -1;
+            }
+            
+            // Then move head pointer to avoid immediate reuse
             FTL->gc_head_page++;
-            if (FTL->gc_head_page == EFLASH_TOTAL_PAGES)
-            {
+            if (FTL->gc_head_page == EFLASH_TOTAL_PAGES) {
                 FTL->gc_head_page = 0;
             }
+            
+            FTL_DEBUG("[GC_COLLECT] Page %d migrated, head moved to %d\n", 
+                     ppn, FTL->gc_head_page);
             return 0;
         }
+        
         FTL_DEBUG("[GC_COLLECT] Page %d is VALID, migrating...\n", ppn);
 
         // 2. Migrate valid page
@@ -2703,7 +2718,7 @@ int eflash_ftl_gc_collect(uint16_t pages_to_free) {
                      FTL->gc_tail_page, tail_before_op,
                      (int16_t)FTL->gc_tail_page - (int16_t)tail_before_op);
         } else {
-            // ‚úó Reclamation failed - CRITICAL ERROR!
+            // ? Reclamation failed - CRITICAL ERROR!
             // DO NOT move tail pointer! This indicates a hardware failure or serious error.
             // Moving tail would skip this page permanently and cause data inconsistency.
             FTL_DEBUG("[GC] CRITICAL ERROR: Failed to collect page %d\n", current_page);
@@ -2785,7 +2800,7 @@ int eflash_ftl_gc_collect_all(void) {
 
         // Check if we've achieved consistency
         if (current_estimated_free == target_real_free) {
-            FTL_DEBUG("[GC_CONSISTENT] ‚úì Consistency achieved! estimated == real (%u pages)\n",
+            FTL_DEBUG("[GC_CONSISTENT] ? Consistency achieved! estimated == real (%u pages)\n",
                      current_estimated_free);
             break;
         }
@@ -2826,13 +2841,13 @@ int eflash_ftl_gc_collect_all(void) {
                          (int16_t)FTL->gc_tail_page - (int16_t)tail_before_op);
             } else {
                 // Critical error: failed to reclaim page
-                FTL_DEBUG("[GC_CONSISTENT] ‚úó CRITICAL ERROR: Failed to collect page %d\n",
+                FTL_DEBUG("[GC_CONSISTENT] ? CRITICAL ERROR: Failed to collect page %d\n",
                          current_page);
                 FTL_DEBUG("[GC_CONSISTENT] Stopping to prevent data corruption\n");
                 break;
             }
         } else {
-            FTL_DEBUG("[GC_CONSISTENT] ‚ö† WARNING: estimated (%u) < real (%u) - reclaiming stale pages\n",
+            FTL_DEBUG("[GC_CONSISTENT] ? WARNING: estimated (%u) < real (%u) - reclaiming stale pages\n",
                      current_estimated_free, target_real_free);
 
             uint16_t current_page = FTL->gc_tail_page;
@@ -2864,7 +2879,7 @@ int eflash_ftl_gc_collect_all(void) {
                          FTL->gc_tail_page, tail_before_op,
                          (int16_t)FTL->gc_tail_page - (int16_t)tail_before_op);
             } else {
-                FTL_DEBUG("[GC_CONSISTENT] ‚úó CRITICAL ERROR: Failed to collect page %d\n",
+                FTL_DEBUG("[GC_CONSISTENT] ? CRITICAL ERROR: Failed to collect page %d\n",
                          current_page);
                 FTL_DEBUG("[GC_CONSISTENT] Stopping to prevent data corruption\n");
                 break;
@@ -2876,7 +2891,7 @@ int eflash_ftl_gc_collect_all(void) {
 
     // Step 3: Final status
     if (iterations >= max_iterations) {
-        FTL_DEBUG("[GC_CONSISTENT] ‚ö† WARNING: Reached max iterations (%u)\n", max_iterations);
+        FTL_DEBUG("[GC_CONSISTENT] ? WARNING: Reached max iterations (%u)\n", max_iterations);
     }
 
     uint32_t final_estimated = eflash_ftl_get_free_pages();
@@ -2885,7 +2900,7 @@ int eflash_ftl_gc_collect_all(void) {
     FTL_DEBUG("[GC_CONSISTENT] Final estimated free: %u\n", final_estimated);
     FTL_DEBUG("[GC_CONSISTENT] Target real free: %u\n", target_real_free);
     FTL_DEBUG("[GC_CONSISTENT] Consistency: %s\n",
-             (final_estimated == target_real_free) ? "‚úì ACHIEVED" : "‚úó NOT ACHIEVED");
+             (final_estimated == target_real_free) ? "? ACHIEVED" : "? NOT ACHIEVED");
 #if FTL_DEBUG_ENABLE
     FTL_DEBUG("[GC_CONSISTENT] Tail movement: %d -> %d (iterations=%u)\n",
              initial_tail, FTL->gc_tail_page, iterations);
@@ -3354,9 +3369,9 @@ static int gc_collect_one_page(uint16_t ppn);
  * 
  * This utility function ensures that a given PPN never lands in the code region.
  * It handles three scenarios:
- * 1. PPN is just before code region (ppn == start_ppn - 1) ‚Üí skip to end
- * 2. PPN is already within code region ‚Üí force skip to end (error recovery)
- * 3. PPN is before or after code region ‚Üí return unchanged
+ * 1. PPN is just before code region (ppn == start_ppn - 1) °˙ skip to end
+ * 2. PPN is already within code region °˙ force skip to end (error recovery)
+ * 3. PPN is before or after code region °˙ return unchanged
  * 
  * Usage:
  * - After GC tail pointer increment

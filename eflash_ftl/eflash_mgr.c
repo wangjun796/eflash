@@ -7,8 +7,16 @@
 
 
 
-#ifndef FTL_DEBUG
-#define FTL_DEBUG(...) printf("[MGR_DEBUG] " __VA_ARGS__)  // Enable debug output for recovery analysis
+// Debug macro: controlled by FTL_DEBUG_ENABLE (set via compiler flag -DFTL_DEBUG_ENABLE=1)
+// Default is disabled for better performance during normal testing
+#ifndef FTL_DEBUG_ENABLE
+#define FTL_DEBUG_ENABLE 0
+#endif
+
+#if FTL_DEBUG_ENABLE
+#define FTL_DEBUG(...) printf("[MGR_DEBUG] " __VA_ARGS__)
+#else
+#define FTL_DEBUG(...) do {} while(0)  // Compile to nothing when disabled
 #endif
 
 // Disable all printf debug output in eflash_mgr.c for better performance
