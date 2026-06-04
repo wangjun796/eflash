@@ -329,8 +329,8 @@ int  eflash_ftl_gc_reclaim_code_region(uint16_t pages_needed);  // GC to reclaim
 int  eflash_ftl_gc_reserve_physical_range(uint16_t start_ppn, uint16_t num_pages);  // GC to reserve a contiguous physical page range for code
 int  eflash_ftl_code_read(uint16_t page_offset, uint8_t *buffer, uint16_t size);  // Read code from code region
 
-// --- Visualization Functions (for debugging, only available when FTL_DEBUG_ENABLE is defined) ---
-#ifdef FTL_DEBUG_ENABLE
+// --- Visualization Functions (for debugging, only available when FTL_DEBUG_ENABLE is 1) ---
+#if FTL_DEBUG_ENABLE
 void eflash_ftl_print_radix_tree_mermaid(eflash_ftl_t *ftl, uint16_t root_page); // Print radix tree in Mermaid format to stdout
 void eflash_ftl_print_radix_tree_mermaid_to_file(eflash_ftl_t *ftl, uint16_t root_page); // Save radix tree to file
 #endif
@@ -343,7 +343,7 @@ uint16_t find_sector_by_phys_page(uint16_t ppn);     // Find logical sector ID b
 extern eflash_ftl_t g_ftl_instance;
 #define FTL (&g_ftl_instance)
 
-#ifdef FTL_DEBUG_ENABLE
+#if FTL_DEBUG_ENABLE
 void eflash_ftl_print_radix_tree_mermaid(eflash_ftl_t *ftl, uint16_t root_page); // Print radix tree in Mermaid format to stdout
 void eflash_ftl_print_radix_tree_mermaid_to_file(eflash_ftl_t *ftl, uint16_t root_page); // Save radix tree to file
 #endif

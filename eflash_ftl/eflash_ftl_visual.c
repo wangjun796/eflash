@@ -5,8 +5,8 @@
 #include <string.h>
 #include <stdbool.h>
 
-// Only compile visualization functions when FTL_DEBUG_ENABLE is defined
-#ifdef FTL_DEBUG_ENABLE
+// Only compile visualization functions when FTL_DEBUG_ENABLE is 1
+#if FTL_DEBUG_ENABLE
 
 // Metadata offset in page (same as in eflash_ftl.c)
 #define META_OFFSET USER_DATA_SIZE

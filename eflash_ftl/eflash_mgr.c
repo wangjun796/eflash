@@ -997,7 +997,7 @@ int eflash_mgr_alloc(uint32_t size, uint32_t *out_logical_addr) {
                 if (remaining > 0) {
                     insert_node_to_table(alloc_addr + size, remaining);
                     
-#ifdef FTL_DEBUG_ENABLE
+#if FTL_DEBUG_ENABLE
                     // Verify insertion
                     uint16_t first_lpn = SYS_FREE_LIST_BASE_LPN;
                     int16_t new_count = read_node_count(first_lpn);
@@ -1013,7 +1013,7 @@ int eflash_mgr_alloc(uint32_t size, uint32_t *out_logical_addr) {
                 
                 *out_logical_addr = alloc_addr;
                 
-#ifdef FTL_DEBUG_ENABLE
+#if FTL_DEBUG_ENABLE
                 // Verify: read the just-removed node position to confirm it's cleared
                 free_node_t verify_node = read_free_node(lpn, j);
                 FTL_DEBUG("[SPACE_ALLOC] After removal: node LPN %d[%d] addr=0x%08X, size=%u\n",

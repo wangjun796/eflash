@@ -669,7 +669,7 @@ int test_free_list_extension_stress(void) {
            STRESS_NUM_BLOCKS, STRESS_BLOCK_SIZE);
     printf("  [PHASE 1] This will use significant space, preparing for extension test...\n");
     
-#ifdef FTL_DEBUG_ENABLE
+#if FTL_DEBUG_ENABLE
     // Track root page changes for debugging (only when debug is enabled)
     bool enable_tree_print = false;  // Enable detailed tree printing when root >= 2046
     int write_count_after_2046 = 0;  // Count writes after reaching PPN 2046
@@ -714,7 +714,7 @@ int test_free_list_extension_stress(void) {
             ret = eflash_ftl_write((uint16_t)page_offset, page_buf);
             ASSERT(ret == 0, "write should succeed");
             
-#ifdef FTL_DEBUG_ENABLE
+#if FTL_DEBUG_ENABLE
             // Check if we should enable detailed tree printing (trigger when next_count > 2046)
             if (!enable_tree_print && FTL->next_count > 2046) {
                 enable_tree_print = true;
