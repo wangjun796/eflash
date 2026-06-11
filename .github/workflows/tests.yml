@@ -1,4 +1,4 @@
-name: EFlash FTL Tests
+name: EFlash FTL Tests (73 test cases)
 
 on:
   push:
@@ -9,6 +9,7 @@ on:
 jobs:
   build-and-test:
     runs-on: windows-latest
+    name: "73 Tests | C11 | Embedded FTL"
 
     defaults:
       run:
@@ -26,5 +27,5 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             make
 
-      - name: Build and run tests
-        run: make test
+      - name: Build and run all test suites
+        run: make test-all

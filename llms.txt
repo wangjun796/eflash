@@ -1,0 +1,100 @@
+# eFlash FTL
+
+> A lightweight, production-grade Flash Translation Layer (FTL) library in portable C11 for embedded systems, microcontrollers, and IoT devices. No external dependencies, zero dynamic memory allocation.
+
+## When to Use This Library
+
+- You need wear leveling, garbage collection, and power-loss recovery on raw NAND/NOR/SPI flash
+- You are on an embedded system (bare-metal, RTOS) with no heap available
+- You need atomic write transactions with rollback capability
+- You need ECC (BCH 3-bit) for flash bit errors
+
+## Key Files
+
+- eflash_ftl/eflash.h: SINGLE public API header. This is the only file you #include. Contains all public functions, constants, and data structures.
+- eflash_ftl/eflash_ftl.c: Core FTL engine (~4000 lines). Contains Radix Tree, GC, transactions, power-loss recovery, code region management, write-back cache.
+- eflash_ftl/eflash_mgr.c: Space manager. Free list with dynamic extension, page allocation, adjacent block merging.
+- eflash_ftl/eflash_sim.c: Flash simulator for testing. Replace with your hardware driver for production.
+- ecc/bch.c: BCH ECC encoder/decoder (3-bit correction).
+- ecc/gf13.c: Galois Field GF(2^13) implementation.
+
+## Architecture (4 Layers)
+
+```
+Application ¡ú Public API (eflash.h) ¡ú FTL Core (eflash_ftl.c) ¡ú ECC Layer ¡ú Hardware
+                                           ¡ý
+                                     Space Manager (eflash_mgr.c)
+```
+
+## Core Data Structures
+
+- Radix Tree: 16-level MSB-first tree mapping logical sector ¡ú physical page. O(16) lookup.
+- GC Ring Buffer: head (next writable) and tail (next to scan) pointers circling through physical pages.
+- Transaction: shadow_root mechanism. Pages marked BLANK¡úREADY¡úCOMMITTED (or INVALID on abort).
+- Write-Back Cache: 4-slot LRU, evicts to flash when full or on transaction commit.
+- Free List: linked list of free physical pages, supports 4-level extension.
+
+## Public API (all in eflash.h)
+
+### Lifecycle
+- eflash_init(filename) / eflash_deinit() ¡ª flash simulation
+- eflash_ftl_init() / eflash_get_ftl() ¡ª global FTL instance (static, no malloc)
+
+### Core I/O
+- eflash_ftl_read(sector_id, data) ¡ª read user data (464 bytes)
+- eflash_ftl_write(sector_id, data) ¡ª write-through (direct to flash)
+- eflash_ftl_write_back(sector_id, data) ¡ª cached write (write-back)
+
+### Transactions
+- eflash_ftl_txn_begin() / _commit() / _abort() ¡ª atomic write
+- eflash_ftl_txn_commit_with_update(sector, offset, word) ¡ª optimized small update
+
+### Garbage Collection
+- eflash_ftl_gc_collect_once() / _full() / _emergency()
+- eflash_ftl_gc_get_available_pages()
+
+### Code Region (firmware storage)
+- eflash_ftl_code_migrate_from_logical(src, count) ¡ª move code to dedicated region
+- eflash_ftl_code_expand() / _shrink() / _delete_segment()
+- eflash_ftl_code_read() / _recover()
+
+### Object Headers
+- eflash_ftl_obj_set_header() / _get_header() / _free_header()
+
+## Tests (73 total, 100% pass)
+
+- 26 basic tests: read, write, GC, ECC, transactions, recovery, cache
+- 19 code region tests: migration, expansion, shrinking, power-loss during migration
+- 27 extension tests: extreme power-loss, max capacity, emergency GC, edge cases
+- 1 stability test: 100K random ops + 10 power cycles + final verification
+
+## Known Bugs Fixed (2026-06-03)
+
+- P1: GC head==tail branch ¡ª valid pages were skipped without migration (eflash_ftl.c:2593)
+- P2: write_back ignored write_through error return (eflash_ftl.c:1835)
+
+## How to Port
+
+Replace 4 functions in eflash_sim.c:
+- eflash_hw_erase(page_addr)
+- eflash_hw_prog(page_addr, data)
+- eflash_hw_read(page_addr, data)
+- eflash_hw_word_update(page_addr, offset, data)
+
+## Key Constants
+
+- EFLASH_PAGE_SIZE: 512 bytes
+- EFLASH_TOTAL_PAGES: 2048 (1MB total)
+- USER_DATA_SIZE: 464 bytes (per page)
+- RADIX_DEPTH: 16
+- META_SIZE: 48 bytes
+- ECC_SIZE: 5 bytes (BCH)
+
+## Documentation Files
+
+- README.md: Project overview, quick start, API reference (English)
+- DESIGN_OVERVIEW.md: Architecture, algorithms, data structures, recovery (Chinese)
+- CHANGELOG.md: Version history
+- TEST_SUMMARY.md: Test results
+- BUGFIX_ROUND_20260603.md: Bug fix details
+- CODE_CORRECTNESS_ANALYSIS.md: Code review report

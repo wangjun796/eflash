@@ -28,6 +28,10 @@ stress_debug*.txt
 test_*_output.txt
 multi_test_section.txt
 
+# Exception: LLM discovery files (must be tracked)
+!llms.txt
+!llms-full.txt
+
 # VS Code
 .vscode/
 .vs/
@@ -37,4 +41,3 @@ multi_test_section.txt
 *.suo
 *.user
 *.vcxproj.user
-*.txt

@@ -1,0 +1,309 @@
+# eFlash FTL ！ Full Project Documentation for LLM Context
+
+## Project Identity
+
+- Name: eFlash FTL
+- Type: Embedded Flash Translation Layer library
+- Language: C11 (portable, no C99 features required)
+- License: MIT
+- Location: eflash_ftl/eflash.h (single public header)
+- Total code: ~4000 lines of C
+- Total tests: 73 (100% pass)
+- Key dependencies: None (zero external dependencies)
+
+## Architecture Overview
+
+eFlash FTL is a 4-layer architecture:
+
+Layer 1: Public API (eflash.h) ！ single header, all public functions & types
+Layer 2: FTL Core (eflash_ftl.c) ！ Radix Tree, GC, Transactions, Recovery, Cache, Code Region
+Layer 3: Space Manager (eflash_mgr.c) ！ Free list with dynamic extension, page allocation
+Layer 4: ECC (ecc/bch.c, ecc/gf13.c) ！ BCH 3-bit ECC with GF(2^13)
+
+The hardware abstraction is a 5th layer: eflash_sim.c for testing, replaceable with real driver.
+
+## Core Data Structures
+
+### Page Layout (512 bytes per page)
+- Meta area: 24 bytes (sector_id, flags, etc.)
+- Epoch: 8 bytes (64-bit counter for recovery priority)
+- Transaction ID: 4 bytes
+- ECC: 5 bytes (BCH parity)
+- User data: 464 bytes (total = 24 + 8 + 4 + 5 + 7 + 464 = 512)
+
+### Radix Tree
+- 16-level MSB-first bit comparison
+- Each node: ftl_meta_t containing sector_id, epoch, global_count, txn_status, adr[16]
+- Root is stored in FTL->root_page (PPN)
+- Lookup: trace_tree(root, sector_id) ！ O(16) constant time
+- Pages are marked COMMITTED (0x21), READY (0xAD), INVALID (0x00), or BLANK (0xFF)
+
+### GC Ring Buffer
+- gc_head_page: points to next free physical page for writing
+- gc_tail_page: points to next page to scan for GC
+- Both wrap around: (ptr + 1) % EFLASH_TOTAL_PAGES
+- is_page_still_valid(ppn) checks if page is referenced by Radix Tree
+- gc_migrate_page(ppn) reads valid page, writes to new location, updates tree
+- Emergency mode: gc_collect_emergency() recycles all invalid pages
+
+### Transaction System
+- Uses shadow_root: copy of current root, modified during transaction
+- eflash_ftl_txn_begin(): creates shadow_root copy
+- During transaction: all writes go to new pages, shadow_root updated
+- eflash_ftl_txn_commit(): marks pages as COMMITTED, sets shadow_root as new root
+- eflash_ftl_txn_commit_with_update(): word-level update (1★0 transitions only)
+- eflash_ftl_txn_abort(): discards shadow_root, marks pages as INVALID
+
+### Write-Back Cache
+- 4-slot LRU cache (g_page_cache[PAGE_CACHE_SLOTS])
+- Each slot: valid, dirty, sector_id, data[USER_DATA_SIZE], cache_seq
+- Write-back: data goes to cache first, evicted to flash when full or on commit
+- Write-through: data goes directly to flash (used as fallback)
+- FLUSH_THRESHOLD = 2: flush when 2 dirty pages
+- content_cache_flush_all() called on txn_commit()
+
+### Free List (Space Manager)
+- Base: 4 pages, 228 free nodes
+- Extension: 4 pages per level, 116 nodes per level, max 4 levels
+- free_node_t: next_free (PPN), count (pages in this block)
+- Allocation: best-fit algorithm
+- Merging: adjacent free blocks merged on release
+
+## Complete Public API
+
+### Lifecycle
+```c
+eflash_ftl_t* eflash_get_ftl(void);  // Returns global static instance
+int eflash_ftl_init(void);           // Initialize FTL (may recover from power loss)
+void eflash_ftl_deinit(void);       // Cleanup
+
+// Flash simulation (replace with hardware)
+int eflash_init(const char *filename);
+void eflash_deinit(void);
+int eflash_hw_erase(uint16_t page_addr);
+int eflash_hw_prog(uint16_t page_addr, const uint8_t *data);
+int eflash_hw_read(uint16_t page_addr, uint8_t *data);
+int eflash_hw_word_update(uint16_t page_addr, uint16_t offset, uint16_t data);
+int eflash_hw_is_blank(uint16_t page_addr);
+```
+
+### Core I/O
+```c
+int eflash_ftl_read(uint16_t sector_id, uint8_t *data);
+int eflash_ftl_write(uint16_t sector_id, const uint8_t *data);
+int eflash_ftl_write_back(uint16_t sector_id, const uint8_t *data);
+int eflash_ftl_write_through(uint16_t sector_id, const uint8_t *data);
+```
+
+### Transaction
+```c
+int eflash_ftl_txn_begin(void);
+int eflash_ftl_txn_commit(void);
+int eflash_ftl_txn_commit_with_update(uint16_t sector, uint16_t offset, uint16_t new_word);
+int eflash_ftl_txn_abort(void);
+```
+
+### Garbage Collection
+```c
+int eflash_ftl_gc_collect_once(void);
+int eflash_ftl_gc_collect_full(void);
+int eflash_ftl_gc_collect_emergency(void);
+int eflash_ftl_gc_get_available_pages(void);
+```
+
+### Code Region
+```c
+int eflash_ftl_code_migrate_from_logical(uint16_t src_lpn, uint16_t num_pages);
+int eflash_ftl_code_expand(uint16_t additional_pages);
+int eflash_ftl_code_shrink(uint16_t pages_to_free);
+int eflash_ftl_code_delete_segment(uint16_t code_lpn, uint16_t num_pages);
+int eflash_ftl_code_read(uint16_t code_lpn, uint8_t *data);
+int eflash_ftl_code_recover(void);
+int eflash_ftl_code_get_state(void);
+```
+
+### Object Headers
+```c
+int eflash_ftl_obj_set_header(uint16_t obj_id, const obj_header_t *hdr);
+int eflash_ftl_obj_get_header(uint16_t obj_id, obj_header_t *hdr);
+int eflash_ftl_obj_free_header(uint16_t obj_id);
+```
+
+## Key Constants
+
+- EFLASH_PAGE_SIZE: 512
+- EFLASH_TOTAL_PAGES: 2048 (1MB total)
+- USER_DATA_SIZE: 464 (per page)
+- RADIX_DEPTH: 16
+- META_SIZE: 48
+- PAGE_CACHE_SLOTS: 4
+- FLUSH_THRESHOLD: 2
+- MAX_EXT_LEVELS: 16 (object headers)
+- MAX_MGR_EXT_LEVELS: 4 (free list)
+- TXN_STATUS_COMMITTED: 0x21
+- TXN_STATUS_READY: 0xAD
+- TXN_STATUS_INVALID: 0x00
+- TXN_STATUS_BLANK: 0xFF
+- PAGE_NONE: 0xFFFF
+
+## Power-Loss Recovery
+
+Recovery process (eflash_ftl_init ★ find_root_full_scan):
+
+1. Scan all 2048 physical pages
+2. For each page, read metadata (ftl_meta_t)
+3. Check: txn_status == COMMITTED (0x21)
+4. Track: highest epoch value
+5. Track: highest global_count among pages with max epoch
+6. The page with max(epoch, global_count) is the root page
+7. Recover free list: scan all pages, find free nodes, rebuild free page list
+8. Recover GC pointers: head = first free page, tail = head
+9. Recover code region: check migration state, resume if IN_PROGRESS
+10. Rebuild cache: all cache slots invalidated, will be populated on next write
+
+Recovery guarantees:
+- Uncommitted transactions: pages are INVALID, will be GC'd
+- Committed transactions: fully preserved
+- Code region partial migration: resumed from checkpoint
+- ECC errors during scan: page is skipped, not used as root
+
+## Test Coverage
+
+### Basic Tests (26 tests)
+- test_init: FTL initialization
+- test_read_write: basic read/write
+- test_multiple_writes: multiple writes to same sector
+- test_gc_basic: basic garbage collection
+- test_gc_emergency: emergency GC mode
+- test_txn_basic: basic transaction
+- test_txn_abort: transaction abort
+- test_txn_commit_with_update: word update optimization
+- test_ecc_basic: ECC detection/correction
+- test_ecc_multibit: multi-bit error correction
+- test_power_loss_consistency: power loss recovery
+- test_power_loss_partial_cache: partial cache recovery
+- test_write_back_cache: write-back cache
+- test_write_back_cache_stress: cache stress test
+- test_write_back_cache_exhausted: cache exhaustion fallback
+- test_mgr_alloc_free: space manager allocation
+- test_mgr_extension: space manager extension
+- test_obj_header: object header management
+- test_obj_header_extension: object header extension
+- test_sector_range: sector range operations
+- test_page_overflow: page overflow protection
+- test_radix_tree: Radix tree operations
+- test_concurrent_access: concurrent read/write
+- test_init_recovery: initialization with recovery
+- test_cache_flush: cache flush on commit
+- test_max_pages: maximum page allocation
+
+### Code Region Tests (19 tests)
+- test_code_migrate_basic: basic code migration
+- test_code_migrate_large: large code migration
+- test_code_migrate_power_failure: migration with power failure
+- test_code_expand: code region expansion
+- test_code_shrink: code region shrinking
+- test_code_delete: code segment deletion
+- test_code_read: code region read
+- test_code_gc: code region GC coexistence
+- test_code_data_coexistence: code and data coexistence
+- test_code_recovery: code region recovery
+- test_code_boundary: code region boundary conditions
+- test_code_multi_migrate: multiple migrations
+- test_code_full_region: full region migration
+- test_code_expand_shrink_cycle: expand/shrink cycle
+- test_code_delete_partial: partial segment deletion
+- test_code_migrate_zero: zero-page migration
+- test_code_max_expand: maximum expansion
+- test_code_shrink_all: shrink to zero
+- test_code_recovery_in_progress: recovery of in-progress migration
+
+### Extension Tests (27 tests)
+- test_power_loss_single: single power loss
+- test_power_loss_multi: multiple power loss
+- test_power_loss_during_gc: power loss during GC
+- test_extreme_power_loss: extreme power loss
+- test_max_capacity: maximum capacity
+- test_ecc_boundary: ECC boundary conditions
+- test_gc_stress: GC stress test
+- test_txn_stress: transaction stress test
+- test_free_list_max: free list maximum
+- test_obj_header_max: object header maximum
+- test_radix_edge: Radix tree edge cases
+- test_cache_edge: cache edge cases
+- test_space_exhaustion: space exhaustion
+- test_large_write: large write operations
+- test_repeated_write: repeated writes
+- test_sector_boundary: sector boundary conditions
+- test_gc_full_cycle: full GC cycle
+- test_txn_rollback: transaction rollback
+- test_ecc_detect_4bit: ECC 4-bit error detection
+- test_power_loss_code_region: power loss during code region operations
+- test_concurrent_gc_write: concurrent GC and write
+- test_max_extension_levels: maximum extension levels
+- test_free_list_fragmentation: free list fragmentation
+- test_obj_header_fragmentation: object header fragmentation
+- test_code_region_fragmentation: code region fragmentation
+- test_cache_thrashing: cache thrashing
+- test_long_running: long-running operations
+
+### Stability Test (1 test)
+- test_long_term_stability: 100K random ops + 1000 mixed-size writes + 10 power cycles + final 100-sector verification
+
+## Known Bugs Fixed
+
+### P1: GC head==tail data loss (eflash_ftl.c:2593)
+When gc_head_page == gc_tail_page and the page was still valid, the original code moved the head pointer without migrating the data. Fixed by adding gc_migrate_page() call before pointer movement.
+
+### P2: write_back ignored write_through error (eflash_ftl.c:1835)
+When cache slots were all invalid (slot < 0), write_back called write_through but ignored its return value, always returning 0. Fixed by returning the write_through result directly.
+
+## Porting Guide
+
+To use on real hardware, replace these 4 functions:
+1. eflash_hw_erase(page_addr) ！ erase a physical page to 0xFF
+2. eflash_hw_prog(page_addr, data) ！ program 512 bytes to a page
+3. eflash_hw_read(page_addr, data) ！ read 512 bytes from a page
+4. eflash_hw_word_update(page_addr, offset, data) ！ program 16-bit word (1★0 transitions only)
+
+The library assumes:
+- Pages are 512 bytes
+- Erase sets all bits to 1
+- Program can only change 1★0 (NAND flash constraint)
+- Word update can modify specific 16-bit words within a page (for NAND partial programming)
+
+## Build Commands
+
+```bash
+# Basic tests
+gcc -std=c11 -DFTL_DEBUG_ENABLE=0 -DEFLASH_TEST_MODE -Ieflash_ftl -Iecc \
+    eflash_ftl/eflash_ftl.c eflash_ftl/eflash_ftl_tests.c eflash_ftl/eflash_mgr.c \
+    eflash_ftl/eflash_sim.c ecc/bch.c ecc/gf13.c -o eflash_ftl_tests.exe
+
+# Code region tests
+gcc -std=c11 -DFTL_DEBUG_ENABLE=0 -DEFLASH_TEST_MODE -Ieflash_ftl -Iecc \
+    eflash_ftl/eflash_ftl.c eflash_ftl/eflash_ftl_tests_code_region.c \
+    eflash_ftl/eflash_mgr.c eflash_ftl/eflash_sim.c ecc/bch.c ecc/gf13.c \
+    -o eflash_ftl_tests_code_region.exe
+
+# Extension tests
+gcc -std=c11 -DFTL_DEBUG_ENABLE=0 -DEFLASH_TEST_MODE -Ieflash_ftl -Iecc \
+    eflash_ftl/eflash_ftl.c eflash_ftl/eflash_ftl_tests_extension.c \
+    eflash_ftl/eflash_mgr.c eflash_ftl/eflash_sim.c eflash_ftl/eflash_ftl_visual.c \
+    ecc/bch.c ecc/gf13.c -o eflash_ftl_tests_extension.exe
+
+# Stability test
+gcc -std=c11 -DFTL_DEBUG_ENABLE=0 -DEFLASH_TEST_MODE -Ieflash_ftl -Iecc \
+    eflash_ftl/eflash_ftl.c eflash_ftl/eflash_ftl_tests_stability.c \
+    eflash_ftl/eflash_mgr.c eflash_ftl/eflash_sim.c eflash_ftl/eflash_ftl_visual.c \
+    ecc/bch.c ecc/gf13.c -o eflash_ftl_tests_stability.exe
+```
+
+## Version History
+
+- v2.2.4 (2026-06-03): Documentation updates, test reports
+- v2.2.3 (2026-06-03): DESIGN_OVERVIEW.md v2.0, REPO_WIKI updates
+- v2.2.2 (2026-06-03): Makefile improvements, architecture docs
+- v2.2.1 (2026-06-02): Stability fixes, test reorganization
+- v2.1.0: Code region support, write-back cache, ECC integration
+- v1.8.0: Initial public release with basic FTL functionality

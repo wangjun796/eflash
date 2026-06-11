@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use eFlash FTL in your research or project, please cite it as below."
+title: "eFlash FTL: A Lightweight Embedded Flash Translation Layer for NAND Flash Memory"
+authors:
+  - name: "eFlash Development Team"
+type: software
+license: MIT
+url: "https://github.com/eflash-ftl/eflash"
+repository-code: "https://github.com/eflash-ftl/eflash"
+abstract: "A portable C11 Flash Translation Layer (FTL) library for embedded systems, microcontrollers, and IoT devices. Features Radix Tree address mapping, Head/Tail garbage collection, atomic transactions with shadow tree, BCH 3-bit ECC, write-back caching, code region management, and power-loss recovery. Zero external dependencies, zero dynamic memory allocation."
+keywords:
+  - "flash translation layer"
+  - "FTL"
+  - "NAND flash"
+  - "embedded systems"
+  - "wear leveling"
+  - "garbage collection"
+  - "power loss recovery"
+  - "ECC"
+  - "BCH"
+  - "microcontroller"
+  - "IoT"
+  - "C11"
+  - "atomic transaction"
+  - "Radix tree"
+  - "JavaCard"
+  - "SmartCard"
+  - "CortexM"
