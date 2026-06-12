@@ -26,3 +26,8 @@ keywords:
   - "JavaCard"
   - "SmartCard"
   - "CortexM"
+  - "flash erase/program by page"
+  - "write-back caching"
+  - "code region management"
+  - "zero external dependencies"
+  - "zero dynamic memory allocation"
